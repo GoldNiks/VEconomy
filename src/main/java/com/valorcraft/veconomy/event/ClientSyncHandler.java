@@ -1,7 +1,7 @@
-package com.valorcraft.economy.event;
+package com.valorcraft.veconomy.event;
 
-import com.valorcraft.economy.EconomyCoreMod;
-import com.valorcraft.economy.capability.EconomyCapabilities;
+import com.valorcraft.veconomy.VEconomyMod;
+import com.valorcraft.veconomy.capability.EconomyCapabilities;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.api.distmarker.Dist;
@@ -17,7 +17,7 @@ import java.util.UUID;
  * Клиентский приём баланса. Если пакет пришёл раньше, чем клиент успел создать игрока,
  * значение откладывается в pending-кеш и применяется в ближайшем клиентском тике.
  */
-@Mod.EventBusSubscriber(modid = EconomyCoreMod.MODID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
+@Mod.EventBusSubscriber(modid = VEconomyMod.MODID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientSyncHandler {
 
     private static final Map<UUID, Double> PENDING = new HashMap<>();

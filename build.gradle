@@ -7,7 +7,7 @@ version = mod_version
 group = 'com.valorcraft.economy'
 
 base {
-    archivesName = 'AurumCore-1.20.1'
+    archivesName = 'VEconomy-1.20.1'
 }
 
 java {
@@ -62,10 +62,10 @@ jar {
     reproducibleFileOrder = true
     manifest {
         attributes([
-                'Specification-Title'   : 'AurumCore',
+                'Specification-Title'   : 'VEconomy',
                 'Specification-Version' : project.version,
                 'Specification-Vendor'  : 'ValorCraft',
-                'Implementation-Title'  : 'AurumCore',
+                'Implementation-Title'  : 'VEconomy',
                 'Implementation-Version': project.jar.archiveVersion,
                 'Implementation-Vendor': 'ValorCraft'
         ])

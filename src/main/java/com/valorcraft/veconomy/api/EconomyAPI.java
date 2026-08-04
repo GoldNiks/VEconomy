@@ -1,11 +1,11 @@
-package com.valorcraft.economy.api;
+package com.valorcraft.veconomy.api;
 
-import com.valorcraft.economy.capability.EconomyCapabilities;
-import com.valorcraft.economy.config.EconomyConfig;
-import com.valorcraft.economy.network.EconomySync;
-import com.valorcraft.economy.storage.BalanceStorage;
-import com.valorcraft.economy.storage.TransactionLogger;
-import com.valorcraft.economy.util.MoneyFormatter;
+import com.valorcraft.veconomy.capability.EconomyCapabilities;
+import com.valorcraft.veconomy.config.EconomyConfig;
+import com.valorcraft.veconomy.network.EconomySync;
+import com.valorcraft.veconomy.storage.BalanceStorage;
+import com.valorcraft.veconomy.storage.TransactionLogger;
+import com.valorcraft.veconomy.util.MoneyFormatter;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.common.MinecraftForge;

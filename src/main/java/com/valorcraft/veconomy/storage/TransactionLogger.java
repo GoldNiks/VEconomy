@@ -1,7 +1,7 @@
-package com.valorcraft.economy.storage;
+package com.valorcraft.veconomy.storage;
 
-import com.valorcraft.economy.config.EconomyConfig;
-import com.valorcraft.economy.util.MoneyFormatter;
+import com.valorcraft.veconomy.config.EconomyConfig;
+import com.valorcraft.veconomy.util.MoneyFormatter;
 import net.minecraft.world.entity.player.Player;
 
 import java.io.BufferedWriter;

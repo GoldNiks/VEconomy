@@ -1,15 +1,15 @@
-package com.valorcraft.economy.event;
+package com.valorcraft.veconomy.event;
 
-import com.valorcraft.economy.EconomyCoreMod;
-import com.valorcraft.economy.api.IEconomyCapability;
-import com.valorcraft.economy.capability.EconomyCapabilities;
-import com.valorcraft.economy.capability.EconomyCapability;
-import com.valorcraft.economy.capability.EconomyCapabilityProvider;
-import com.valorcraft.economy.command.EconomyCommand;
-import com.valorcraft.economy.config.EconomyConfig;
-import com.valorcraft.economy.network.EconomySync;
-import com.valorcraft.economy.storage.BalanceStorage;
-import com.valorcraft.economy.storage.TransactionLogger;
+import com.valorcraft.veconomy.VEconomyMod;
+import com.valorcraft.veconomy.api.IEconomyCapability;
+import com.valorcraft.veconomy.capability.EconomyCapabilities;
+import com.valorcraft.veconomy.capability.EconomyCapability;
+import com.valorcraft.veconomy.capability.EconomyCapabilityProvider;
+import com.valorcraft.veconomy.command.EconomyCommand;
+import com.valorcraft.veconomy.config.EconomyConfig;
+import com.valorcraft.veconomy.network.EconomySync;
+import com.valorcraft.veconomy.storage.BalanceStorage;
+import com.valorcraft.veconomy.storage.TransactionLogger;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -25,7 +25,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 /** Серверные обработчики: capability, логин/логаут, смерть, команды, автосейв. */
-@Mod.EventBusSubscriber(modid = EconomyCoreMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
+@Mod.EventBusSubscriber(modid = VEconomyMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class EventHandlers {
 
     /** 5 минут в тиках. */
@@ -41,7 +41,7 @@ public final class EventHandlers {
     @SubscribeEvent
     public static void onAttachCapabilities(AttachCapabilitiesEvent<Entity> event) {
         if (event.getObject() instanceof Player) {
-            event.addCapability(new ResourceLocation(EconomyCoreMod.MODID, "economy"),
+            event.addCapability(new ResourceLocation(VEconomyMod.MODID, "economy"),
                     new EconomyCapabilityProvider());
         }
     }
@@ -59,7 +59,7 @@ public final class EventHandlers {
             }
             BalanceStorage.put(player.getUUID(), cap.getBalance());
             EconomySync.send(player);
-            EconomyCoreMod.LOGGER.debug("Баланс игрока {} при логине: {}",
+            VEconomyMod.LOGGER.debug("Баланс игрока {} при логине: {}",
                     player.getGameProfile().getName(), cap.getBalance());
         });
     }
@@ -88,7 +88,7 @@ public final class EventHandlers {
                         current.setPlayerUUID(player.getUUID());
                     }
                     BalanceStorage.put(player.getUUID(), current.getBalance());
-                    EconomyCoreMod.LOGGER.debug("Баланс игрока {} после смерти: {}",
+                    VEconomyMod.LOGGER.debug("Баланс игрока {} после смерти: {}",
                             player.getGameProfile().getName(), current.getBalance());
                 }));
         EconomySync.send(player);

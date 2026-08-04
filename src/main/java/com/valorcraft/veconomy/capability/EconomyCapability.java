@@ -1,6 +1,6 @@
-package com.valorcraft.economy.capability;
+package com.valorcraft.veconomy.capability;
 
-import com.valorcraft.economy.api.IEconomyCapability;
+import com.valorcraft.veconomy.api.IEconomyCapability;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraftforge.common.util.INBTSerializable;
 

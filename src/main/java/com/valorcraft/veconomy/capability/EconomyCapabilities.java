@@ -1,6 +1,6 @@
-package com.valorcraft.economy.capability;
+package com.valorcraft.veconomy.capability;
 
-import com.valorcraft.economy.api.IEconomyCapability;
+import com.valorcraft.veconomy.api.IEconomyCapability;
 import net.minecraftforge.common.capabilities.Capability;
 import net.minecraftforge.common.capabilities.CapabilityManager;
 import net.minecraftforge.common.capabilities.CapabilityToken;

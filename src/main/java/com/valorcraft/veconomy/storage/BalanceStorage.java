@@ -1,4 +1,4 @@
-package com.valorcraft.economy.storage;
+package com.valorcraft.veconomy.storage;
 
 import java.util.Collections;
 import java.util.Map;

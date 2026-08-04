@@ -1,6 +1,6 @@
-package com.valorcraft.economy.network;
+package com.valorcraft.veconomy.network;
 
-import com.valorcraft.economy.capability.EconomyCapabilities;
+import com.valorcraft.veconomy.capability.EconomyCapabilities;
 import net.minecraft.server.level.ServerPlayer;
 
 /** Отправка актуального баланса игроку на клиент. */

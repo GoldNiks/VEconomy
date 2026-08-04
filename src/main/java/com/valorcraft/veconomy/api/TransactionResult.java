@@ -1,4 +1,4 @@
-package com.valorcraft.economy.api;
+package com.valorcraft.veconomy.api;
 
 /** Результат транзакции через {@link EconomyAPI}. */
 public enum TransactionResult {

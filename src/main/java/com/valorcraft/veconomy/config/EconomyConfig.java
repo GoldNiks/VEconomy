@@ -1,4 +1,4 @@
-package com.valorcraft.economy.config;
+package com.valorcraft.veconomy.config;
 
 import net.minecraftforge.common.ForgeConfigSpec;
 

@@ -1,6 +1,6 @@
-package com.valorcraft.economy.network;
+package com.valorcraft.veconomy.network;
 
-import com.valorcraft.economy.EconomyCoreMod;
+import com.valorcraft.veconomy.VEconomyMod;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkRegistry;
@@ -13,7 +13,7 @@ public final class ModMessages {
     private static final String PROTOCOL_VERSION = "1";
 
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
-            new ResourceLocation(EconomyCoreMod.MODID, "main"),
+            new ResourceLocation(VEconomyMod.MODID, "main"),
             () -> PROTOCOL_VERSION,
             PROTOCOL_VERSION::equals,
             PROTOCOL_VERSION::equals

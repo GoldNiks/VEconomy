@@ -1,4 +1,4 @@
-package com.valorcraft.economy.util;
+package com.valorcraft.veconomy.util;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;

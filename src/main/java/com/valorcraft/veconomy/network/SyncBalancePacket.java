@@ -1,6 +1,6 @@
-package com.valorcraft.economy.network;
+package com.valorcraft.veconomy.network;
 
-import com.valorcraft.economy.event.ClientSyncHandler;
+import com.valorcraft.veconomy.event.ClientSyncHandler;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;

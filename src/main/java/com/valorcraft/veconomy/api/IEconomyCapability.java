@@ -1,4 +1,4 @@
-package com.valorcraft.economy.api;
+package com.valorcraft.veconomy.api;
 
 import java.util.UUID;
 

@@ -1,14 +1,14 @@
-package com.valorcraft.economy.command;
+package com.valorcraft.veconomy.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.context.CommandContext;
-import com.valorcraft.economy.api.EconomyAPI;
-import com.valorcraft.economy.api.TransactionResult;
-import com.valorcraft.economy.config.EconomyConfig;
-import com.valorcraft.economy.storage.BalanceStorage;
-import com.valorcraft.economy.util.MessageHelper;
+import com.valorcraft.veconomy.api.EconomyAPI;
+import com.valorcraft.veconomy.api.TransactionResult;
+import com.valorcraft.veconomy.config.EconomyConfig;
+import com.valorcraft.veconomy.storage.BalanceStorage;
+import com.valorcraft.veconomy.util.MessageHelper;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;

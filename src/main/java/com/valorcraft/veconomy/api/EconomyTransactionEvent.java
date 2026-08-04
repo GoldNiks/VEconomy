@@ -1,4 +1,4 @@
-package com.valorcraft.economy.api;
+package com.valorcraft.veconomy.api;
 
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.eventbus.api.Cancelable;

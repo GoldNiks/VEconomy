@@ -1,6 +1,6 @@
-package com.valorcraft.economy.util;
+package com.valorcraft.veconomy.util;
 
-import com.valorcraft.economy.config.EconomyConfig;
+import com.valorcraft.veconomy.config.EconomyConfig;
 
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
