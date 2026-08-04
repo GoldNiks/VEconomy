@@ -32,20 +32,22 @@ class ActivityServiceTest {
     }
 
     @Test
-    void marksAfkAfterTimeoutAndCountsAfkSeconds() {
+    void splitsIntervalAtAfkTimeoutBoundary() {
+        // Интервал делится на границе таймаута: активна только часть до lastActiveAt + timeout,
+        // всё после границы относится к AFK — без переоценки активного времени.
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
             long start = 1_000_000L;
             db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
-            // активное время до порога + превышение
+            // активна часть до таймаута (300с) + 1с после границы уже AFK
             db.activityService.sampleAt(start + 301_000);
             assertTrue(db.activityService.isAfk(player));
             db.activityService.sampleAt(start + 302_000);
 
             ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
             assertEquals(302, info.totalOnlineSeconds());
-            assertEquals(301, info.totalActiveSeconds());
-            assertEquals(1, info.totalAfkSeconds());
+            assertEquals(300, info.totalActiveSeconds());
+            assertEquals(2, info.totalAfkSeconds());
             assertTrue(info.afkNow());
         }
     }
@@ -68,8 +70,9 @@ class ActivityServiceTest {
 
             ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
             assertEquals(302, info.totalOnlineSeconds());
-            assertEquals(302, info.totalActiveSeconds());
-            assertEquals(0, info.totalAfkSeconds());
+            // 1с до границы таймаута учтена AFK после возврата активности
+            assertEquals(301, info.totalActiveSeconds());
+            assertEquals(1, info.totalAfkSeconds());
             assertFalse(info.afkNow());
         }
     }

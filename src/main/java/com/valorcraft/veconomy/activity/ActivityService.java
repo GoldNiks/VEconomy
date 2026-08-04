@@ -101,19 +101,29 @@ public final class ActivityService {
 
     private static void sampleSession(Session session, long nowMillis) {
         long afkTimeoutMillis = session.afkTimeoutMillis;
-        long dtSeconds = (nowMillis - session.lastSample) / 1000;
+        long fromSample = session.lastSample;
+        long dtMillis = nowMillis - fromSample;
         session.lastSample = nowMillis;
-        if (dtSeconds <= 0) {
+        long dtSeconds = dtMillis / 1000;
+        if (dtMillis < 1000) {
             return;
         }
         session.onlineSeconds += dtSeconds;
         if (session.afk) {
             session.afkSeconds += dtSeconds;
-        } else {
-            session.activeSeconds += dtSeconds;
-            if (nowMillis - session.lastActiveAt >= afkTimeoutMillis) {
-                session.afk = true;
-            }
+            return;
+        }
+        // Интервал делится на границе таймаута: активная часть длится от lastActiveAt
+        // ровно afkTimeoutMillis, а всё, что после неё, относится к AFK. Без этого деления
+        // весь интервал засчитывался бы активным, итерация пересечения границы переоценивала
+        // активное время.
+        long activeUntil = session.lastActiveAt + afkTimeoutMillis;
+        long activeMillis = Math.max(0, Math.min(dtMillis, activeUntil - fromSample));
+        session.activeSeconds += activeMillis / 1000;
+        long afkMillis = dtMillis - activeMillis;
+        session.afkSeconds += afkMillis / 1000;
+        if (afkMillis > 0) {
+            session.afk = true;
         }
     }
 

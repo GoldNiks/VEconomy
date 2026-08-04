@@ -36,22 +36,31 @@ class WeeklyFundServiceTest {
         });
     }
 
-    /** Отметить предыдущую неделю распределённой, чтобы выплата прошла с текущими данными. */
-    private static void markPreviousWeekDistributed(TestDb db) {
+    /**
+     * Смоделировать положение после завершения позапрошлой недели: распределена позапрошлая,
+     * накопленная активность в {@code weekly_active_seconds} принадлежит прошлой неделе и при
+     * ротации будет сохранена снимком для {@code previous(current)}.
+     */
+    private static void markSnapshotDue(TestDb db) {
         db.database.inTransaction(connection -> {
             MetaRepository.set(connection, DatabaseManager.Dialect.SQLITE,
-                    DISTRIBUTED_WEEK_KEY, WeekId.previous(WeekId.current()));
+                    DISTRIBUTED_WEEK_KEY, WeekId.previous(WeekId.previous(WeekId.current())));
             return null;
         });
     }
 
-    /** Фонд без ограничений, автозапуск включён: фонд делится пропорционально времени. */
+    /** Фонд без ограничений, автозапуск включён. */
     private static EconomySettings fund(long weeklyAmount) {
         return fund(weeklyAmount, 0, 0, 0, List.of());
     }
 
     private static EconomySettings fund(long weeklyAmount, long minActive, long maxCounted,
                                         long minAccountAgeDays, List<PointLevel> levels) {
+        return fund(weeklyAmount, minActive, maxCounted, minAccountAgeDays, levels, true);
+    }
+
+    private static EconomySettings fund(long weeklyAmount, long minActive, long maxCounted,
+                                        long minAccountAgeDays, List<PointLevel> levels, boolean autoRun) {
         EconomySettings defaults = EconomySettings.defaults();
         return new EconomySettings(
                 defaults.currencyNameSingular, defaults.currencyNameFew, defaults.currencyNameMany,
@@ -64,14 +73,14 @@ class WeeklyFundServiceTest {
                 defaults.mysqlUser, defaults.mysqlPassword, defaults.mysqlPoolSize,
                 defaults.broadcastAdminChanges,
                 defaults.activity, defaults.milestones,
-                new EconomySettings.WeeklyFund(true, weeklyAmount, true, true,
+                new EconomySettings.WeeklyFund(true, weeklyAmount, true, autoRun,
                         minAccountAgeDays, minActive, maxCounted, levels));
     }
 
     @Test
     void distributesProportionallyToActivity() {
         try (TestDb db = TestDb.create(fund(400))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID bob = UUID.randomUUID();
             seedWeekly(db, alice, 300);
@@ -89,7 +98,7 @@ class WeeklyFundServiceTest {
     void distributesWhenTotalActivityExceedsFund() {
         // Критический случай: totalActive > fund. Старая формула perSecond=fund/total дала бы 0.
         try (TestDb db = TestDb.create(fund(100))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID bob = UUID.randomUUID();
             seedWeekly(db, alice, 1000);
@@ -107,7 +116,7 @@ class WeeklyFundServiceTest {
     @Test
     void payoutRunsOnlyOncePerWeek() {
         try (TestDb db = TestDb.create(fund(100))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             seedWeekly(db, alice, 50);
 
@@ -125,7 +134,7 @@ class WeeklyFundServiceTest {
     void remainderGoesToTreasury() {
         // floor(100*60/70)=85, floor(100*10/70)=14 → остаток 1 в казну
         try (TestDb db = TestDb.create(fund(100))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID bob = UUID.randomUUID();
             seedWeekly(db, alice, 60);
@@ -141,7 +150,7 @@ class WeeklyFundServiceTest {
     @Test
     void fundDoesNotExceedConfiguredAmount() {
         try (TestDb db = TestDb.create(fund(100))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID bob = UUID.randomUUID();
             seedWeekly(db, alice, 1000);
@@ -160,7 +169,7 @@ class WeeklyFundServiceTest {
     @Test
     void excludedPlayerGetsNothing() {
         try (TestDb db = TestDb.create(fund(200))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID normal = UUID.randomUUID();
             UUID excluded = UUID.randomUUID();
             seedWeekly(db, normal, 100);
@@ -193,7 +202,7 @@ class WeeklyFundServiceTest {
     @Test
     void respectsMinimumActiveSeconds() {
         try (TestDb db = TestDb.create(fund(100, 100, 0, 0, List.of()))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID below = UUID.randomUUID();
             seedWeekly(db, alice, 200);
@@ -210,7 +219,7 @@ class WeeklyFundServiceTest {
     void respectsMaxCountedSeconds() {
         // потолок 100 секунд: у алисы учитывается только 100 → оба получают поровну
         try (TestDb db = TestDb.create(fund(100, 0, 100, 0, List.of()))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID bob = UUID.randomUUID();
             seedWeekly(db, alice, 300);
@@ -227,7 +236,7 @@ class WeeklyFundServiceTest {
         // уровни: 100с → 1 очко, 200с → ещё 2 очка. Алиса: 3 очка, Боб: 1 очко.
         try (TestDb db = TestDb.create(fund(100, 0, 0, 0,
                 List.of(new PointLevel(100, 1), new PointLevel(200, 2))))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             UUID bob = UUID.randomUUID();
             seedWeekly(db, alice, 300);
@@ -243,7 +252,7 @@ class WeeklyFundServiceTest {
     void respectsMinimumAccountAge() {
         long now = System.currentTimeMillis();
         try (TestDb db = TestDb.create(fund(100, 0, 0, 7, List.of()))) {
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID young = UUID.randomUUID();
             UUID old = UUID.randomUUID();
             seedWeekly(db, young, 50, false, now);
@@ -260,7 +269,7 @@ class WeeklyFundServiceTest {
     void manualRunWorksEvenWhenAutoRunDisabled() {
         try (TestDb db = TestDb.create(EconomySettings.defaults())) {
             // defaults: autoRun=false, фонд включён, минимум активности 1ч (3600с)
-            markPreviousWeekDistributed(db);
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             seedWeekly(db, alice, 4000);
 
@@ -272,12 +281,15 @@ class WeeklyFundServiceTest {
     }
 
     @Test
-    void previewReportsAllocationsWithoutPaying() {
-        try (TestDb db = TestDb.create(fund(100))) {
-            markPreviousWeekDistributed(db);
+    void previewReportsSnapshotAllocationsWithoutPaying() {
+        EconomySettings settings = fund(100, 0, 0, 0, List.of(), false);
+        try (TestDb db = TestDb.create(settings)) {
+            markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
             seedWeekly(db, alice, 60);
 
+            // автозапуск выключен: ротация создаёт снимок, но не платит
+            assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
             List<WeeklyFundService.WeeklyAllocation> allocations = db.weeklyFundService.preview();
             assertEquals(1, allocations.size());
             assertEquals(alice, allocations.get(0).playerId());
@@ -289,6 +301,74 @@ class WeeklyFundServiceTest {
             WeeklyFundService.WeeklyStatus status = db.weeklyFundService.status();
             assertTrue(status.eligiblePlayers() == 1);
             assertTrue(status.totalShare() == 100);
+
+            db.weeklyFundService.runNow();
+            assertEquals(100, db.accountService.getBalance(alice));
+        }
+    }
+
+    @Test
+    void rotationSnapshotsPreviousWeekAndResetsAccumulator() {
+        try (TestDb db = TestDb.create(fund(100))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            seedWeekly(db, alice, 100);
+
+            Map<UUID, Long> payments = db.weeklyFundService.maybeDistribute();
+            assertEquals(100L, payments.get(alice));
+            assertEquals(100, db.accountService.getBalance(alice));
+
+            // накопитель недели сброшен после ротации
+            long weeklyLeft = db.database.inTransaction(connection ->
+                    db.activityRepository.find(connection, alice)
+                            .map(PlayerActivityRow::weeklyActiveSeconds).orElse(-1L));
+            assertEquals(0, weeklyLeft);
+
+            // новая активность текущей недели не меняет снимок закрытой недели
+            seedWeekly(db, alice, 40);
+            List<WeeklyFundService.WeeklyAllocation> allocations = db.weeklyFundService.preview();
+            assertEquals(1, allocations.size());
+            assertEquals(100, allocations.get(0).countedSeconds());
+
+            // неделя уже распределена — повторная выплата не происходит
+            assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+            WeeklyFundService.WeeklyStatus status = db.weeklyFundService.status();
+            assertTrue(status.weekDistributed());
+        }
+    }
+
+    @Test
+    void resumablePaymentContinuesAfterFailure() {
+        try (TestDb db = TestDb.create(fund(100))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            seedWeekly(db, alice, 60);
+            seedWeekly(db, bob, 40);
+            db.accountService.createOrTouch(bob, "bob");
+            db.accountService.freeze(bob, "тест");
+
+            // первый запуск: алиса выплачена, замороженный боб — нет; период остаётся открытым
+            Map<UUID, Long> first = db.weeklyFundService.runNow();
+            assertEquals(1, first.size());
+            assertEquals(60, db.accountService.getBalance(alice));
+            assertEquals(0, db.accountService.getBalance(bob));
+            assertTrue(!db.weeklyFundService.status().weekDistributed());
+
+            // повторный запуск с замороженным бобом — выплаты нет, период всё ещё открыт
+            assertTrue(db.weeklyFundService.runNow().isEmpty());
+            assertTrue(!db.weeklyFundService.status().weekDistributed());
+
+            // разморозили: повторный run доплачивает бобу и закрывает период
+            db.accountService.unfreeze(bob, "тест");
+            Map<UUID, Long> retry = db.weeklyFundService.runNow();
+            assertEquals(1, retry.size());
+            assertEquals(40L, retry.get(bob));
+            assertEquals(60, db.accountService.getBalance(alice));
+            assertEquals(40, db.accountService.getBalance(bob));
+            // казне при возобновлении дублировать нечего: 60+40 = весь фонд
+            assertEquals(0, db.accountService.getBalance(TreasuryService.TREASURY_UUID));
+            assertTrue(db.weeklyFundService.status().weekDistributed());
         }
     }
 }

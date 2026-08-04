@@ -112,6 +112,19 @@ public final class MigrationManager {
                 meta_key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            """,
+            // v2 — снимки завершённых недель для независимой ротации недельного фонда.
+            """
+            CREATE TABLE IF NOT EXISTS weekly_activity_periods (
+                week_id TEXT NOT NULL,
+                player_uuid TEXT NOT NULL,
+                counted_seconds INTEGER NOT NULL,
+                points INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                paid_at INTEGER,
+                transaction_id TEXT,
+                PRIMARY KEY (week_id, player_uuid)
+            );
             """
     };
 
@@ -197,6 +210,19 @@ public final class MigrationManager {
             CREATE TABLE IF NOT EXISTS meta (
                 meta_key VARCHAR(64) PRIMARY KEY,
                 value VARCHAR(255) NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            // v2 — снимки завершённых недель для независимой ротации недельного фонда.
+            """
+            CREATE TABLE IF NOT EXISTS weekly_activity_periods (
+                week_id VARCHAR(20) NOT NULL,
+                player_uuid VARCHAR(36) NOT NULL,
+                counted_seconds BIGINT NOT NULL,
+                points BIGINT NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+                paid_at BIGINT,
+                transaction_id VARCHAR(36),
+                PRIMARY KEY (week_id, player_uuid)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
     };

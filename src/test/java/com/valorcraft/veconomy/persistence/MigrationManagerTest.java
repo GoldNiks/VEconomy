@@ -16,9 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MigrationManagerTest {
 
     @Test
-    void freshDatabaseGetsSchemaVersionOne() {
+    void freshDatabaseGetsSchemaVersionTwo() {
         try (TestDb db = TestDb.create()) {
-            assertEquals(1, db.database.schemaVersion());
+            assertEquals(2, db.database.schemaVersion());
         }
     }
 
@@ -37,7 +37,8 @@ class MigrationManagerTest {
                 return null;
             });
             for (String table : Set.of("accounts", "transactions", "player_activity",
-                    "claimed_milestones", "weekly_payouts", "escrow", "meta")) {
+                    "claimed_milestones", "weekly_payouts", "weekly_activity_periods",
+                    "escrow", "meta")) {
                 assertTrue(tables.contains(table), "таблица " + table + " должна существовать");
             }
         }
@@ -66,7 +67,7 @@ class MigrationManagerTest {
                 MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
                 return null;
             });
-            assertEquals(1, db.database.schemaVersion());
+            assertEquals(2, db.database.schemaVersion());
         }
     }
 
