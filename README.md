@@ -60,6 +60,10 @@ gradlew build
 | `/economy admin balance set <игрок> <сумма> <причина>`    | 4 | Установить баланс                 |
 | `/economy admin stats`                             | 4     | Статистика экономики                |
 | `/economy admin reload`                            | 4     | Перечитать конфиг с диска           |
+| `/economy admin weekly status`                     | 4     | Состояние недельного фонда          |
+| `/economy admin weekly preview`                    | 4     | Предпросмотр выплаты за неделю      |
+| `/economy admin weekly run`                        | 4     | Показать сумму, запросить подтверждение |
+| `/economy admin weekly run confirm`                | 4     | Выполнить выплату недельного фонда  |
 
 Для команд `add`/`remove`/`set` причина обязательна. Казна — системный аккаунт,
 изменять её баланс командами нельзя.
@@ -183,17 +187,26 @@ gradlew build
     password = ""
     poolSize = 5               # размер пула соединений HikariCP
 
-[activity]
-    enabled = true             # учёт времени в сети / активного / AFK
+[weeklyFund]                   # недельный фонд (делится по активному времени)
+    enabled = true
+    weeklyAmount = 100000      # эмиссия за неделю, минимальные единицы
+    notify = true              # уведомлять игроков о выплате
+    autoRun = false            # автозапуск при смене недели (по умолчанию ВЫКЛючен):
+                               # фонд раздаёт администратор: /economy admin weekly run confirm
+    minAccountAgeDays = 7      # мин. возраст аккаунта для участия; 0 — без ограничения
+    minActiveSeconds = 3600    # мин. активное время за неделю; 0 — без ограничения
+    maxCountedHours = 0        # потолок учитываемых часов на игрока; 0 — без потолка
+    # Очковые уровни: пары (секунды, очки). Пусто — фонд делится пропорционально времени.
+    # Пример: [3600, 10, 10800, 30, 43200, 70] = 1ч→10 очков, 3ч→+30, 12ч→+70.
+    pointLevels = []
+
+[activity]                     # учёт времени в сети / активного / AFK
+    enabled = true
     afkTimeoutSeconds = 300    # бездействие после которого игрок в AFK
     sampleIntervalTicks = 20   # шаг сэмплирования (20 = 1 сек)
     persistIntervalSeconds = 60
-
-[milestones]                   # личные награды за активное время
-    enabled = true
-    # пары (секунды, награда в минимальных единицах)
-    rewards = [3600, 100, 10800, 300, 43200, 1000, 86400, 2500]
-    notify = true
+    movementActivityThreshold = 0.5  # метров нужно пройти, чтобы сбросить AFK
+                                     # (поворот камеры и микро-дрожание НЕ считаются)
 
 [weeklyFund]                   # недельный фонд (делится по активному времени)
     enabled = true

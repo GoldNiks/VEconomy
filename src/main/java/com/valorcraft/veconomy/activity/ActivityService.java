@@ -43,7 +43,8 @@ public final class ActivityService {
     }
 
     void onPlayerJoinedAt(UUID playerId, String dimension, long startMillis) {
-        sessions.put(playerId, new Session(playerId, startMillis, startMillis, dimension));
+        sessions.put(playerId, new Session(playerId, startMillis, startMillis,
+                settings.activity.afkTimeoutSeconds * 1000L, dimension));
     }
 
     public void onPlayerMove(UUID playerId, double x, double y, double z,
@@ -54,16 +55,27 @@ public final class ActivityService {
         }
         if (!dimension.equals(session.dimension)) {
             session.dimension = dimension;
+            session.hasPosition = false;
             markActive(session);
             return;
         }
-        if (x != session.x || y != session.y || z != session.z
-                || yaw != session.yaw || pitch != session.pitch) {
-            session.x = x;
-            session.y = y;
-            session.z = z;
-            session.yaw = yaw;
-            session.pitch = pitch;
+        if (!session.hasPosition) {
+            session.setPosition(x, y, z, yaw, pitch);
+            return;
+        }
+        double dx = x - session.x;
+        double dy = y - session.y;
+        double dz = z - session.z;
+        session.setPosition(x, y, z, yaw, pitch);
+        if (dx == 0 && dy == 0 && dz == 0) {
+            return;
+        }
+        // Поворот камеры (yaw/pitch) активностью не считается: активность поддерживает только
+        // реальное перемещение (накопленное расстояние), и только при пересечении порога.
+        session.movedDistance += Math.hypot(dx, Math.hypot(dy, dz));
+        double threshold = settings.activity.movementActivityThreshold;
+        if (threshold <= 0 || session.movedDistance >= threshold) {
+            session.movedDistance = 0;
             markActive(session);
         }
     }
@@ -82,21 +94,25 @@ public final class ActivityService {
     }
 
     void sampleAt(long nowMillis) {
-        long afkTimeoutMillis = settings.activity.afkTimeoutSeconds * 1000L;
         for (Session session : sessions.values()) {
-            long dtSeconds = (nowMillis - session.lastSample) / 1000;
-            session.lastSample = nowMillis;
-            if (dtSeconds <= 0) {
-                continue;
-            }
-            session.onlineSeconds += dtSeconds;
-            if (session.afk) {
-                session.afkSeconds += dtSeconds;
-            } else {
-                session.activeSeconds += dtSeconds;
-                if (nowMillis - session.lastActiveAt >= afkTimeoutMillis) {
-                    session.afk = true;
-                }
+            sampleSession(session, nowMillis);
+        }
+    }
+
+    private static void sampleSession(Session session, long nowMillis) {
+        long afkTimeoutMillis = session.afkTimeoutMillis;
+        long dtSeconds = (nowMillis - session.lastSample) / 1000;
+        session.lastSample = nowMillis;
+        if (dtSeconds <= 0) {
+            return;
+        }
+        session.onlineSeconds += dtSeconds;
+        if (session.afk) {
+            session.afkSeconds += dtSeconds;
+        } else {
+            session.activeSeconds += dtSeconds;
+            if (nowMillis - session.lastActiveAt >= afkTimeoutMillis) {
+                session.afk = true;
             }
         }
     }
@@ -180,13 +196,19 @@ public final class ActivityService {
 
     /** Закрыть сессию игрока (выход): финальный сэмпл и запись. */
     public void onPlayerLeft(UUID playerId) {
-        Session session = sessions.remove(playerId);
+        onPlayerLeftAt(playerId, System.currentTimeMillis());
+    }
+
+    void onPlayerLeftAt(UUID playerId, long now) {
+        Session session = sessions.get(playerId);
         if (session == null) {
             return;
         }
-        sampleNow();
+        // Сэмплируем именно эту сессию ДО удаления: иначе последний несэмплированный
+        // фрагмент (от lastSample до выхода) потерялся бы из-за sampleNow() по sessions.
+        sampleSession(session, now);
+        sessions.remove(playerId);
         String week = WeekId.current();
-        long now = System.currentTimeMillis();
         try {
             database.inTransaction(connection -> {
                 persist(connection, session, week, now);
@@ -228,6 +250,7 @@ public final class ActivityService {
     /** Активная сессия игрока в памяти. */
     private static final class Session {
         final UUID playerId;
+        final long afkTimeoutMillis;
         long lastSample;
         long lastActiveAt;
         long onlineSeconds;
@@ -239,13 +262,26 @@ public final class ActivityService {
         double z;
         float yaw;
         float pitch;
+        boolean hasPosition;
+        double movedDistance;
         String dimension;
 
-        Session(UUID playerId, long lastSample, long lastActiveAt, String dimension) {
+        Session(UUID playerId, long lastSample, long lastActiveAt, long afkTimeoutMillis,
+                String dimension) {
             this.playerId = playerId;
             this.lastSample = lastSample;
             this.lastActiveAt = lastActiveAt;
+            this.afkTimeoutMillis = afkTimeoutMillis;
             this.dimension = dimension;
+        }
+
+        void setPosition(double x, double y, double z, float yaw, float pitch) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+            this.pitch = pitch;
+            this.hasPosition = true;
         }
     }
 }

@@ -139,17 +139,20 @@ public final class EconomySettings {
         public final int afkTimeoutSeconds;
         public final int sampleIntervalTicks;
         public final int persistIntervalSeconds;
+        /** Минимальное суммарное перемещение (метров) для сброса AFK. Поворот камеры не считается. */
+        public final double movementActivityThreshold;
 
         public Activity(boolean enabled, int afkTimeoutSeconds, int sampleIntervalTicks,
-                        int persistIntervalSeconds) {
+                        int persistIntervalSeconds, double movementActivityThreshold) {
             this.enabled = enabled;
             this.afkTimeoutSeconds = afkTimeoutSeconds;
             this.sampleIntervalTicks = Math.max(1, sampleIntervalTicks);
             this.persistIntervalSeconds = Math.max(1, persistIntervalSeconds);
+            this.movementActivityThreshold = Math.max(0.0, movementActivityThreshold);
         }
 
         public static Activity defaults() {
-            return new Activity(true, 300, 20, 60);
+            return new Activity(true, 300, 20, 60, 0.5);
         }
     }
 
@@ -180,15 +183,38 @@ public final class EconomySettings {
         public final boolean enabled;
         public final long weeklyAmount;
         public final boolean notify;
+        /** Автоматический запуск выплаты при смене недели. По умолчанию выключен — фонд
+         *  раздаётся администратором вручную через {@code /economy admin weekly run confirm}. */
+        public final boolean autoRun;
+        /** Минимальный возраст аккаунта (в днях) для участия в выплате; 0 — не ограничено. */
+        public final long minAccountAgeDays;
+        /** Минимум активного времени за неделю (в секундах) для участия; 0 — не ограничено. */
+        public final long minActiveSeconds;
+        /** Потолок учитываемых за неделю активных секунд на игрока; 0 — без потолка. */
+        public final long maxCountedSeconds;
+        /** Очковые уровни. Если список непустой, фонд делится пропорционально очкам,
+         *  а не сырым секундам: за каждый пройденный порог начисляются очки уровня. */
+        public final List<PointLevel> pointLevels;
 
-        public WeeklyFund(boolean enabled, long weeklyAmount, boolean notify) {
+        public WeeklyFund(boolean enabled, long weeklyAmount, boolean notify, boolean autoRun,
+                          long minAccountAgeDays, long minActiveSeconds, long maxCountedSeconds,
+                          List<PointLevel> pointLevels) {
             this.enabled = enabled;
             this.weeklyAmount = Math.max(0, weeklyAmount);
             this.notify = notify;
+            this.autoRun = autoRun;
+            this.minAccountAgeDays = Math.max(0, minAccountAgeDays);
+            this.minActiveSeconds = Math.max(0, minActiveSeconds);
+            this.maxCountedSeconds = Math.max(0, maxCountedSeconds);
+            this.pointLevels = pointLevels == null ? List.of() : List.copyOf(pointLevels);
+        }
+
+        /** Один очковый уровень: порог активных секунд за неделю → начисляемые очки. */
+        public record PointLevel(long activeSeconds, long points) {
         }
 
         public static WeeklyFund defaults() {
-            return new WeeklyFund(true, 100_000L, true);
+            return new WeeklyFund(true, 100_000L, true, false, 7, 3_600L, 0, List.of());
         }
     }
 

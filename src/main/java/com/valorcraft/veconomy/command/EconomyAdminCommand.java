@@ -3,6 +3,7 @@ package com.valorcraft.veconomy.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.valorcraft.veconomy.EconomyCore;
+import com.valorcraft.veconomy.activity.WeekId;
 import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
@@ -10,6 +11,7 @@ import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.config.EconomyConfig;
+import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.TreasuryService;
 import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.util.CurrencyParser;
@@ -64,7 +66,16 @@ public final class EconomyAdminCommand {
                         .then(Commands.literal("stats")
                                 .executes(EconomyAdminCommand::stats))
                         .then(Commands.literal("reload")
-                                .executes(EconomyAdminCommand::reload))));
+                                .executes(EconomyAdminCommand::reload))
+                        .then(Commands.literal("weekly")
+                                .then(Commands.literal("status")
+                                        .executes(EconomyAdminCommand::weeklyStatus))
+                                .then(Commands.literal("preview")
+                                        .executes(EconomyAdminCommand::weeklyPreview))
+                                .then(Commands.literal("run")
+                                        .executes(EconomyAdminCommand::weeklyRunPrompt)
+                                        .then(Commands.literal("confirm")
+                                                .executes(EconomyAdminCommand::weeklyRunConfirm))))));
     }
 
     private static int balanceGet(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
@@ -242,6 +253,137 @@ public final class EconomyAdminCommand {
             source.sendFailure(Component.translatable("admin.reload.failed").withStyle(ChatFormatting.RED));
         }
         return 1;
+    }
+
+    private static int weeklyStatus(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyStatus status =
+                EconomyCore.weeklyFund().status();
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.header",
+                status.currentWeek()).withStyle(ChatFormatting.GOLD), false);
+        String enabled = status.enabled() ? "admin.yes" : "admin.no";
+        String autoRun = status.autoRun() ? "admin.yes" : "admin.no";
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.enabled",
+                Component.translatable(enabled)), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.autorun",
+                Component.translatable(autoRun)), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.amount",
+                EconomyCore.formatter().format(status.weeklyAmount())).withStyle(ChatFormatting.YELLOW), false);
+        if (status.distributedWeek() != null) {
+            source.sendSuccess(() -> Component.translatable("admin.weekly.status.distributed",
+                    status.distributedWeek()).withStyle(ChatFormatting.YELLOW), false);
+        } else {
+            source.sendSuccess(() -> Component.translatable("admin.weekly.status.init")
+                    .withStyle(ChatFormatting.GRAY), false);
+        }
+        if (status.weekDistributed()) {
+            source.sendSuccess(() -> Component.translatable("admin.weekly.status.already")
+                    .withStyle(ChatFormatting.GRAY), false);
+        }
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.eligible",
+                status.eligiblePlayers(), status.totalPoints(),
+                formatDuration(status.totalCountedSeconds())).withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.total",
+                EconomyCore.formatter().format(status.totalShare())).withStyle(ChatFormatting.YELLOW), false);
+        return 1;
+    }
+
+    private static int weeklyPreview(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
+        java.util.List<com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation> allocations =
+                EconomyCore.weeklyFund().preview();
+        source.sendSuccess(() -> Component.translatable("admin.weekly.preview.header",
+                WeekId.previous(WeekId.current()),
+                EconomyCore.formatter().format(cfg.weeklyAmount)).withStyle(ChatFormatting.GOLD), false);
+        if (allocations.isEmpty()) {
+            source.sendSuccess(() -> Component.translatable("admin.weekly.preview.empty")
+                    .withStyle(ChatFormatting.GRAY), false);
+            return 1;
+        }
+        long totalShare = 0;
+        int shown = 0;
+        for (com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation allocation : allocations) {
+            totalShare += allocation.share();
+            if (shown++ >= PREVIEW_LINES) {
+                continue;
+            }
+            String name = PlayerResolver.resolve(source.getServer(), allocation.playerId().toString()).name();
+            MutableComponent line = Component.literal(name).withStyle(ChatFormatting.AQUA);
+            line.append(Component.literal(" — ").withStyle(ChatFormatting.DARK_GRAY));
+            line.append(Component.translatable("admin.weekly.preview.row",
+                    EconomyCore.formatter().format(allocation.share()),
+                    formatDuration(allocation.countedSeconds()), allocation.points()));
+            source.sendSuccess(() -> line, false);
+        }
+        if (allocations.size() > PREVIEW_LINES) {
+            source.sendSuccess(() -> Component.translatable("admin.weekly.preview.more",
+                    allocations.size() - PREVIEW_LINES).withStyle(ChatFormatting.GRAY), false);
+        }
+        source.sendSuccess(() -> Component.translatable("admin.weekly.preview.total",
+                allocations.size(), EconomyCore.formatter().format(totalShare),
+                EconomyCore.formatter().format(Math.max(0, cfg.weeklyAmount - totalShare)))
+                .withStyle(ChatFormatting.YELLOW), false);
+        return 1;
+    }
+
+    private static int weeklyRunPrompt(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
+        java.util.List<com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation> allocations =
+                EconomyCore.weeklyFund().preview();
+        long totalShare = allocations.stream()
+                .mapToLong(com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation::share).sum();
+        source.sendSuccess(() -> Component.translatable("admin.weekly.run.prompt",
+                WeekId.previous(WeekId.current()),
+                EconomyCore.formatter().format(totalShare)).withStyle(ChatFormatting.GOLD), true);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.run.hint")
+                .withStyle(ChatFormatting.GRAY), false);
+        return 1;
+    }
+
+    private static int weeklyRunConfirm(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        java.util.Map<UUID, Long> payments = EconomyCore.weeklyFund().runNow();
+        if (payments.isEmpty()) {
+            source.sendFailure(Component.translatable("admin.weekly.run.empty")
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        long total = payments.values().stream().mapToLong(Long::longValue).sum();
+        source.sendSuccess(() -> Component.translatable("admin.weekly.run.done",
+                payments.size(), EconomyCore.formatter().format(total)).withStyle(ChatFormatting.GREEN), true);
+        if (EconomyCore.settings().weeklyFund.notify && source.getServer() != null) {
+            for (net.minecraft.server.level.ServerPlayer player : source.getServer().getPlayerList().getPlayers()) {
+                Long amount = payments.get(player.getUUID());
+                if (amount != null) {
+                    player.sendSystemMessage(Component.translatable("notify.weekly.reward",
+                            EconomyCore.formatter().format(amount)).withStyle(ChatFormatting.GOLD));
+                }
+            }
+        }
+        return 1;
+    }
+
+    private static final int PREVIEW_LINES = 20;
+
+    private static String formatDuration(long totalSeconds) {
+        long days = totalSeconds / 86400;
+        long hours = (totalSeconds % 86400) / 3600;
+        long minutes = (totalSeconds % 3600) / 60;
+        long seconds = totalSeconds % 60;
+        StringBuilder builder = new StringBuilder();
+        if (days > 0) {
+            builder.append(days).append("д ");
+        }
+        if (hours > 0) {
+            builder.append(hours).append("ч ");
+        }
+        if (minutes > 0) {
+            builder.append(minutes).append("м ");
+        }
+        builder.append(seconds).append("с");
+        return builder.toString();
     }
 
     private static int invalidAmount(CommandSourceStack source) {

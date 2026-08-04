@@ -9,9 +9,15 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
+import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.living.LivingDamageEvent;
+import net.minecraftforge.event.entity.player.PlayerContainerEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -20,8 +26,10 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Крючки Forge для учёта активности: движение игрока (AFK), чат, логин/выход и
- * периодические задачи (накопление счётчиков, сохранение, милстоуны, недельный фонд).
+ * Крючки Forge для учёта активности: реальные действия игрока (блоки, предметы,
+ * контейнеры, атаки, чат — сбрасывают AFK), существенное перемещение (анти-AFK),
+ * логин/выход и периодические задачи (накопление счётчиков, сохранение, милстоуны,
+ * недельный фонд).
  */
 @Mod.EventBusSubscriber(modid = VEconomyMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ActivityHandlers {
@@ -50,6 +58,73 @@ public final class ActivityHandlers {
         ServerPlayer player = event.getPlayer();
         if (EconomyCore.isStarted() && player != null) {
             EconomyCore.activity().onPlayerActive(player.getUUID());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onCommand(CommandEvent event) {
+        if (!EconomyCore.isStarted()) {
+            return;
+        }
+        net.minecraft.commands.CommandSourceStack source =
+                event.getParseResults().getContext().getSource();
+        if (source != null && source.getEntity() instanceof ServerPlayer player) {
+            markActive(player);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onBreakBlock(BlockEvent.BreakEvent event) {
+        if (EconomyCore.isStarted()) {
+            markActive(event.getPlayer());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onPlaceBlock(BlockEvent.EntityPlaceEvent event) {
+        if (EconomyCore.isStarted() && event.getEntity() instanceof ServerPlayer player) {
+            markActive(player);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
+        if (EconomyCore.isStarted()) {
+            markActive(event.getEntity());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
+        if (EconomyCore.isStarted()) {
+            markActive(event.getEntity());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
+        if (EconomyCore.isStarted()) {
+            markActive(event.getEntity());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onContainerOpen(PlayerContainerEvent.Open event) {
+        if (EconomyCore.isStarted() && event.getEntity() instanceof ServerPlayer player) {
+            markActive(player);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onDamageDealt(LivingDamageEvent event) {
+        if (EconomyCore.isStarted() && event.getSource().getEntity() instanceof ServerPlayer player) {
+            markActive(player);
+        }
+    }
+
+    private static void markActive(Player player) {
+        if (player instanceof ServerPlayer serverPlayer) {
+            EconomyCore.activity().onPlayerActive(serverPlayer.getUUID());
         }
     }
 
@@ -86,9 +161,12 @@ public final class ActivityHandlers {
     }
 
     private static void onPersistInterval(EconomySettings settings) {
+        // Сначала распределяем фонд по завершённой неделе, и только потом пишем в базу
+        // текущие секунды: если с начала недели порядок обратный, первые секунды новой
+        // недели попадали бы в выплату за предыдущую.
+        distributeWeeklyFund(settings);
         EconomyCore.activity().persistAll();
         checkMilestones(settings);
-        distributeWeeklyFund(settings);
     }
 
     private static void checkMilestones(EconomySettings settings) {

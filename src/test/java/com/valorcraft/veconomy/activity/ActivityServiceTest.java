@@ -11,12 +11,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActivityServiceTest {
 
+    private static final String DIMENSION = "minecraft:overworld";
+
     @Test
     void accumulatesOnlineAndActiveSeconds() {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
             long start = 1_000_000L;
-            db.activityService.onPlayerJoinedAt(player, "minecraft:overworld", start);
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
             db.activityService.sampleAt(start + 1_000);
             db.activityService.sampleAt(start + 3_000);
             db.activityService.sampleAt(start + 6_000);
@@ -34,7 +36,7 @@ class ActivityServiceTest {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
             long start = 1_000_000L;
-            db.activityService.onPlayerJoinedAt(player, "minecraft:overworld", start);
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
             // активное время до порога + превышение
             db.activityService.sampleAt(start + 301_000);
             assertTrue(db.activityService.isAfk(player));
@@ -49,22 +51,59 @@ class ActivityServiceTest {
     }
 
     @Test
-    void movementCancelsAfk() {
+    void substantialMovementCancelsAfk() {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
             long start = 1_000_000L;
-            db.activityService.onPlayerJoinedAt(player, "minecraft:overworld", start);
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
             db.activityService.sampleAt(start + 301_000);
             assertTrue(db.activityService.isAfk(player));
 
-            db.activityService.onPlayerMove(player, 10, 64, 10, 0, 0, "minecraft:overworld");
+            // первый вызов лишь фиксирует позицию
+            db.activityService.onPlayerMove(player, 0, 64, 0, 0, 0, DIMENSION);
+            // перемещение на 1 метр — больше порога (0.5)
+            db.activityService.onPlayerMove(player, 1, 64, 0, 0, 0, DIMENSION);
             assertFalse(db.activityService.isAfk(player));
             db.activityService.sampleAt(start + 302_000);
 
             ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(302, info.totalOnlineSeconds());
             assertEquals(302, info.totalActiveSeconds());
             assertEquals(0, info.totalAfkSeconds());
             assertFalse(info.afkNow());
+        }
+    }
+
+    @Test
+    void cameraRotationDoesNotCancelAfk() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            db.activityService.sampleAt(start + 301_000);
+            assertTrue(db.activityService.isAfk(player));
+
+            // поворот камеры на месте не должен сбрасывать AFK
+            db.activityService.onPlayerMove(player, 0, 0, 0, 180, 45, DIMENSION);
+            db.activityService.onPlayerMove(player, 0, 0, 0, 270, -45, DIMENSION);
+            assertTrue(db.activityService.isAfk(player));
+        }
+    }
+
+    @Test
+    void tinyJitterBelowThresholdDoesNotCancelAfk() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            db.activityService.sampleAt(start + 301_000);
+            assertTrue(db.activityService.isAfk(player));
+
+            // подрагивание меньше порога (0.5) активностью не считается
+            db.activityService.onPlayerMove(player, 0, 0, 0, 0, 0, DIMENSION);
+            db.activityService.onPlayerMove(player, 0.1, 0, 0, 0, 0, DIMENSION);
+            db.activityService.onPlayerMove(player, 0.2, 0, 0, 0, 0, DIMENSION);
+            assertTrue(db.activityService.isAfk(player));
         }
     }
 
@@ -73,7 +112,7 @@ class ActivityServiceTest {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
             long start = 1_000_000L;
-            db.activityService.onPlayerJoinedAt(player, "minecraft:overworld", start);
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
             db.activityService.sampleAt(start + 10_000);
             db.activityService.persistAll();
 
@@ -84,17 +123,34 @@ class ActivityServiceTest {
     }
 
     @Test
-    void leavingSessionPersists() {
+    void leavingSessionPersistsSampledAndTail() {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
             long start = 1_000_000L;
-            db.activityService.onPlayerJoinedAt(player, "minecraft:overworld", start);
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
             db.activityService.sampleAt(start + 5_000);
-            db.activityService.onPlayerLeft(player);
+            // выход через 2 секунды после последнего сэмпла: остаток тоже сохраняется
+            db.activityService.onPlayerLeftAt(player, start + 7_000);
 
             ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
-            assertEquals(5, info.totalOnlineSeconds());
-            assertEquals(5, info.totalActiveSeconds());
+            assertEquals(7, info.totalOnlineSeconds());
+            assertEquals(7, info.totalActiveSeconds());
+        }
+    }
+
+    @Test
+    void logoutDoesNotLoseUnsampledTail() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            // без промежуточного сэмпла — вся сессия должна попасть в базу
+            db.activityService.onPlayerLeftAt(player, start + 10_000);
+
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(10, info.totalOnlineSeconds());
+            assertEquals(10, info.totalActiveSeconds());
+            assertEquals(0, info.totalAfkSeconds());
         }
     }
 }

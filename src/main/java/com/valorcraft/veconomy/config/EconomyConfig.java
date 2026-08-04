@@ -53,6 +53,7 @@ public final class EconomyConfig {
     public static final ForgeConfigSpec.IntValue AFK_TIMEOUT_SECONDS;
     public static final ForgeConfigSpec.IntValue ACTIVITY_SAMPLE_TICKS;
     public static final ForgeConfigSpec.IntValue ACTIVITY_PERSIST_SECONDS;
+    public static final ForgeConfigSpec.DoubleValue ACTIVITY_MOVE_THRESHOLD;
 
     // --- milestones ---
     public static final ForgeConfigSpec.BooleanValue MILESTONES_ENABLED;
@@ -63,6 +64,11 @@ public final class EconomyConfig {
     public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_ENABLED;
     public static final ForgeConfigSpec.LongValue WEEKLY_FUND_AMOUNT;
     public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_NOTIFY;
+    public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_AUTO_RUN;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MIN_ACCOUNT_AGE_DAYS;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MIN_ACTIVE_SECONDS;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MAX_COUNTED_HOURS;
+    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> WEEKLY_FUND_POINT_LEVELS;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -121,9 +127,11 @@ public final class EconomyConfig {
 
         builder.comment("Учёт активности игроков.",
                 "Сервер считает, сколько времени игрок находится в сети, сколько активен",
-                "и сколько простоял в AFK. AFK определяется как отсутствие движения/поворота",
-                "и чата в течение afkTimeoutSeconds. Активность используется для милстоунов",
-                "и недельного фонда. Данные пишутся в таблицу player_activity.").push("activity");
+                "и сколько простоял в AFK. AFK определяется как отсутствие существенного",
+                "перемещения (movementActivityThreshold метров) и реальных действий (блоки,",
+                "предметы, контейнеры, атаки, чат). Простой поворот камеры активностью не считается.",
+                "Активность используется для милстоунов и недельного фонда.",
+                "Данные пишутся в таблицу player_activity.").push("activity");
         ACTIVITY_ENABLED = builder.comment("Включить учёт активности").define("enabled", true);
         AFK_TIMEOUT_SECONDS = builder.comment("Бездействие в секундах, после которого игрок считается AFK")
                 .defineInRange("afkTimeoutSeconds", 300, 10, 7200);
@@ -131,6 +139,10 @@ public final class EconomyConfig {
                 .defineInRange("sampleIntervalTicks", 20, 20, 1200);
         ACTIVITY_PERSIST_SECONDS = builder.comment("Как часто записывать активность в базу (секунды)")
                 .defineInRange("persistIntervalSeconds", 60, 5, 3600);
+        ACTIVITY_MOVE_THRESHOLD = builder.comment(
+                "Сколько метров должен пройти игрок, чтобы счётчик активности считался живым",
+                "(анти-AFK). Рекомендуется 0.25–1.0; 0 — отключить требование перемещения.")
+                .defineInRange("movementActivityThreshold", 0.5, 0.0, 100.0);
         builder.pop();
 
         builder.comment("Личные милстоуны за наигранное время.",
@@ -148,13 +160,35 @@ public final class EconomyConfig {
 
         builder.comment("Недельный фонд.",
                 "Каждую неделю (ISO-неделя, понедельник 00:00 UTC) фонд делится между игроками",
-                "пропорционально их активному времени за завершённую неделю (без AFK).",
-                "Остаток от деления — в казну.").push("weeklyFund");
+                "пропорционально их активности за завершённую неделю (без AFK).",
+                "Участие ограничено: минимальный возраст аккаунта, минимум активного времени",
+                "и потолок учитываемых часов. Можно делить не по сырым секундам, а по очковым",
+                "уровням (pointLevels): пары (секунды активного времени, очки).",
+                "Автоматический запуск по умолчанию ВЫКЛЮЧЕН: выплату выполняет администратор",
+                "командой /economy admin weekly run confirm. Остаток от деления — в казну.").push("weeklyFund");
         WEEKLY_FUND_ENABLED = builder.comment("Включить недельный фонд").define("enabled", true);
         WEEKLY_FUND_AMOUNT = builder.comment("Размер фонда в минимальных единицах (эмиссия за неделю)")
                 .defineInRange("weeklyAmount", 100_000L, 0L, Long.MAX_VALUE);
         WEEKLY_FUND_NOTIFY = builder.comment("Уведомлять игрока о выплате")
                 .define("notify", true);
+        WEEKLY_FUND_AUTO_RUN = builder.comment(
+                "Автоматически раздавать фонд в момент смены недели. false — только вручную",
+                "(/economy admin weekly run confirm)")
+                .define("autoRun", false);
+        WEEKLY_FUND_MIN_ACCOUNT_AGE_DAYS = builder.comment(
+                "Минимальный возраст аккаунта (дней) для участия; 0 — без ограничения")
+                .defineInRange("minAccountAgeDays", 7L, 0L, 100_000L);
+        WEEKLY_FUND_MIN_ACTIVE_SECONDS = builder.comment(
+                "Минимум активного времени за неделю (секунд) для участия; 0 — без ограничения")
+                .defineInRange("minActiveSeconds", 3_600L, 0L, Long.MAX_VALUE);
+        WEEKLY_FUND_MAX_COUNTED_HOURS = builder.comment(
+                "Потолок учитываемых часов активности за неделю на игрока; 0 — без потолка")
+                .defineInRange("maxCountedHours", 0L, 0L, 24L * 7L);
+        WEEKLY_FUND_POINT_LEVELS = builder.comment(
+                "Очковые уровни: пары (секунды, очки) через запятую. Если список пустой, фонд",
+                "делится пропорционально времени. Пример: [3600, 10, 10800, 30, 43200, 70] =",
+                "1ч даёт 10 очков, 3ч — ещё 30, 12ч — ещё 70.")
+                .defineList("pointLevels", List.of(), element -> element instanceof Integer integer && integer > 0);
         builder.pop();
 
         SPEC = builder.build();
@@ -191,7 +225,8 @@ public final class EconomyConfig {
                         ACTIVITY_ENABLED.get(),
                         AFK_TIMEOUT_SECONDS.get(),
                         ACTIVITY_SAMPLE_TICKS.get(),
-                        ACTIVITY_PERSIST_SECONDS.get()),
+                        ACTIVITY_PERSIST_SECONDS.get(),
+                        ACTIVITY_MOVE_THRESHOLD.get()),
                 new EconomySettings.Milestones(
                         MILESTONES_ENABLED.get(),
                         toRewards(MILESTONE_REWARDS.get()),
@@ -199,7 +234,26 @@ public final class EconomyConfig {
                 new EconomySettings.WeeklyFund(
                         WEEKLY_FUND_ENABLED.get(),
                         WEEKLY_FUND_AMOUNT.get(),
-                        WEEKLY_FUND_NOTIFY.get()));
+                        WEEKLY_FUND_NOTIFY.get(),
+                        WEEKLY_FUND_AUTO_RUN.get(),
+                        WEEKLY_FUND_MIN_ACCOUNT_AGE_DAYS.get(),
+                        WEEKLY_FUND_MIN_ACTIVE_SECONDS.get(),
+                        WEEKLY_FUND_MAX_COUNTED_HOURS.get() * 3600L,
+                        toPointLevels(WEEKLY_FUND_POINT_LEVELS.get())));
+    }
+
+    /** Преобразовать плоский список (сек, очки, сек, очки…) в очковые уровни. */
+    private static List<EconomySettings.WeeklyFund.PointLevel> toPointLevels(List<? extends Integer> flat) {
+        List<EconomySettings.WeeklyFund.PointLevel> levels = new java.util.ArrayList<>();
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            long seconds = flat.get(i);
+            long points = flat.get(i + 1);
+            if (seconds > 0 && points > 0) {
+                levels.add(new EconomySettings.WeeklyFund.PointLevel(seconds, points));
+            }
+        }
+        levels.sort(java.util.Comparator.comparingLong(EconomySettings.WeeklyFund.PointLevel::activeSeconds));
+        return List.copyOf(levels);
     }
 
     /** Преобразовать плоский список (сек, награда, сек, награда…) в пары порогов. */
