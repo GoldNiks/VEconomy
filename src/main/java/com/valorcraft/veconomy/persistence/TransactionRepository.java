@@ -99,6 +99,21 @@ public final class TransactionRepository {
         }
     }
 
+    /** Количество операций конкретного игрока (участник как источник или получатель). */
+    public long countForPlayer(Connection connection, UUID playerId) {
+        try (var statement = connection.prepareStatement(
+                "SELECT COUNT(*) FROM transactions WHERE source_uuid = ? OR target_uuid = ?")) {
+            String uuid = playerId.toString();
+            statement.setString(1, uuid);
+            statement.setString(2, uuid);
+            try (ResultSet rs = statement.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка подсчёта операций игрока " + playerId, e);
+        }
+    }
+
     public long countByTypeSince(Connection connection, TransactionType type, long sinceMillis) {
         return aggregateByTypeSince(connection, type, sinceMillis, "COUNT(*)");
     }
@@ -136,8 +151,14 @@ public final class TransactionRepository {
                 rs.getString("reason"),
                 rs.getString("idempotency_key"),
                 metadataJson != null ? parseMetadata(metadataJson) : Map.of(),
-                rs.getLong("source_balance_after"),
-                rs.getLong("target_balance_after"));
+                nullableLong(rs, "source_balance_after"),
+                nullableLong(rs, "target_balance_after"));
+    }
+
+    /** Прочитать nullable-столбец как Long (SQL NULL → null, а не 0). */
+    private static Long nullableLong(ResultSet rs, String column) throws SQLException {
+        long value = rs.getLong(column);
+        return rs.wasNull() ? null : value;
     }
 
     private static Map<String, String> parseMetadata(String json) {

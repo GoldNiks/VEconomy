@@ -17,8 +17,9 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.fml.ModList;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.UUID;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -26,9 +27,10 @@ import java.util.regex.Pattern;
  * <p>
  * Два механизма:
  * <ol>
- *   <li><b>«Кастомная награда»</b> (встроенный тип) — сумма берётся из названия награды,
- *       первое число в заголовке (например {@code 500}, {@code 1500 монет}). Клиенту мод
- *       не требуется — отдельный тип награды невозможен без установки мода на клиенте.</li>
+ *   <li><b>«Кастомная награда»</b> (встроенный тип) — название награды должно быть
+ *       целиком числом (например {@code 500} или {@code 1500,50}). Текст-обёртка не
+ *       поддерживается, чтобы случайная кастомная награда не печатала деньги. Клиенту
+ *       мод не требуется — отдельный тип награды невозможен без установки мода на клиенте.</li>
  *   <li><b>Автоначисление по главам</b> — при завершении любого квеста игроки команды
  *       получают сумму за квест из таблицы {@link QuestRewardConfig}. Удобно для
  *       нарастающих наград: дальше глава — больше сумма.</li>
@@ -37,7 +39,8 @@ import java.util.regex.Pattern;
  */
 public final class FTBQuestsIntegration {
 
-    private static final Pattern NUMBER = Pattern.compile("\\d+(?:[.,]\\d+)?");
+    /** Название «Кастомной награды» должно состоять целиком из числа (без текста). */
+    private static final Pattern WHOLE_NUMBER = Pattern.compile("[0-9]+(?:[.,][0-9]+)?");
 
     private static volatile boolean registered;
 
@@ -82,7 +85,7 @@ public final class FTBQuestsIntegration {
                 TransactionType.QUEST_REWARD,
                 playerId,
                 "ftbquests:" + reward.getRawTitle(),
-                "ftbquests:reward:" + reward.id);
+                "ftbquests:reward:" + reward.id + ":" + playerId);
         TransactionResult result = EconomyCore.api().deposit(playerId, amountMinor, context);
 
         if (result.status() == TransactionResult.Status.SUCCESS
@@ -219,34 +222,35 @@ public final class FTBQuestsIntegration {
 
     // ---------------------------------------------------------------- utils
 
-    /** Извлечь сумму (в минимальных единицах) из названия награды; -1 если числа нет. */
+    /**
+     * Извлечь сумму (в минимальных единицах) из названия награды; -1 если названия нет
+     * или оно не является числом. Строго: весь заголовок должен быть числом, без лишнего
+     * текста (например {@code 500} или {@code 1500,50}) — иначе награда игнорируется.
+     * Так случайная кастомная награда с числом в тексте не напечатает деньги.
+     */
     static long parseAmount(String title, int decimalPlaces) {
         if (title == null) {
             return -1;
         }
-        Matcher matcher = NUMBER.matcher(title);
-        if (!matcher.find()) {
+        String token = title.trim();
+        if (!WHOLE_NUMBER.matcher(token).matches()) {
             return -1;
         }
-        String token = matcher.group();
-        double value;
+        BigDecimal value;
         try {
-            value = Double.parseDouble(token.replace(',', '.'));
+            value = new BigDecimal(token.replace(',', '.'));
         } catch (NumberFormatException e) {
             return -1;
         }
-        if (value <= 0) {
+        if (value.signum() <= 0) {
             return -1;
         }
-        long divisor = 1;
-        for (int i = 0; i < decimalPlaces; i++) {
-            divisor *= 10;
-        }
-        double minor = value * divisor;
-        if (minor > Long.MAX_VALUE) {
+        BigDecimal minor = value.movePointRight(decimalPlaces)
+                .setScale(0, RoundingMode.HALF_UP);
+        if (minor.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0) {
             return -1;
         }
-        long minorLong = Math.round(minor);
+        long minorLong = minor.longValue();
         return minorLong > 0 ? minorLong : -1;
     }
 }

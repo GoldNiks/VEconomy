@@ -55,8 +55,9 @@ public final class LegacyImporter {
                 return false;
             }
             Map<UUID, Long> balances = parse(legacyFile, settings.decimalPlaces);
-            metaSet(connection, FLAG_KEY, String.valueOf(balances.size()));
             if (balances.isEmpty()) {
+                // Флаг НЕ ставим: пустой или повреждённый файл не должен навсегда
+                // блокировать импорт после того, как в нём появятся реальные данные.
                 VEconomyMod.LOGGER.info("Файл {} не содержит балансов, импорт пропущен", legacyFile);
                 return false;
             }
@@ -71,11 +72,13 @@ public final class LegacyImporter {
                 if (minor <= 0) {
                     continue;
                 }
-                if (!accounts.exists(connection, uuid)) {
-                    accounts.insert(connection, new AccountRow(uuid, null, minor, AccountStatus.ACTIVE, now, now, 0));
-                } else {
-                    // аккаунт уже есть — не трогаем баланс, только фиксируем факт в журнале
+                if (accounts.exists(connection, uuid)) {
+                    // Аккаунт уже есть (создан модом) — баланс не трогаем и деньги
+                    // не приписываем: ledger-запись о создании средств была бы ложной.
+                    VEconomyMod.LOGGER.info("Аккаунт {} уже существует, legacy-баланс {} пропущен", uuid, minor);
+                    continue;
                 }
+                accounts.insert(connection, new AccountRow(uuid, null, minor, AccountStatus.ACTIVE, now, now, 0));
                 transactions.insert(connection, new TransactionRow(
                         null, TransactionType.LEGACY_IMPORT, null, uuid, minor, now,
                         null, "Импорт из устаревшего хранилища balances.json",
@@ -84,8 +87,10 @@ public final class LegacyImporter {
                 imported++;
                 sum += minor;
             }
+            // Флаг ставим только после успешной обработки файла с реальными балансами.
+            metaSet(connection, FLAG_KEY, String.valueOf(imported));
             VEconomyMod.LOGGER.info("Импортировано {} аккаунтов ({} монет) из {}", imported, sum, legacyFile);
-            return true;
+            return imported > 0;
         } catch (SQLException | IOException e) {
             throw new DatabaseException("Ошибка импорта legacy-балансов из " + legacyFile, e);
         }

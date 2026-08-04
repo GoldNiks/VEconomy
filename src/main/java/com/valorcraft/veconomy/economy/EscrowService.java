@@ -171,7 +171,7 @@ public final class EscrowService {
                 ledger.record(connection, new TransactionRow(
                         null, TransactionType.ESCROW_RELEASE, null, reservation.ownerUuid(),
                         reservation.amountMinor(), now, context.actorId(), context.reason(),
-                        context.idempotencyKey(), context.metadata(), newBalance, null));
+                        context.idempotencyKey(), context.metadata(), null, newBalance));
                 return success(reservation.amountMinor(), referenceId);
             });
         } catch (DatabaseException e) {

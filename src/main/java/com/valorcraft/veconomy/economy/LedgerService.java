@@ -58,6 +58,11 @@ public final class LedgerService {
         return database.inTransaction(repository::countAll);
     }
 
+    /** Количество операций конкретного игрока (для корректной пагинации истории). */
+    public long countForPlayer(UUID playerId) {
+        return database.inTransaction(connection -> repository.countForPlayer(connection, playerId));
+    }
+
     public long countByTypeSince(TransactionType type, long sinceMillis) {
         return database.inTransaction(connection -> repository.countByTypeSince(connection, type, sinceMillis));
     }

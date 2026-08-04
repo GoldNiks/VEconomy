@@ -37,10 +37,13 @@ public final class EconomyStatistics {
             List<AccountRow> all = accounts.all(connection).stream()
                     .filter(row -> !row.playerId().equals(TreasuryService.TREASURY_UUID))
                     .toList();
-            long totalSupply = accounts.sumBalance(connection, false);
-            long playerMoney = accounts.sumBalance(connection, true);
-            long treasury = totalSupply - playerMoney;
             long escrowBalance = escrow.sumReserved(connection);
+            // Денежная масса = все аккаунты + зарезервированный escrow (замороженные,
+            // но не уничтоженные деньги). Сумма по аккаунтам без escrow «худела» бы при
+            // резервировании, хотя деньги никуда не делись.
+            long totalSupply = accounts.sumBalance(connection, false) + escrowBalance;
+            long playerMoney = accounts.sumBalance(connection, true);
+            long treasury = totalSupply - playerMoney - escrowBalance;
 
             long accountCount = all.size();
             List<Long> sorted = all.stream().map(AccountRow::balanceMinor)
