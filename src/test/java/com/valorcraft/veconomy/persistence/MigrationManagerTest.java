@@ -27,10 +27,9 @@ class MigrationManagerTest {
         try (TestDb db = TestDb.create()) {
             Set<String> tables = new HashSet<>();
             db.database.inTransaction(connection -> {
-                try (ResultSet rs = connection.createStatement().executeQuery(
-                        "SELECT name FROM sqlite_master WHERE type='table'")) {
+                try (ResultSet rs = connection.getMetaData().getTables(null, null, "%", new String[]{"TABLE"})) {
                     while (rs.next()) {
-                        tables.add(rs.getString(1));
+                        tables.add(rs.getString("TABLE_NAME"));
                     }
                 } catch (SQLException e) {
                     throw new RuntimeException(e);
@@ -64,7 +63,7 @@ class MigrationManagerTest {
     void rerunningMigrationIsNoOp() {
         try (TestDb db = TestDb.create()) {
             db.database.inTransaction(connection -> {
-                MigrationManager.migrate(connection);
+                MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
                 return null;
             });
             assertEquals(1, db.database.schemaVersion());

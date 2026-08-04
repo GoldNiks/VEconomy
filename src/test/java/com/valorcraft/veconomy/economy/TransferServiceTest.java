@@ -66,7 +66,9 @@ class TransferServiceTest {
     @Test
     void offlineRecipientNotAllowedWhenDisabled() {
         EconomySettings noOffline = new EconomySettings("coin", "coins", "coins", "", 0,
-                9_000_000_000_000L, true, false, 1, 1_000_000, 2, "test.db", 5000, true, true);
+                9_000_000_000_000L, true, false, 1, 1_000_000, 2,
+                "sqlite", "test.db", 5000, true,
+                "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         try (TestDb strict = TestDb.create(noOffline)) {
             strict.accountService.deposit(alice, 1000, ctx(TransactionType.ADMIN_DEPOSIT, "старт"));
             TransactionResult result = strict.transferService.transfer(alice, bob, 100,
@@ -119,7 +121,9 @@ class TransferServiceTest {
     @Test
     void concurrentTransfersPreserveTotalMoney() throws InterruptedException {
         EconomySettings noCooldown = new EconomySettings("coin", "coins", "coins", "", 0,
-                9_000_000_000_000L, true, true, 1, 1_000_000, 0, "test.db", 5000, true, true);
+                9_000_000_000_000L, true, true, 1, 1_000_000, 0,
+                "sqlite", "test.db", 5000, true,
+                "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         try (TestDb busy = TestDb.create(noCooldown)) {
             busy.accountService.deposit(alice, 10_000, ctx(TransactionType.ADMIN_DEPOSIT, "старт"));
             Thread[] threads = new Thread[8];

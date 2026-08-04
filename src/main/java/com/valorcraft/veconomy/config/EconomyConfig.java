@@ -32,9 +32,16 @@ public final class EconomyConfig {
     public static final ForgeConfigSpec.IntValue TRANSFER_COOLDOWN_SECONDS;
 
     // --- database ---
+    public static final ForgeConfigSpec.ConfigValue<String> DB_TYPE;
     public static final ForgeConfigSpec.ConfigValue<String> DATABASE_FILE;
     public static final ForgeConfigSpec.IntValue DB_BUSY_TIMEOUT_MILLIS;
     public static final ForgeConfigSpec.BooleanValue DB_WAL;
+    public static final ForgeConfigSpec.ConfigValue<String> MYSQL_HOST;
+    public static final ForgeConfigSpec.IntValue MYSQL_PORT;
+    public static final ForgeConfigSpec.ConfigValue<String> MYSQL_DATABASE;
+    public static final ForgeConfigSpec.ConfigValue<String> MYSQL_USER;
+    public static final ForgeConfigSpec.ConfigValue<String> MYSQL_PASSWORD;
+    public static final ForgeConfigSpec.IntValue MYSQL_POOL_SIZE;
 
     // --- notifications ---
     public static final ForgeConfigSpec.BooleanValue NOTIFY_ADMIN_CHANGES;
@@ -67,13 +74,26 @@ public final class EconomyConfig {
                 .defineInRange("cooldownSeconds", 2, 0, 3600);
         builder.pop();
 
-        builder.comment("Настройки базы данных.", "Файл указывается относительно каталога мира.",
-                "Тип в первой версии — только SQLite.").push("database");
-        DATABASE_FILE = builder.comment("Путь к файлу базы относительно каталога мира")
+        builder.comment("Настройки базы данных.",
+                "Тип 'sqlite' — локальный файл (для разработки и тестов);",
+                "тип 'mysql' — внешний сервер через пул соединений HikariCP (для продакшена).",
+                "Файл указывается относительно каталога мира (только для sqlite).").push("database");
+        DB_TYPE = builder.comment("Тип базы данных: 'sqlite' или 'mysql'").define("type", "sqlite");
+        DATABASE_FILE = builder.comment("Путь к файлу SQLite относительно каталога мира")
                 .define("file", "economy/valoreconomy.db");
-        DB_BUSY_TIMEOUT_MILLIS = builder.comment("Busy timeout SQLite, мс")
+        DB_BUSY_TIMEOUT_MILLIS = builder.comment("Busy timeout SQLite / таймаут соединения MySQL, мс")
                 .defineInRange("busyTimeoutMillis", 5000, 100, 120000);
         DB_WAL = builder.comment("Включить WAL mode для SQLite").define("wal", true);
+
+        builder.comment("Параметры MySQL (используются при type='mysql').",
+                "База создаётся автоматически, если у пользователя есть права CREATE DATABASE.").push("mysql");
+        MYSQL_HOST = builder.comment("Хост MySQL").define("host", "localhost");
+        MYSQL_PORT = builder.comment("Порт MySQL").defineInRange("port", 3306, 1, 65535);
+        MYSQL_DATABASE = builder.comment("Имя базы данных").define("database", "veconomy");
+        MYSQL_USER = builder.comment("Пользователь").define("user", "veconomy");
+        MYSQL_PASSWORD = builder.comment("Пароль").define("password", "");
+        MYSQL_POOL_SIZE = builder.comment("Размер пула соединений").defineInRange("poolSize", 5, 1, 64);
+        builder.pop();
         builder.pop();
 
         builder.comment("Уведомления в игровой чат.").push("notifications");
@@ -100,9 +120,16 @@ public final class EconomyConfig {
                 MINIMUM_TRANSFER_AMOUNT.get(),
                 MAXIMUM_TRANSFER_AMOUNT.get(),
                 TRANSFER_COOLDOWN_SECONDS.get(),
+                DB_TYPE.get(),
                 DATABASE_FILE.get(),
                 DB_BUSY_TIMEOUT_MILLIS.get(),
                 DB_WAL.get(),
+                MYSQL_HOST.get(),
+                MYSQL_PORT.get(),
+                MYSQL_DATABASE.get(),
+                MYSQL_USER.get(),
+                MYSQL_PASSWORD.get(),
+                MYSQL_POOL_SIZE.get(),
                 NOTIFY_ADMIN_CHANGES.get());
     }
 

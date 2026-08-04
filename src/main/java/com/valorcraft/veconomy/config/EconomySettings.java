@@ -22,9 +22,16 @@ public final class EconomySettings {
     public final int transferCooldownSeconds;
 
     // --- database ---
+    public final String dbType;
     public final String databaseFile;
     public final int busyTimeoutMillis;
     public final boolean walEnabled;
+    public final String mysqlHost;
+    public final int mysqlPort;
+    public final String mysqlDatabase;
+    public final String mysqlUser;
+    public final String mysqlPassword;
+    public final int mysqlPoolSize;
 
     // --- notifications ---
     public final boolean broadcastAdminChanges;
@@ -41,9 +48,16 @@ public final class EconomySettings {
             long minimumTransferAmount,
             long maximumTransferAmount,
             int transferCooldownSeconds,
+            String dbType,
             String databaseFile,
             int busyTimeoutMillis,
             boolean walEnabled,
+            String mysqlHost,
+            int mysqlPort,
+            String mysqlDatabase,
+            String mysqlUser,
+            String mysqlPassword,
+            int mysqlPoolSize,
             boolean broadcastAdminChanges) {
         this.currencyNameSingular = currencyNameSingular;
         this.currencyNameFew = currencyNameFew;
@@ -56,9 +70,16 @@ public final class EconomySettings {
         this.minimumTransferAmount = minimumTransferAmount;
         this.maximumTransferAmount = maximumTransferAmount;
         this.transferCooldownSeconds = transferCooldownSeconds;
+        this.dbType = dbType;
         this.databaseFile = databaseFile;
         this.busyTimeoutMillis = busyTimeoutMillis;
         this.walEnabled = walEnabled;
+        this.mysqlHost = mysqlHost;
+        this.mysqlPort = mysqlPort;
+        this.mysqlDatabase = mysqlDatabase;
+        this.mysqlUser = mysqlUser;
+        this.mysqlPassword = mysqlPassword;
+        this.mysqlPoolSize = mysqlPoolSize;
         this.broadcastAdminChanges = broadcastAdminChanges;
     }
 
@@ -77,7 +98,8 @@ public final class EconomySettings {
                 "монета", "монеты", "монет", "⛃",
                 0, 9_000_000_000_000L,
                 true, true, 1L, 1_000_000L, 2,
-                "economy/valoreconomy.db", 5000, true,
+                "sqlite", "economy/valoreconomy.db", 5000, true,
+                "localhost", 3306, "veconomy", "veconomy", "", 5,
                 true);
     }
 }

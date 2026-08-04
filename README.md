@@ -4,14 +4,16 @@
 и журнал всех операций.
 
 - `modid`: `economy_core`
-- Ядро работает на чистом Forge без обязательных зависимостей. SQLite встраивается через jarJar.
+- Ядро работает на чистом Forge без обязательных зависимостей. SQLite и MySQL-драйвер
+  встраиваются через jarJar.
 - Опциональные интеграции (не требуются для работы): FTB Quests, KubeJS, LuckPerms, FTB Ranks.
 - Тесты/код: Java 17, Forge 47.4.22, official mappings.
-- Серверный мод (`side="SERVER"`).
+- Серверный мод (`displayTest="IGNORE_SERVER_VERSION"`).
 
 ## Возможности
 
-- Баланс хранится в **SQLite** (`<мир>/economy/valoreconomy.db`).
+- Баланс хранится в базе данных: **SQLite** (`<мир>/economy/valoreconomy.db`) или
+  **MySQL** (внешний сервер, пул HikariCP). Тип задаётся в конфиге — `database.type`.
 - Деньги — только `long` в минимальных единицах;
 - Каждая операция атомарна: изменение баланса + запись журнала в одной транзакции БД.
 - Идемпотентность: повтор с тем же ключом не удваивает операцию.
@@ -28,7 +30,7 @@
 gradlew build
 ```
 
-Готовый мод (с упакованным SQLite-драйвером):
+Готовый мод (с упакованными драйверами SQLite/MySQL и HikariCP):
 `build/libs/VEconomy-1.20.1-1.0.0-all.jar` — именно его класть в папку `mods/` сервера.
 
 Опциональные интеграции компилируются из jar в `libs/` (compile-only, в итоговый jar
@@ -161,13 +163,34 @@ gradlew build
     cooldownSeconds = 2
 
 [database]
-    file = "economy/valoreconomy.db"  # относительно каталога мира
-    busyTimeoutMillis = 5000
-    wal = true
+    type = "sqlite"            # "sqlite" (файл) или "mysql" (внешний сервер)
+    file = "economy/valoreconomy.db"  # относительно каталога мира (только для sqlite)
+    busyTimeoutMillis = 5000   # busy timeout SQLite / таймаут соединения MySQL
+    wal = true                 # WAL mode для SQLite
+
+[database.mysql]               # используется только при type = "mysql"
+    host = "localhost"
+    port = 3306
+    database = "veconomy"      # создаётся автоматически при наличии прав
+    user = "veconomy"
+    password = ""
+    poolSize = 5               # размер пула соединений HikariCP
 
 [notifications]
     broadcastAdminChanges = true  # оповещать всех игроков об админ-изменениях баланса
 ```
+
+### Переход на MySQL
+
+1. Убедитесь, что MySQL-сервер доступен, а у пользователя есть права на базу
+   (или `CREATE DATABASE` — тогда база создастся автоматически).
+2. В `config/economy-core.toml` укажите `type = "mysql"` и заполните `[database.mysql]`.
+3. Перезапустите сервер: схема создастся автоматически.
+
+> **Внимание:** SQLite-база и MySQL — разные хранилища. При переходе старые балансы
+> не переносятся автоматически. Если нужно перенести балансы из предыдущей системы,
+> используйте legacy-импорт (`balances.json` в каталоге мира) — он отработает один раз
+> при старте на новой базе.
 
 ## API для других модов
 

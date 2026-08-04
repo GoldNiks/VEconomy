@@ -72,7 +72,9 @@ class AccountServiceTest {
     @Test
     void overflowDetected() {
         EconomySettings unlimited = new EconomySettings("coin", "coins", "coins", "", 0,
-                Long.MAX_VALUE, true, true, 1, Long.MAX_VALUE, 2, "test.db", 5000, true, true);
+                Long.MAX_VALUE, true, true, 1, Long.MAX_VALUE, 2,
+                "sqlite", "test.db", 5000, true,
+                "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         try (TestDb unlimitedDb = TestDb.create(unlimited)) {
             UUID player = UUID.randomUUID();
             assertTrue(unlimitedDb.accountService

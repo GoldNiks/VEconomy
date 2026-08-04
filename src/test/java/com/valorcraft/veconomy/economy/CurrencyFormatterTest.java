@@ -21,7 +21,8 @@ class CurrencyFormatterTest {
     void formatsWithDecimalPlaces() {
         EconomySettings twoPlaces = new EconomySettings("coin", "coins", "coins", "$", 2,
                 9_000_000_000_000L, true, true, 1, 1_000_000, 2,
-                "test.db", 5000, true, true);
+                "sqlite", "test.db", 5000, true,
+                "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         CurrencyFormatter formatter = new CurrencyFormatter(twoPlaces);
         assertEquals("$10.00", formatter.format(1000));
         assertEquals("$10.50", formatter.format(1050));
@@ -31,7 +32,8 @@ class CurrencyFormatterTest {
     void pluralizationRussian() {
         EconomySettings settings = new EconomySettings("монета", "монеты", "монет", "⛃", 0,
                 9_000_000_000_000L, true, true, 1, 1_000_000, 2,
-                "test.db", 5000, true, true);
+                "sqlite", "test.db", 5000, true,
+                "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         CurrencyFormatter formatter = new CurrencyFormatter(settings);
         assertEquals("монета", formatter.plural(1));
         assertEquals("монеты", formatter.plural(2));
