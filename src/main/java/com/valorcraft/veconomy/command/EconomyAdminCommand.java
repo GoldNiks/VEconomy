@@ -11,6 +11,7 @@ import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.config.EconomyConfig;
 import com.valorcraft.veconomy.economy.TreasuryService;
+import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.util.CurrencyParser;
 import com.valorcraft.veconomy.util.PlayerResolver;
 import net.minecraft.ChatFormatting;
@@ -36,7 +37,7 @@ public final class EconomyAdminCommand {
                 (context, builder) -> SharedSuggestionProvider.suggest(context.getSource().getOnlinePlayerNames(), builder);
         dispatcher.register(Commands.literal("economy")
                 .then(Commands.literal("admin")
-                        .requires(source -> source.hasPermission(4))
+                        .requires(source -> PermissionBridge.has(source, "veconomy.command.admin", 4))
                         .then(Commands.literal("balance")
                                 .then(Commands.literal("get")
                                         .then(Commands.argument("player", StringArgumentType.word())
@@ -134,6 +135,10 @@ public final class EconomyAdminCommand {
                         EconomyCore.formatter().format(amount),
                         EconomyCore.formatter().format(EconomyCore.accounts().getBalance(target.uuid())))
                         .withStyle(ChatFormatting.GREEN), true);
+                broadcastAdminChange(source,
+                        Component.translatable(add ? "notify.admin.added" : "notify.admin.removed",
+                                EconomyCore.formatter().format(amount), target.name())
+                                .withStyle(ChatFormatting.GOLD));
             }
             case INSUFFICIENT_FUNDS -> source.sendFailure(
                     Component.translatable("error.insufficient").withStyle(ChatFormatting.RED));
@@ -176,8 +181,14 @@ public final class EconomyAdminCommand {
         TransactionResult result = EconomyCore.accounts().setBalance(target.uuid(), amount,
                 TransactionContext.of(TransactionType.ADMIN_SET_ADJUSTMENT, actor, reason));
         switch (result.status()) {
-            case SUCCESS -> source.sendSuccess(() -> Component.translatable("admin.balance.set",
-                    target.name(), EconomyCore.formatter().format(amount)).withStyle(ChatFormatting.GREEN), true);
+            case SUCCESS -> {
+                source.sendSuccess(() -> Component.translatable("admin.balance.set",
+                        target.name(), EconomyCore.formatter().format(amount)).withStyle(ChatFormatting.GREEN), true);
+                broadcastAdminChange(source,
+                        Component.translatable("notify.admin.set",
+                                target.name(), EconomyCore.formatter().format(amount))
+                                .withStyle(ChatFormatting.GOLD));
+            }
             case ACCOUNT_NOT_FOUND -> notFound(source, playerInput);
             case ACCOUNT_DISABLED -> source.sendFailure(
                     Component.translatable("error.frozen").withStyle(ChatFormatting.RED));
@@ -233,6 +244,15 @@ public final class EconomyAdminCommand {
     private static int invalidAmount(CommandSourceStack source) {
         source.sendFailure(Component.translatable("error.invalid.amount").withStyle(ChatFormatting.RED));
         return 1;
+    }
+
+    /** Разослать уведомление об административном изменении, если включено в конфиге. */
+    private static void broadcastAdminChange(CommandSourceStack source, Component message) {
+        if (EconomyCore.settings().broadcastAdminChanges
+                && source.getServer() != null
+                && source.getServer().getPlayerList() != null) {
+            source.getServer().getPlayerList().broadcastSystemMessage(message, false);
+        }
     }
 
     private static int invalidReason(CommandSourceStack source) {

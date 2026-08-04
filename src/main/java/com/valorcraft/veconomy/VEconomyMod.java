@@ -1,6 +1,7 @@
 package com.valorcraft.veconomy;
 
 import com.valorcraft.veconomy.config.EconomyConfig;
+import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -23,6 +24,13 @@ public final class VEconomyMod {
 
     public VEconomyMod() {
         EconomyConfig.register();
+
+        // Опциональные интеграции. Классы загружаются только при наличии мода на сервере.
+        if (ModList.get().isLoaded("ftbquests")) {
+            com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.register();
+        }
+        // KubeJS-плагин подхватывается автоматически через kubejs.plugins.txt.
+
         VEconomyMod.LOGGER.info("VEconomy загружается (серверное ядро экономики)");
     }
 }

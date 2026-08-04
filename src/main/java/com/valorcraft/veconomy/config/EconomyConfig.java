@@ -36,6 +36,9 @@ public final class EconomyConfig {
     public static final ForgeConfigSpec.IntValue DB_BUSY_TIMEOUT_MILLIS;
     public static final ForgeConfigSpec.BooleanValue DB_WAL;
 
+    // --- notifications ---
+    public static final ForgeConfigSpec.BooleanValue NOTIFY_ADMIN_CHANGES;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -73,6 +76,11 @@ public final class EconomyConfig {
         DB_WAL = builder.comment("Включить WAL mode для SQLite").define("wal", true);
         builder.pop();
 
+        builder.comment("Уведомления в игровой чат.").push("notifications");
+        NOTIFY_ADMIN_CHANGES = builder.comment("Оповещать всех игроков об административных изменениях баланса")
+                .define("broadcastAdminChanges", true);
+        builder.pop();
+
         SPEC = builder.build();
     }
 
@@ -94,7 +102,8 @@ public final class EconomyConfig {
                 TRANSFER_COOLDOWN_SECONDS.get(),
                 DATABASE_FILE.get(),
                 DB_BUSY_TIMEOUT_MILLIS.get(),
-                DB_WAL.get());
+                DB_WAL.get(),
+                NOTIFY_ADMIN_CHANGES.get());
     }
 
     /**

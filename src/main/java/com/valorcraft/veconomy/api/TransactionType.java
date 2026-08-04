@@ -30,5 +30,9 @@ public enum TransactionType {
     /** Комиссия. */
     FEE,
     /** Системная корректировка. */
-    SYSTEM_CORRECTION
+    SYSTEM_CORRECTION,
+    /** Награда за квест (FTB Quests). */
+    QUEST_REWARD,
+    /** Операция через внешний API/скрипт (KubeJS и т.п.). */
+    PLUGIN_OPERATION
 }

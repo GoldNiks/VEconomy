@@ -26,6 +26,9 @@ public final class EconomySettings {
     public final int busyTimeoutMillis;
     public final boolean walEnabled;
 
+    // --- notifications ---
+    public final boolean broadcastAdminChanges;
+
     public EconomySettings(
             String currencyNameSingular,
             String currencyNameFew,
@@ -40,7 +43,8 @@ public final class EconomySettings {
             int transferCooldownSeconds,
             String databaseFile,
             int busyTimeoutMillis,
-            boolean walEnabled) {
+            boolean walEnabled,
+            boolean broadcastAdminChanges) {
         this.currencyNameSingular = currencyNameSingular;
         this.currencyNameFew = currencyNameFew;
         this.currencyNameMany = currencyNameMany;
@@ -55,6 +59,7 @@ public final class EconomySettings {
         this.databaseFile = databaseFile;
         this.busyTimeoutMillis = busyTimeoutMillis;
         this.walEnabled = walEnabled;
+        this.broadcastAdminChanges = broadcastAdminChanges;
     }
 
     /** Множитель перевода минимальных единиц в отображаемые (10^decimalPlaces). */
@@ -72,6 +77,7 @@ public final class EconomySettings {
                 "монета", "монеты", "монет", "⛃",
                 0, 9_000_000_000_000L,
                 true, true, 1L, 1_000_000L, 2,
-                "economy/valoreconomy.db", 5000, true);
+                "economy/valoreconomy.db", 5000, true,
+                true);
     }
 }

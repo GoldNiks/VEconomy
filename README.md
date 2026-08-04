@@ -4,7 +4,8 @@
 и журнал всех операций.
 
 - `modid`: `economy_core`
-- Зависимостей от других модов нет, чистый Forge. SQLite встраивается через jarJar.
+- Ядро работает на чистом Forge без обязательных зависимостей. SQLite встраивается через jarJar.
+- Опциональные интеграции (не требуются для работы): FTB Quests, KubeJS, LuckPerms, FTB Ranks.
 - Тесты/код: Java 17, Forge 47.4.22, official mappings.
 - Серверный мод (`side="SERVER"`).
 
@@ -30,6 +31,10 @@ gradlew build
 Готовый мод (с упакованным SQLite-драйвером):
 `build/libs/VEconomy-1.20.1-1.0.0-all.jar` — именно его класть в папку `mods/` сервера.
 
+Опциональные интеграции компилируются из jar в `libs/` (compile-only, в итоговый jar
+не попадают). Имена файлов должны соответствовать `build.gradle`. Jar можно взять из
+папки `mods/` целевого сервера.
+
 ## Команды
 
 | Команда                                            | Право | Что делает                          |
@@ -49,6 +54,43 @@ gradlew build
 
 Для команд `add`/`remove`/`set` причина обязательна. Казна — системный аккаунт,
 изменять её баланс командами нельзя.
+
+Права команд: по умолчанию уровень оператора (2 и 4), но при установленном
+**LuckPerms** или **FTB Ranks** используются узлы прав:
+
+| Узел | Что даёт |
+|------|----------|
+| `veconomy.command.balance.other` | `/money <игрок>` |
+| `veconomy.command.admin` | `/economy admin ...` |
+
+Если узел не задан — применяется уровень оператора как раньше. Для консоли команды
+доступны всегда.
+
+## Интеграции (все опциональные)
+
+- **FTB Quests — награды деньгами.** Используется встроенный тип награды
+  «Custom Reward» (не требует установки мода на клиента). Сумма берётся из названия
+  награды — первое число в заголовке: `500`, `1500 монет`, `Вознаграждение 2500`.
+  Если числа в названии нет — награда игнорируется. Повторное начисление исключено
+  идемпотентным ключом. Тип операции в журнале — `QUEST_REWARD`.
+- **KubeJS — биндинг `VEconomy`.** Доступен из любых `server_scripts`, например:
+
+  ```js
+  VEconomy.add(player, 500, 'стартовый бонус');
+  VEconomy.getBalance(player);          // long в минимальных единицах
+  VEconomy.transfer(from, to, 250, 'торг');
+  VEconomy.escrowReserve(player, 1000, 'auction:42', 'ставка');
+  VEconomy.escrowCapture('auction:42', winner, 'победа');
+  VEconomy.escrowRelease('auction:42', 'отмена');
+  VEconomy.format(12345);               // "⛃12,345"
+  VEconomy.ok(result);                  // result === 'SUCCESS'
+  ```
+
+  Игрок в методах — `Player`, `UUID` или строка (ник/UUID). Методы возвращают код
+  статуса (`SUCCESS`, `INSUFFICIENT_FUNDS`, ...) или `false`/`0`.
+- **LuckPerms / FTB Ranks** — права на команды (см. таблицу выше).
+- **Чат-уведомления** — об административных изменениях баланса оповещаются все
+  игроки (настраивается `notifications.broadcastAdminChanges`).
 
 ## Конфиг `config/economy-core.toml`
 
@@ -72,6 +114,9 @@ gradlew build
     file = "economy/valoreconomy.db"  # относительно каталога мира
     busyTimeoutMillis = 5000
     wal = true
+
+[notifications]
+    broadcastAdminChanges = true  # оповещать всех игроков об админ-изменениях баланса
 ```
 
 ## API для других модов
@@ -115,6 +160,9 @@ String plural = EconomyCore.formatter().plural(21);       // "монета"
 - `audit/` — статистика экономики (`/economy admin stats`).
 - `command/` — команды `/money`, `/pay`, `/economy admin`.
 - `event/` — события Forge: регистрация команд, старт/стоп БД, создание аккаунта при входе.
+- `integration/` — опциональные интеграции: `ftbquests` (награды), `permissions` (LuckPerms/FTB Ranks).
+- `kubejs/` — KubeJS-плагин и биндинг `VEconomy`.
+- `libs/` — jar модов для compile-only компиляции интеграций (не коммитится, в `.gitignore`).
 
 ## Важно
 

@@ -9,6 +9,7 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.persistence.TransactionRow;
 import com.valorcraft.veconomy.util.CurrencyParser;
 import com.valorcraft.veconomy.util.PlayerResolver;
@@ -44,7 +45,8 @@ public final class MoneyCommand {
                 .then(Commands.argument("player", StringArgumentType.word())
                         .suggests((context, builder) -> SharedSuggestionProvider.suggest(
                                 context.getSource().getOnlinePlayerNames(), builder))
-                        .requires(source -> source.hasPermission(2))
+                        .requires(source -> PermissionBridge.has(source,
+                                "veconomy.command.balance.other", 2))
                         .executes(MoneyCommand::balanceOther))
                 .then(Commands.literal("pay")
                         .then(Commands.argument("player", StringArgumentType.word())

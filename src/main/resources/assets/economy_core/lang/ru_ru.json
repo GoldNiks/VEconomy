@@ -30,6 +30,11 @@
   "admin.reload.done": "Конфиг economy-core.toml перечитан.",
   "admin.reload.failed": "Не удалось перечитать конфиг.",
 
+  "notify.admin.added": "Администратор начислил %s игроку %s",
+  "notify.admin.removed": "Администратор списал %s у игрока %s",
+  "notify.admin.set": "Администратор установил баланс игрока %s: %s",
+  "notify.quest.reward": "Квестовая награда: +%s",
+
   "error.player.notfound": "Игрок %s не найден.",
   "error.insufficient": "Недостаточно средств.",
   "error.invalid.amount": "Некорректная сумма.",
@@ -50,5 +55,7 @@
   "type.ESCROW_CAPTURE": "Передача эскроу",
   "type.ROLLBACK": "Откат",
   "type.FEE": "Комиссия",
-  "type.SYSTEM_CORRECTION": "Системная корректировка"
+  "type.SYSTEM_CORRECTION": "Системная корректировка",
+  "type.QUEST_REWARD": "Награда за квест",
+  "type.PLUGIN_OPERATION": "Операция через скрипт"
 }

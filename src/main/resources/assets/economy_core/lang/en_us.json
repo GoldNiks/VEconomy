@@ -30,6 +30,11 @@
   "admin.reload.done": "Config economy-core.toml reloaded.",
   "admin.reload.failed": "Failed to reload the config.",
 
+  "notify.admin.added": "Administrator deposited %s to player %s",
+  "notify.admin.removed": "Administrator withdrew %s from player %s",
+  "notify.admin.set": "Administrator set the balance of player %s to: %s",
+  "notify.quest.reward": "Quest reward: +%s",
+
   "error.player.notfound": "Player %s not found.",
   "error.insufficient": "Insufficient funds.",
   "error.invalid.amount": "Invalid amount.",
@@ -50,5 +55,7 @@
   "type.ESCROW_CAPTURE": "Escrow capture",
   "type.ROLLBACK": "Rollback",
   "type.FEE": "Fee",
-  "type.SYSTEM_CORRECTION": "System correction"
+  "type.SYSTEM_CORRECTION": "System correction",
+  "type.QUEST_REWARD": "Quest reward",
+  "type.PLUGIN_OPERATION": "Plugin/script operation"
 }

@@ -44,6 +44,7 @@ minecraft {
 
 repositories {
     mavenCentral()
+    flatDir { dirs 'libs' }
 }
 
 dependencies {
@@ -53,6 +54,17 @@ dependencies {
     jarJar('org.xerial:sqlite-jdbc:3.45.3.0') {
         jarJar.ranged(it, '[3.45.3.0,4.0.0)')
     }
+
+    // Optional integrations (compile-only). Jars in libs/ (local flatDir) must be
+    // named <artifact>-<version>.jar; they are NOT bundled into the final jar.
+    compileOnly fg.deobf(group: 'local', name: 'ftb-quests', version: '2001.4.22')
+    compileOnly fg.deobf(group: 'local', name: 'ftb-library', version: '2001.2.13')
+    compileOnly fg.deobf(group: 'local', name: 'ftb-teams', version: '2001.3.2')
+    compileOnly fg.deobf(group: 'local', name: 'architectury', version: '9.2.14')
+    compileOnly fg.deobf(group: 'local', name: 'kubejs', version: '2001.6.5')
+    compileOnly fg.deobf(group: 'local', name: 'rhino', version: '2001.2.3')
+    compileOnly fg.deobf(group: 'local', name: 'luckperms', version: '5.4.102')
+    compileOnly fg.deobf(group: 'local', name: 'ftb-ranks', version: '2001.1.7')
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.2'

@@ -1,0 +1,1 @@
+com.valorcraft.veconomy.kubejs.VEconomyKubeJSPlugin

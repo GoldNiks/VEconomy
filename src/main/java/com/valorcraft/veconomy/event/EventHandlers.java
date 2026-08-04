@@ -7,6 +7,7 @@ import com.valorcraft.veconomy.command.MoneyCommand;
 import com.valorcraft.veconomy.command.PayCommand;
 import com.valorcraft.veconomy.config.EconomyConfig;
 import com.valorcraft.veconomy.persistence.LegacyImporter;
+import com.valorcraft.veconomy.util.ServerHolder;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
@@ -34,6 +35,7 @@ public final class EventHandlers {
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
+        ServerHolder.set(server);
         Path worldPath = server.getWorldPath(LevelResource.ROOT);
         var settings = EconomyConfig.toSettings();
         Path databasePath = worldPath.resolve(settings.databaseFile);
@@ -62,6 +64,7 @@ public final class EventHandlers {
         if (EconomyCore.isStarted()) {
             EconomyCore.shutdown();
         }
+        ServerHolder.clear();
     }
 
     private EventHandlers() {}
