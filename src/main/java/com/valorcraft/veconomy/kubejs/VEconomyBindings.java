@@ -41,23 +41,38 @@ public final class VEconomyBindings {
 
     /** Начислить {@code amount} игроку. Возвращает код статуса операции. */
     public static String add(Object player, long amount, String reason) {
+        return add(player, amount, reason, null);
+    }
+
+    /**
+     * Начислить {@code amount} игроку с ключом идемпотентности. Повторный вызов с тем же
+     * ключом вернёт {@code DUPLICATE_OPERATION} и не зачислит деньги повторно.
+     */
+    public static String add(Object player, long amount, String reason, String idempotencyKey) {
         UUID id = resolve(player);
         if (id == null || !EconomyCore.isStarted()) {
             return "PLAYER_NOT_FOUND";
         }
         return EconomyCore.api().deposit(id, amount,
-                TransactionContext.of(TransactionType.PLUGIN_OPERATION, null, reason == null ? "kubejs:add" : reason))
+                TransactionContext.of(TransactionType.PLUGIN_OPERATION, null,
+                        reason == null ? "kubejs:add" : reason, idempotencyKey))
                 .status().name();
     }
 
     /** Списать {@code amount} у игрока. Возвращает код статуса операции. */
     public static String withdraw(Object player, long amount, String reason) {
+        return withdraw(player, amount, reason, null);
+    }
+
+    /** Списать {@code amount} у игрока с ключом идемпотентности. */
+    public static String withdraw(Object player, long amount, String reason, String idempotencyKey) {
         UUID id = resolve(player);
         if (id == null || !EconomyCore.isStarted()) {
             return "PLAYER_NOT_FOUND";
         }
         return EconomyCore.api().withdraw(id, amount,
-                TransactionContext.of(TransactionType.PLUGIN_OPERATION, id, reason == null ? "kubejs:withdraw" : reason))
+                TransactionContext.of(TransactionType.PLUGIN_OPERATION, id,
+                        reason == null ? "kubejs:withdraw" : reason, idempotencyKey))
                 .status().name();
     }
 
