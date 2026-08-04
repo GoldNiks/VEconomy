@@ -41,6 +41,11 @@ public final class MoneyCommand {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("money")
                 .executes(MoneyCommand::balanceSelf)
+                .then(Commands.argument("player", StringArgumentType.word())
+                        .suggests((context, builder) -> SharedSuggestionProvider.suggest(
+                                context.getSource().getOnlinePlayerNames(), builder))
+                        .requires(source -> source.hasPermission(2))
+                        .executes(MoneyCommand::balanceOther))
                 .then(Commands.literal("pay")
                         .then(Commands.argument("player", StringArgumentType.word())
                                 .suggests((context, builder) -> SharedSuggestionProvider.suggest(
@@ -72,6 +77,22 @@ public final class MoneyCommand {
         } catch (Exception e) {
             source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
         }
+        return 1;
+    }
+
+    private static int balanceOther(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            source.sendFailure(Component.translatable("error.player.notfound", playerInput)
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        long balance = EconomyCore.accounts().getBalance(target.uuid());
+        source.sendSuccess(() -> Component.translatable("cmd.balance.other",
+                target.name(), EconomyCore.formatter().format(balance))
+                .withStyle(ChatFormatting.GREEN), false);
         return 1;
     }
 
