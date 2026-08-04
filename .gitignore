@@ -3,4 +3,7 @@ out/
 run/
 classes/
 .gradle/
+logs/
+*.gz
+build_log.txt
 !gradle/wrapper/gradle-wrapper.jar

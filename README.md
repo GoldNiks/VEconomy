@@ -1,22 +1,24 @@
 # VEconomy — ядро виртуальной валюты (Forge 1.20.1)
 
 Прослойка экономики: чистый виртуальный баланс игроков + команды + публичный Java API
-и события транзакций для других модов. **Никаких** предметов-монет, сундуков, магазинов
-и жителей — только баланс, API и команды. Вся экономическая логика (магазины, обменники,
-цены) остаётся за вами.
+и журнал всех операций. **Никаких** предметов-монет, сундуков, магазинов и жителей — только
+баланс, API и команды. Вся экономическая логика (магазины, обменники, цены) остаётся за вами.
 
 - `modid`: `economy_core`
-- Зависимостей от других модов нет, чистый Forge.
+- Зависимостей от других модов нет, чистый Forge. SQLite встраивается через jarJar.
 - Тесты/код: Java 17, Forge 47.4.22, official mappings.
+- Серверный мод (`side="SERVER"`).
 
 ## Возможности
 
-- Capability `IEconomyCapability` у каждого игрока (баланс + UUID), сохраняется в `.dat` игрока.
-- Синхронизация баланса с клиентом пакетом `SyncBalancePacket` (при логине, респауне и каждом изменении).
-- При смерти баланс не сбрасывается (`deathReset = false`), можно включить сброс в конфиге.
-- Серверный кеш `HashMap<UUID, Double>`, запись в NBT по `PlayerLoggedOutEvent` и автосейв раз в 5 минут.
-- Все транзакции пишутся в `logs/economy_transactions.log` (включается в конфиге).
-- Полностью настраиваемый конфиг `config/economy-core.toml`.
+- Баланс хранится в **SQLite** (`<мир>/economy/valoreconomy.db`), а не в NBT игрока.
+- Деньги — только `long` в минимальных единицах; `double`/`float` для денег не используются.
+- Каждая операция атомарна: изменение баланса + запись журнала в одной транзакции БД.
+- Идемпотентность: повтор с тем же ключом не удваивает операцию.
+- Журнал всех операций (`transactions`) с историей по игроку (`/money history`).
+- Эскроу-API для аукционов/обменников (резерв → завершение/возврат).
+- Одноразовый импорт балансов старого прототипа из `balances.json`.
+- Полностью настраиваемый конфиг `config/economy-core.toml`, перечитывается в рантайме.
 
 ## Сборка
 
@@ -26,98 +28,98 @@
 gradlew build
 ```
 
-Готовый мод: `build/libs/VEconomy-1.20.1-1.0.0.jar`.
-Установка: положить jar в папку `mods/` клиента и сервера (Forge 1.20.1, 47.x).
+Готовый мод (с упакованным SQLite-драйвером):
+`build/libs/VEconomy-1.20.1-1.0.0-all.jar` — именно его класть в папку `mods/` сервера.
 
 ## Команды
 
-| Команда                      | Право | Что делает                                |
-|------------------------------|-------|-------------------------------------------|
-| `/economy balance`           | 0     | Свой баланс                               |
-| `/economy balance <игрок>`   | 2     | Баланс другого онлайн-игрока              |
-| `/economy pay <игрок> <сумма>` | 0   | Перевод (комиссия `transferTax`, %)       |
-| `/economy set <игрок> <сумма>` | 4   | Принудительно установить баланс           |
-| `/economy add <игрок> <сумма>` | 3   | Добавить/вычесть (отрицательная сумма)    |
-| `/economy top [страница]`    | 0     | Топ-10 богачей сервера (онлайн-игроки)    |
+| Команда                                            | Право | Что делает                          |
+|----------------------------------------------------|-------|-------------------------------------|
+| `/money`                                           | 0     | Свой баланс                         |
+| `/balance`, `/bal`                                 | 0     | Алиасы `/money`                     |
+| `/money pay <игрок> <сумма>`                       | 0     | Перевод игроку                      |
+| `/pay <игрок> <сумма>`                             | 0     | Алиас перевода                      |
+| `/money history [страница]`                        | 0     | История своих операций (по 10)      |
+| `/economy admin balance get <игрок>`               | 4     | Баланс игрока + статус аккаунта     |
+| `/economy admin balance add <игрок> <сумма> <причина>`   | 4 | Зачислить                        |
+| `/economy admin balance remove <игрок> <сумма> <причина>` | 4 | Списать                          |
+| `/economy admin balance set <игрок> <сумма> <причина>`    | 4 | Установить баланс                 |
+| `/economy admin stats`                             | 4     | Статистика экономики                |
+| `/economy admin reload`                            | 4     | Перечитать конфиг с диска           |
 
-Алиас: `/eco`.
+Для команд `add`/`remove`/`set` причина обязательна. Казна — системный аккаунт,
+изменять её баланс командами нельзя.
 
 ## Конфиг `config/economy-core.toml`
 
 ```toml
-[general]
-    startingBalance = 100.0        # стартовый баланс
-    currencySymbol = "⛃"           # символ валюты
-    decimalPlaces = 2              # 2 = ##.##, 1 = ###.#, 0 = целые
-    allowNegativeBalance = false   # разрешать минус
-    transferTax = 0.0              # комиссия за перевод, %
-    deathReset = false             # сбрасывать баланс при смерти
-    logTransactions = true         # писать logs/economy_transactions.log
+[currency]
+    nameSingular = "монета"   # «1 монета»
+    nameFew = "монеты"        # «2 монеты»
+    nameMany = "монет"        # «5 монет»
+    symbol = "⛃"              # символ валюты
+    decimalPlaces = 0         # 0 = целые, 2 = ##.##
+    maximumBalance = 9000000000000  # максимум баланса, минимальные единицы
 
-[messages]
-    balanceSelf = "§aВаш баланс: §6%s"
-    paymentSent = "§aВы отправили §6%s §aигроку §e%s"
-    paymentReceived = "§aВы получили §6%s §aот §e%s"
-    insufficientFunds = "§cНедостаточно средств!"
+[transfers]
+    enabled = true            # переводы игроков разрешены
+    allowOfflineRecipients = true
+    minimumAmount = 1
+    maximumAmount = 1000000
+    cooldownSeconds = 2
+
+[database]
+    file = "economy/valoreconomy.db"  # относительно каталога мира
+    busyTimeoutMillis = 5000
+    wal = true
 ```
 
 ## API для других модов
 
 ```java
-import com.valorcraft.economy.api.EconomyAPI;
-import com.valorcraft.economy.api.TransactionResult;
+import com.valorcraft.veconomy.api.EconomyApi;
+import com.valorcraft.veconomy.api.TransactionContext;
+import com.valorcraft.veconomy.api.TransactionResult;
+import com.valorcraft.veconomy.EconomyCore;
 
-// Чтение
-double balance = EconomyAPI.getBalance(player);
+// Чтение (0, если аккаунта нет)
+long balance = EconomyCore.api().getBalance(uuid);
 
-// Транзакции (только на сервере)
-TransactionResult r = EconomyAPI.withdraw(player, 50.0);
-TransactionResult r2 = EconomyAPI.deposit(player, 100.0);
-TransactionResult r3 = EconomyAPI.transfer(from, to, 25.0); // SUCCESS / INSUFFICIENT_FUNDS / ERROR
+// Операции — все суммы в минимальных единицах
+TransactionContext ctx = TransactionContext.of(
+        TransactionType.SHOP_PURCHASE, actorUuid, "причина", "idempotency:key");
 
-// Принудительно установить баланс (без событий Pre/Post)
-EconomyAPI.forceSet(player, 1000.0);
+TransactionResult r = EconomyCore.api().deposit(uuid, 500, ctx);
+TransactionResult r2 = EconomyCore.api().withdraw(uuid, 200, ctx);
+TransactionResult r3 = EconomyCore.api().transfer(fromUuid, toUuid, 250, ctx);
+// r.isSuccess(), r.status() — SUCCESS / INSUFFICIENT_FUNDS / LIMIT_EXCEEDED / ...
 
-// Форматирование под символ и точность из конфига
-String text = EconomyAPI.format(1234.5); // "⛃1,234.50"
+// Полная информация об аккаунте
+Optional<BalanceSnapshot> account = EconomyCore.api().getAccount(uuid);
+
+// Форматирование под настройки валюты
+String text = EconomyCore.formatter().format(12345);      // "⛃12,345"
+String plural = EconomyCore.formatter().plural(21);       // "монета"
 ```
 
-## События Forge (слушайте через `MinecraftForge.EVENT_BUS`)
+Вызывайте методы на серверном потоке (в серверных обработчиках/командах).
+Идемпотентность: при повторном вызове с тем же `idempotencyKey` вернётся
+`DUPLICATE_OPERATION` и деньги не будут зачислены повторно.
 
-```java
-@SubscribeEvent
-public void onPre(EconomyTransactionEvent.Pre event) {
-    if (event.getType() == EconomyTransactionEvent.Type.WITHDRAW && event.getAmount() > 100) {
-        event.setAmount(100);   // изменить сумму
-        event.setCanceled(true); // или отменить транзакцию
-    }
-}
+## Структура проекта
 
-@SubscribeEvent
-public void onPost(EconomyTransactionEvent.Post event) {
-    EconomyTransactionEvent.Type type = event.getType();   // DEPOSIT / WITHDRAW / TRANSFER
-    double amount = event.getAmount();
-    double newBalance = event.getNewBalance();
-    Player player = event.getPlayer();
-}
-```
-
-Порядок: **Pre** (отменяемый, сумма изменяемая) → применение → **Post** (сумма, новый баланс, тип).
-Для `TRANSFER` у отправителя, сумма в `Pre` — это сумма перевода (комиссия считается отдельно),
-`Post` дополнительно постится получателю как `DEPOSIT`.
-
-## Внутреннее устройство
-
-- `api/` — `EconomyAPI`, `IEconomyCapability`, `TransactionResult`, `EconomyTransactionEvent`.
-- `capability/` — регистрация capability, реализация, провайдер (хранит в `.dat` игрока).
-- `network/` — канал `main`, пакет синхронизации, отправка баланса на клиент.
-- `command/` — команды `/economy`.
-- `storage/` — серверный кеш балансов (`BalanceStorage`) и лог транзакций (`TransactionLogger`).
-- `config/` — `economy-core.toml`.
+- `api/` — публичные контракты: `EconomyApi`, `EscrowApi`, `TransactionResult`, `BalanceSnapshot`, статусы.
+- `config/` — Forge-конфиг `economy-core.toml` + тестируемый снимок `EconomySettings`.
+- `persistence/` — `DatabaseManager`, миграции схемы, репозитории, импорт legacy-балансов.
+- `economy/` — сервисы: аккаунты, переводы, эскроу, журнал, форматирование, казна.
+- `audit/` — статистика экономики (`/economy admin stats`).
+- `command/` — команды `/money`, `/pay`, `/economy admin`.
+- `event/` — события Forge: регистрация команд, старт/стоп БД, создание аккаунта при входе.
 
 ## Важно
 
-- API-транзакции должны вызываться на логическом **сервере** (в серверных обработчиках/командах);
-  на клиенте баланс читается из синхронизированной capability.
-- `top` показывает только онлайн-игроков (кеш живёт на время сессии).
-- Отрицательные балансы возможны админ-командой только при `allowNegativeBalance = true`.
+- База данных создаётся при старте сервера в каталоге мира; файл старого прототипа
+  `balances.json` импортируется один раз, см. `MIGRATION.md`.
+- Изменять баланс напрямую в БД нельзя — только через `EconomyApi`/сервисы,
+  иначе журнал и идемпотентность будут обойдены.
+- Публичный API и поведение команд подробно описаны в `ECONOMY_DESIGN.md`.
