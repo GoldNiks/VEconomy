@@ -1,0 +1,24 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="economy_core"
+version="${version}"
+displayName="Aurum Core"
+authors="ValorCraft"
+description='''Ядро виртуальной валюты (Forge 1.20.1): виртуальный баланс игроков, команды /economy, публичный Java API (EconomyAPI) и события транзакций для других модов. Без физической валюты, сундуков и магазинов.'''
+
+[[dependencies.economy_core]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.economy_core]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="BOTH"
