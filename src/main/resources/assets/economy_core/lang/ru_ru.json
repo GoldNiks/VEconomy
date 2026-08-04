@@ -10,6 +10,14 @@
   "cmd.only.players": "Эта команда доступна только игрокам.",
   "cmd.history.title": "История операций (страница %d из %d)",
   "cmd.history.empty": "Операций пока нет.",
+  "cmd.activity.title": "Ваша активность",
+  "cmd.activity.empty": "Активность пока не учитывалась.",
+  "cmd.activity.online": "Время в сети: %s",
+  "cmd.activity.active": "Активное время: %s",
+  "cmd.activity.afk": "Время в AFK: %s",
+  "cmd.activity.week": "Активность за неделю %s: %s",
+  "cmd.activity.state.active": "Сейчас: активны",
+  "cmd.activity.state.afk": "Сейчас: в AFK",
 
   "admin.balance.get": "Баланс игрока %s: %s",
   "admin.balance.none": "У игрока %s ещё нет аккаунта.",
@@ -34,6 +42,8 @@
   "notify.admin.removed": "Администратор списал %s у игрока %s",
   "notify.admin.set": "Администратор установил баланс игрока %s: %s",
   "notify.quest.reward": "Квестовая награда: +%s",
+  "notify.milestone.reward": "Милстоун за время: +%s",
+  "notify.weekly.reward": "Недельная выплата: +%s",
 
   "error.player.notfound": "Игрок %s не найден.",
   "error.insufficient": "Недостаточно средств.",

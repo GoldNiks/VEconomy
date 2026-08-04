@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -51,7 +50,7 @@ public final class LegacyImporter {
     private static boolean importAll(Connection connection, Path legacyFile, EconomySettings settings,
                                      DatabaseManager.Dialect dialect) {
         try {
-            if (metaGet(connection, FLAG_KEY) != null) {
+            if (MetaRepository.get(connection, dialect, FLAG_KEY) != null) {
                 VEconomyMod.LOGGER.info("Импорт legacy-балансов уже выполнен ранее, пропуск");
                 return false;
             }
@@ -89,10 +88,10 @@ public final class LegacyImporter {
                 sum += minor;
             }
             // Флаг ставим только после успешной обработки файла с реальными балансами.
-            metaSet(connection, dialect, FLAG_KEY, String.valueOf(imported));
+            MetaRepository.set(connection, dialect, FLAG_KEY, String.valueOf(imported));
             VEconomyMod.LOGGER.info("Импортировано {} аккаунтов ({} монет) из {}", imported, sum, legacyFile);
             return imported > 0;
-        } catch (SQLException | IOException e) {
+        } catch (IOException e) {
             throw new DatabaseException("Ошибка импорта legacy-балансов из " + legacyFile, e);
         }
     }
@@ -122,26 +121,6 @@ public final class LegacyImporter {
             }
         }
         return result;
-    }
-
-    private static String metaGet(Connection connection, String key) throws SQLException {
-        try (var statement = connection.prepareStatement("SELECT value FROM meta WHERE meta_key = ?")) {
-            statement.setString(1, key);
-            try (var rs = statement.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
-    }
-
-    private static void metaSet(Connection connection, DatabaseManager.Dialect dialect, String key, String value) throws SQLException {
-        String sql = dialect == DatabaseManager.Dialect.MYSQL
-                ? "INSERT INTO meta (meta_key, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)"
-                : "INSERT OR REPLACE INTO meta (meta_key, value) VALUES (?, ?)";
-        try (var statement = connection.prepareStatement(sql)) {
-            statement.setString(1, key);
-            statement.setString(2, value);
-            statement.executeUpdate();
-        }
     }
 
     private static final class LegacyData {

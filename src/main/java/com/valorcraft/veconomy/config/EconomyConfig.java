@@ -5,12 +5,14 @@ import net.minecraftforge.common.ForgeConfigSpec;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.config.ModConfig;
 
+import java.util.List;
+
 /**
  * Forge-конфиг {@code config/economy-core.toml}.
  * <p>
- * Значения делятся на секции: currency, transfers, database. Активность, недельный фонд
- * и аудит добавляются в соответствующие этапы разработки. Все денежные значения — целые
- * (минимальные единицы), никаких {@code double}/{@code float} для денег.
+ * Значения делятся на секции: currency, transfers, database, activity, milestones,
+ * weeklyFund, notifications. Все денежные значения — целые (минимальные единицы),
+ * никаких {@code double}/{@code float} для денег.
  */
 public final class EconomyConfig {
 
@@ -45,6 +47,22 @@ public final class EconomyConfig {
 
     // --- notifications ---
     public static final ForgeConfigSpec.BooleanValue NOTIFY_ADMIN_CHANGES;
+
+    // --- activity ---
+    public static final ForgeConfigSpec.BooleanValue ACTIVITY_ENABLED;
+    public static final ForgeConfigSpec.IntValue AFK_TIMEOUT_SECONDS;
+    public static final ForgeConfigSpec.IntValue ACTIVITY_SAMPLE_TICKS;
+    public static final ForgeConfigSpec.IntValue ACTIVITY_PERSIST_SECONDS;
+
+    // --- milestones ---
+    public static final ForgeConfigSpec.BooleanValue MILESTONES_ENABLED;
+    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> MILESTONE_REWARDS;
+    public static final ForgeConfigSpec.BooleanValue MILESTONES_NOTIFY;
+
+    // --- weekly fund ---
+    public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_ENABLED;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_AMOUNT;
+    public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_NOTIFY;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -101,6 +119,44 @@ public final class EconomyConfig {
                 .define("broadcastAdminChanges", true);
         builder.pop();
 
+        builder.comment("Учёт активности игроков.",
+                "Сервер считает, сколько времени игрок находится в сети, сколько активен",
+                "и сколько простоял в AFK. AFK определяется как отсутствие движения/поворота",
+                "и чата в течение afkTimeoutSeconds. Активность используется для милстоунов",
+                "и недельного фонда. Данные пишутся в таблицу player_activity.").push("activity");
+        ACTIVITY_ENABLED = builder.comment("Включить учёт активности").define("enabled", true);
+        AFK_TIMEOUT_SECONDS = builder.comment("Бездействие в секундах, после которого игрок считается AFK")
+                .defineInRange("afkTimeoutSeconds", 300, 10, 7200);
+        ACTIVITY_SAMPLE_TICKS = builder.comment("Через сколько тиков обновлять счётчики (20 = 1 секунда)")
+                .defineInRange("sampleIntervalTicks", 20, 20, 1200);
+        ACTIVITY_PERSIST_SECONDS = builder.comment("Как часто записывать активность в базу (секунды)")
+                .defineInRange("persistIntervalSeconds", 60, 5, 3600);
+        builder.pop();
+
+        builder.comment("Личные милстоуны за наигранное время.",
+                "Список reward — пары (секунды активного времени, награда в минимальных единицах).",
+                "Пример: [3600, 100, 10800, 300, 43200, 1000] = 1ч→100, 3ч→300, 12ч→1000.",
+                "Каждый порог выплачивается игроку ровно один раз.").push("milestones");
+        MILESTONES_ENABLED = builder.comment("Включить награды за время")
+                .define("enabled", true);
+        MILESTONE_REWARDS = builder.comment("Пары (секунды, награда)").defineList("rewards",
+                List.of(3600, 100, 10800, 300, 43200, 1000, 86400, 2500),
+                element -> element instanceof Integer integer && integer > 0);
+        MILESTONES_NOTIFY = builder.comment("Уведомлять игрока о получении награды")
+                .define("notify", true);
+        builder.pop();
+
+        builder.comment("Недельный фонд.",
+                "Каждую неделю (ISO-неделя, понедельник 00:00 UTC) фонд делится между игроками",
+                "пропорционально их активному времени за завершённую неделю (без AFK).",
+                "Остаток от деления — в казну.").push("weeklyFund");
+        WEEKLY_FUND_ENABLED = builder.comment("Включить недельный фонд").define("enabled", true);
+        WEEKLY_FUND_AMOUNT = builder.comment("Размер фонда в минимальных единицах (эмиссия за неделю)")
+                .defineInRange("weeklyAmount", 100_000L, 0L, Long.MAX_VALUE);
+        WEEKLY_FUND_NOTIFY = builder.comment("Уведомлять игрока о выплате")
+                .define("notify", true);
+        builder.pop();
+
         SPEC = builder.build();
     }
 
@@ -130,7 +186,34 @@ public final class EconomyConfig {
                 MYSQL_USER.get(),
                 MYSQL_PASSWORD.get(),
                 MYSQL_POOL_SIZE.get(),
-                NOTIFY_ADMIN_CHANGES.get());
+                NOTIFY_ADMIN_CHANGES.get(),
+                new EconomySettings.Activity(
+                        ACTIVITY_ENABLED.get(),
+                        AFK_TIMEOUT_SECONDS.get(),
+                        ACTIVITY_SAMPLE_TICKS.get(),
+                        ACTIVITY_PERSIST_SECONDS.get()),
+                new EconomySettings.Milestones(
+                        MILESTONES_ENABLED.get(),
+                        toRewards(MILESTONE_REWARDS.get()),
+                        MILESTONES_NOTIFY.get()),
+                new EconomySettings.WeeklyFund(
+                        WEEKLY_FUND_ENABLED.get(),
+                        WEEKLY_FUND_AMOUNT.get(),
+                        WEEKLY_FUND_NOTIFY.get()));
+    }
+
+    /** Преобразовать плоский список (сек, награда, сек, награда…) в пары порогов. */
+    private static List<EconomySettings.MilestoneReward> toRewards(List<? extends Integer> flat) {
+        List<EconomySettings.MilestoneReward> rewards = new java.util.ArrayList<>();
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            long seconds = flat.get(i);
+            long amount = flat.get(i + 1);
+            if (seconds > 0 && amount > 0) {
+                rewards.add(new EconomySettings.MilestoneReward(seconds, amount));
+            }
+        }
+        rewards.sort(java.util.Comparator.comparingLong(EconomySettings.MilestoneReward::thresholdSeconds));
+        return List.copyOf(rewards);
     }
 
     /**

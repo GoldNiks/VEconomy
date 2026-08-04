@@ -90,8 +90,7 @@ public final class FTBQuestsIntegration {
                 "ftbquests:reward:" + reward.id + ":" + playerId);
         TransactionResult result = EconomyCore.api().deposit(playerId, amountMinor, context);
 
-        if (result.status() == TransactionResult.Status.SUCCESS
-                || result.status() == TransactionResult.Status.DUPLICATE_OPERATION) {
+        if (result.status() == TransactionResult.Status.SUCCESS) {
             player.sendSystemMessage(Component.translatable(
                     "notify.quest.reward", EconomyCore.formatter().format(amountMinor))
                     .withStyle(ChatFormatting.GREEN));
@@ -177,8 +176,8 @@ public final class FTBQuestsIntegration {
     /**
      * Разовая компенсация за квесты, пройденные до установки мода. Стоимость выполненных
      * квестов команды — фиксированный фонд, делится между её участниками поровну (остаток —
-     * в казну). Идемпотентные ключи {@code questcomp:v1:<uuid>} и {@code questcomp:v1:treasury}
-     * не дают выдать повторно.
+     * в казну). Идемпотентные ключи {@code questcomp:v1:<uuid>} и
+     * {@code questcomp:v1:treasury:<teamId>} не дают выдать повторно.
      *
      * @return краткий отчёт о выполнении
      */
@@ -231,10 +230,12 @@ public final class FTBQuestsIntegration {
                     }
                 }
                 if (remainder > 0) {
+                    // Ключ по команде: каждый остаток (из своей команды) попадает в казну
+                    // ровно один раз; общий ключ допускал бы только первый остаток.
                     EconomyCore.api().deposit(TreasuryService.TREASURY_UUID, remainder,
                             TransactionContext.of(TransactionType.QUEST_REWARD, null,
                                     "compensation:past-quests:remainder",
-                                    "questcomp:v1:treasury"));
+                                    "questcomp:v1:treasury:" + teamData.getTeamId()));
                     paidTotal += remainder;
                 }
                 paidTeams++;

@@ -6,6 +6,12 @@ import com.valorcraft.veconomy.api.EscrowApi;
 import com.valorcraft.veconomy.api.EscrowResult;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
+import com.valorcraft.veconomy.activity.ActivityService;
+import com.valorcraft.veconomy.activity.MilestoneRepository;
+import com.valorcraft.veconomy.activity.MilestoneService;
+import com.valorcraft.veconomy.activity.PlayerActivityRepository;
+import com.valorcraft.veconomy.activity.WeeklyFundService;
+import com.valorcraft.veconomy.activity.WeeklyPayoutRepository;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.AccountService;
@@ -35,6 +41,9 @@ public final class EconomyCore {
     private static EscrowService escrowService;
     private static CurrencyFormatter formatter;
     private static EconomyStatistics statistics;
+    private static ActivityService activity;
+    private static MilestoneService milestones;
+    private static WeeklyFundService weeklyFund;
     private static EconomyApi api;
     private static EscrowApi escrowApi;
     private static EconomySettings settings;
@@ -62,6 +71,14 @@ public final class EconomyCore {
                 accountService, ledgerService, initialSettings);
         formatter = new CurrencyFormatter(initialSettings);
         statistics = new EconomyStatistics(database, accountRepository, transactionRepository, escrowRepository);
+
+        PlayerActivityRepository activityRepository = new PlayerActivityRepository();
+        MilestoneRepository milestoneRepository = new MilestoneRepository();
+        WeeklyPayoutRepository payoutRepository = new WeeklyPayoutRepository();
+        activity = new ActivityService(database, activityRepository, initialSettings);
+        milestones = new MilestoneService(database, milestoneRepository, accountService, activity, initialSettings);
+        weeklyFund = new WeeklyFundService(database, activityRepository, payoutRepository,
+                accountService, initialSettings);
 
         api = new EconomyApi() {
             @Override
@@ -130,9 +147,21 @@ public final class EconomyCore {
         if (formatter != null) {
             formatter.applySettings(newSettings);
         }
+        if (activity != null) {
+            activity.applySettings(newSettings);
+        }
+        if (milestones != null) {
+            milestones.applySettings(newSettings);
+        }
+        if (weeklyFund != null) {
+            weeklyFund.applySettings(newSettings);
+        }
     }
 
     public static synchronized void shutdown() {
+        if (activity != null) {
+            activity.persistAll();
+        }
         if (database != null) {
             database.close();
             database = null;
@@ -174,6 +203,18 @@ public final class EconomyCore {
 
     public static EconomyStatistics statistics() {
         return statistics;
+    }
+
+    public static ActivityService activity() {
+        return activity;
+    }
+
+    public static MilestoneService milestones() {
+        return milestones;
+    }
+
+    public static WeeklyFundService weeklyFund() {
+        return weeklyFund;
     }
 
     public static DatabaseManager database() {

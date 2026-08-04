@@ -10,6 +10,14 @@
   "cmd.only.players": "This command is only available to players.",
   "cmd.history.title": "Transaction history (page %d of %d)",
   "cmd.history.empty": "No transactions yet.",
+  "cmd.activity.title": "Your activity",
+  "cmd.activity.empty": "Activity has not been tracked yet.",
+  "cmd.activity.online": "Time online: %s",
+  "cmd.activity.active": "Active time: %s",
+  "cmd.activity.afk": "AFK time: %s",
+  "cmd.activity.week": "Activity in week %s: %s",
+  "cmd.activity.state.active": "Status: active",
+  "cmd.activity.state.afk": "Status: AFK",
 
   "admin.balance.get": "Balance of player %s: %s",
   "admin.balance.none": "Player %s has no account yet.",
@@ -34,6 +42,8 @@
   "notify.admin.removed": "Administrator withdrew %s from player %s",
   "notify.admin.set": "Administrator set the balance of player %s to: %s",
   "notify.quest.reward": "Quest reward: +%s",
+  "notify.milestone.reward": "Playtime milestone: +%s",
+  "notify.weekly.reward": "Weekly payout: +%s",
 
   "error.player.notfound": "Player %s not found.",
   "error.insufficient": "Insufficient funds.",

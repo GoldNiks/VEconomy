@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.valorcraft.veconomy.EconomyCore;
+import com.valorcraft.veconomy.activity.ActivityService.ActivityInfo;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
@@ -57,7 +58,9 @@ public final class MoneyCommand {
                 .then(Commands.literal("history")
                         .executes(context -> history(context, 1))
                         .then(Commands.argument("page", IntegerArgumentType.integer(1))
-                                .executes(context -> history(context, IntegerArgumentType.getInteger(context, "page"))))));
+                                .executes(context -> history(context, IntegerArgumentType.getInteger(context, "page"))))
+                .then(Commands.literal("activity")
+                        .executes(MoneyCommand::activity))));
 
         dispatcher.register(Commands.literal("balance").executes(MoneyCommand::balanceSelf));
         dispatcher.register(Commands.literal("bal").executes(MoneyCommand::balanceSelf));
@@ -164,6 +167,54 @@ public final class MoneyCommand {
             source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
         }
         return 1;
+    }
+
+    private static int activity(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            ActivityInfo info = EconomyCore.activity().info(player.getUUID()).orElse(null);
+            source.sendSuccess(() -> Component.translatable("cmd.activity.title")
+                    .withStyle(ChatFormatting.GOLD), false);
+            if (info == null) {
+                source.sendSuccess(() -> Component.translatable("cmd.activity.empty")
+                        .withStyle(ChatFormatting.GRAY), false);
+                return 1;
+            }
+            source.sendSuccess(() -> Component.translatable("cmd.activity.online",
+                    formatDuration(info.totalOnlineSeconds())), false);
+            source.sendSuccess(() -> Component.translatable("cmd.activity.active",
+                    formatDuration(info.totalActiveSeconds())), false);
+            source.sendSuccess(() -> Component.translatable("cmd.activity.afk",
+                    formatDuration(info.totalAfkSeconds())), false);
+            source.sendSuccess(() -> Component.translatable("cmd.activity.week",
+                    info.currentWeekId(), formatDuration(info.weeklyActiveSeconds())), false);
+            String state = info.afkNow() ? "cmd.activity.state.afk" : "cmd.activity.state.active";
+            source.sendSuccess(() -> Component.translatable(state)
+                    .withStyle(info.afkNow() ? ChatFormatting.RED : ChatFormatting.GREEN), false);
+        } catch (Exception e) {
+            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+        }
+        return 1;
+    }
+
+    private static String formatDuration(long totalSeconds) {
+        long days = totalSeconds / 86400;
+        long hours = (totalSeconds % 86400) / 3600;
+        long minutes = (totalSeconds % 3600) / 60;
+        long seconds = totalSeconds % 60;
+        StringBuilder builder = new StringBuilder();
+        if (days > 0) {
+            builder.append(days).append("д ");
+        }
+        if (hours > 0) {
+            builder.append(hours).append("ч ");
+        }
+        if (minutes > 0) {
+            builder.append(minutes).append("м ");
+        }
+        builder.append(seconds).append("с");
+        return builder.toString();
     }
 
     private static int history(CommandContext<CommandSourceStack> context, int page) {
