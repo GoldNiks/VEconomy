@@ -5,6 +5,7 @@ import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.economy.TreasuryService;
 import dev.architectury.event.EventResult;
 import dev.ftb.mods.ftbquests.events.CustomRewardEvent;
 import dev.ftb.mods.ftbquests.events.ObjectCompletedEvent;
@@ -30,10 +31,11 @@ import java.util.regex.Pattern;
  *   <li><b>«Кастомная награда»</b> (встроенный тип) — название награды должно быть
  *       целиком числом (например {@code 500} или {@code 1500,50}). Текст-обёртка не
  *       поддерживается, чтобы случайная кастомная награда не печатала деньги. Клиенту
- *       мод не требуется — отдельный тип награды невозможен без установки мода на клиенте.</li>
- *   <li><b>Автоначисление по главам</b> — при завершении любого квеста игроки команды
- *       получают сумму за квест из таблицы {@link QuestRewardConfig}. Удобно для
- *       нарастающих наград: дальше глава — больше сумма.</li>
+ *       мод не требуется — отдельный тип награды невозможен без установки мода на клиенте.
+ *       Можно отключить через {@code customRewardEnabled} в конфиге.</li>
+ *   <li><b>Автоначисление по главам</b> — при завершении любого квеста команда получает
+ *       фиксированный фонд из таблицы {@link QuestRewardConfig}, который делится между
+ *       участниками поровну (остаток — в казну). Размер команды не влияет на эмиссию.</li>
  * </ol>
  * Двойное начисление исключено идемпотентными ключами.
  */
@@ -66,7 +68,7 @@ public final class FTBQuestsIntegration {
     // ---------------------------------------------------------------- custom reward
 
     private static EventResult onCustomReward(CustomRewardEvent event) {
-        if (!EconomyCore.isStarted()) {
+        if (!EconomyCore.isStarted() || !QuestRewardConfig.customRewardEnabled()) {
             return EventResult.pass();
         }
         CustomReward reward = event.getReward();
@@ -99,6 +101,12 @@ public final class FTBQuestsIntegration {
 
     // ---------------------------------------------------------------- auto reward per chapter
 
+    /**
+     * Автоначисление при завершении квеста. Фонд за квест фиксированный и делится между
+     * участниками команды поровну (остаток — в казну): команда из N игроков создаёт
+     * ровно столько же монет, сколько команда из одного. Приглашение альтов не разгоняет
+     * эмиссию.
+     */
     private static EventResult onQuestCompleted(ObjectCompletedEvent.QuestEvent event) {
         if (!EconomyCore.isStarted()) {
             return EventResult.pass();
@@ -108,8 +116,9 @@ public final class FTBQuestsIntegration {
             return EventResult.pass();
         }
         Chapter chapter = quest.getQuestChapter();
-        long amountMinor = QuestRewardConfig.rewardForChapter(chapter == null ? null : chapter.getRawTitle());
-        if (amountMinor <= 0) {
+        String chapterTitle = chapter == null ? null : chapter.getRawTitle();
+        long fundMinor = QuestRewardConfig.rewardForQuest(quest.id, chapterTitle);
+        if (fundMinor <= 0) {
             return EventResult.pass();
         }
 
@@ -121,16 +130,31 @@ public final class FTBQuestsIntegration {
         if (teamOpt.isEmpty()) {
             return EventResult.pass();
         }
-        String chapterTitle = chapter == null ? "?" : chapter.getRawTitle();
+        java.util.List<UUID> members = java.util.List.copyOf(teamOpt.get().getMembers());
+        if (members.isEmpty()) {
+            return EventResult.pass();
+        }
+
+        long perMember = fundMinor / members.size();
+        long remainder = fundMinor % members.size();
+        String label = chapterTitle == null ? "?" : chapterTitle;
         long questId = quest.id;
-        for (UUID member : teamOpt.get().getMembers()) {
-            TransactionResult result = EconomyCore.api().deposit(member, amountMinor,
-                    TransactionContext.of(TransactionType.QUEST_REWARD, member,
-                            "ftbquests:" + chapterTitle,
-                            "ftbquests:quest:" + questId + ":" + member));
-            if (result.status() == TransactionResult.Status.SUCCESS) {
-                notifyMember(member, amountMinor, chapterTitle);
+        if (perMember > 0) {
+            for (UUID member : members) {
+                TransactionResult result = EconomyCore.api().deposit(member, perMember,
+                        TransactionContext.of(TransactionType.QUEST_REWARD, member,
+                                "ftbquests:" + label,
+                                "ftbquests:quest:" + questId + ":" + member));
+                if (result.status() == TransactionResult.Status.SUCCESS) {
+                    notifyMember(member, perMember, label);
+                }
             }
+        }
+        if (remainder > 0) {
+            EconomyCore.api().deposit(TreasuryService.TREASURY_UUID, remainder,
+                    TransactionContext.of(TransactionType.QUEST_REWARD, null,
+                            "ftbquests:" + label + " (остаток)",
+                            "ftbquests:quest:" + questId + ":treasury"));
         }
         return EventResult.pass();
     }
@@ -151,9 +175,10 @@ public final class FTBQuestsIntegration {
     // ---------------------------------------------------------------- one-time compensation
 
     /**
-     * Разовая компенсация за квесты, пройденные до установки мода. Начисляет каждому
-     * игроку сумму за все выполненные квесты по таблице глав. Идемпотентный ключ
-     * {@code questcomp:v1:<uuid>} не даёт выдать повторно.
+     * Разовая компенсация за квесты, пройденные до установки мода. Стоимость выполненных
+     * квестов команды — фиксированный фонд, делится между её участниками поровну (остаток —
+     * в казну). Идемпотентные ключи {@code questcomp:v1:<uuid>} и {@code questcomp:v1:treasury}
+     * не дают выдать повторно.
      *
      * @return краткий отчёт о выполнении
      */
@@ -169,18 +194,13 @@ public final class FTBQuestsIntegration {
             int paidTeams = 0;
             int paidPlayers = 0;
             long paidTotal = 0;
-            var teamManager = dev.ftb.mods.ftbteams.api.FTBTeamsAPI.api().getManager();
             for (TeamData teamData : questFile.getAllTeamData()) {
                 long teamTotal = 0;
                 for (var chapter : questFile.getAllChapters()) {
                     String chapterTitle = chapter.getRawTitle();
-                    long perQuest = QuestRewardConfig.rewardForChapter(chapterTitle);
-                    if (perQuest <= 0) {
-                        continue;
-                    }
                     for (Quest quest : chapter.getQuests()) {
                         if (teamData.isCompleted(quest)) {
-                            teamTotal += perQuest;
+                            teamTotal += QuestRewardConfig.rewardForQuest(quest.id, chapterTitle);
                         }
                     }
                 }
@@ -191,16 +211,31 @@ public final class FTBQuestsIntegration {
                 if (teamOpt.isEmpty()) {
                     continue;
                 }
-                for (UUID member : teamOpt.get().getMembers()) {
-                    TransactionResult result = EconomyCore.api().deposit(member, teamTotal,
-                            TransactionContext.of(TransactionType.QUEST_REWARD, member,
-                                    "compensation:past-quests",
-                                    "questcomp:v1:" + member));
-                    if (result.status() == TransactionResult.Status.SUCCESS) {
-                        paidPlayers++;
-                        paidTotal += teamTotal;
-                        VEconomyMod.LOGGER.info("Компенсация игроку {}: {} (квесты команды)", member, teamTotal);
+                java.util.List<UUID> members = java.util.List.copyOf(teamOpt.get().getMembers());
+                if (members.isEmpty()) {
+                    continue;
+                }
+                long perMember = teamTotal / members.size();
+                long remainder = teamTotal % members.size();
+                if (perMember > 0) {
+                    for (UUID member : members) {
+                        TransactionResult result = EconomyCore.api().deposit(member, perMember,
+                                TransactionContext.of(TransactionType.QUEST_REWARD, member,
+                                        "compensation:past-quests",
+                                        "questcomp:v1:" + member));
+                        if (result.status() == TransactionResult.Status.SUCCESS) {
+                            paidPlayers++;
+                            paidTotal += perMember;
+                            VEconomyMod.LOGGER.info("Компенсация игроку {}: {} (квесты команды)", member, perMember);
+                        }
                     }
+                }
+                if (remainder > 0) {
+                    EconomyCore.api().deposit(TreasuryService.TREASURY_UUID, remainder,
+                            TransactionContext.of(TransactionType.QUEST_REWARD, null,
+                                    "compensation:past-quests:remainder",
+                                    "questcomp:v1:treasury"));
+                    paidTotal += remainder;
                 }
                 paidTeams++;
             }

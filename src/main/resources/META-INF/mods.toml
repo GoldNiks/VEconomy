@@ -7,7 +7,7 @@ modId="economy_core"
 version="${version}"
 displayName="VEconomy"
 authors="ValorCraft"
-side="SERVER"
+displayTest="IGNORE_SERVER_VERSION"
 description='''Серверное ядро цифровой экономики ValorCraft (Forge 1.20.1): личный баланс игроков по UUID (long, минимальные единицы), атомарные переводы, журнал операций и безопасный Java API. Данные — SQLite (WAL). Работает без клиентской части; клиенту мод не требуется.'''
 
 [[dependencies.economy_core]]

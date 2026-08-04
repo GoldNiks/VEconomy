@@ -171,10 +171,10 @@ public final class MoneyCommand {
         try {
             ServerPlayer player = source.getPlayerOrException();
             UUID uuid = player.getUUID();
-            List<TransactionRow> rows = EconomyCore.ledger().history(uuid, page, HISTORY_PAGE_SIZE);
             long total = EconomyCore.ledger().countForPlayer(uuid);
             int totalPages = Math.max(1, (int) ((total + HISTORY_PAGE_SIZE - 1) / HISTORY_PAGE_SIZE));
             int currentPage = Math.max(1, Math.min(page, totalPages));
+            List<TransactionRow> rows = EconomyCore.ledger().history(uuid, currentPage, HISTORY_PAGE_SIZE);
 
             source.sendSuccess(() -> Component.translatable("cmd.history.title", currentPage, totalPages)
                     .withStyle(ChatFormatting.GOLD), false);

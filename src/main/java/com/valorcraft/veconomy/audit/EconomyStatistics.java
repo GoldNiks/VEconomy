@@ -73,6 +73,7 @@ public final class EconomyStatistics {
         for (TransactionType type : List.of(
                 TransactionType.MILESTONE_REWARD,
                 TransactionType.WEEKLY_REWARD,
+                TransactionType.QUEST_REWARD,
                 TransactionType.ADMIN_DEPOSIT,
                 TransactionType.LEGACY_IMPORT)) {
             sum += transactions.sumAmountByTypeSince(connection, type, sinceMillis);
