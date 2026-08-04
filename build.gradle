@@ -42,8 +42,27 @@ minecraft {
     }
 }
 
+repositories {
+    mavenCentral()
+}
+
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    implementation('org.xerial:sqlite-jdbc:3.45.3.0') { transitive = false }
+    jarJar('org.xerial:sqlite-jdbc:3.45.3.0') {
+        jarJar.ranged(it, '[3.45.3.0,4.0.0)')
+    }
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.2'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "failed", "skipped"
+    }
 }
 
 processResources {
@@ -71,3 +90,7 @@ jar {
         ])
     }
 }
+
+// Финальный артефакт с упакованным SQLite-драйвером (jarJar):
+// build/libs/VEconomy-1.20.1-<версия>-all.jar. ForgeGradle сам переобаскьюрирует
+// его через reobfJarJar; его и нужно класть в папку mods сервера.

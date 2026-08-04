@@ -7,18 +7,19 @@ modId="economy_core"
 version="${version}"
 displayName="VEconomy"
 authors="ValorCraft"
-description='''Ядро виртуальной валюты (Forge 1.20.1): виртуальный баланс игроков, команды /economy, публичный Java API (EconomyAPI) и события транзакций для других модов. Без физической валюты, сундуков и магазинов.'''
+side="SERVER"
+description='''Серверное ядро цифровой экономики ValorCraft (Forge 1.20.1): личный баланс игроков по UUID (long, минимальные единицы), атомарные переводы, журнал операций и безопасный Java API. Данные — SQLite (WAL). Работает без клиентской части; клиенту мод не требуется.'''
 
 [[dependencies.economy_core]]
     modId="forge"
     mandatory=true
     versionRange="[47,)"
     ordering="NONE"
-    side="BOTH"
+    side="SERVER"
 
 [[dependencies.economy_core]]
     modId="minecraft"
     mandatory=true
     versionRange="[1.20.1,1.21)"
     ordering="NONE"
-    side="BOTH"
+    side="SERVER"
