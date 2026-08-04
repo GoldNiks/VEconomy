@@ -234,6 +234,9 @@ public final class EconomyAdminCommand {
         try {
             EconomyConfig.reload();
             EconomyCore.applySettings(EconomyConfig.toSettings());
+            if (net.minecraftforge.fml.ModList.get().isLoaded("ftbquests")) {
+                com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.reloadRewards();
+            }
             source.sendSuccess(() -> Component.translatable("admin.reload.done").withStyle(ChatFormatting.GREEN), true);
         } catch (Exception e) {
             source.sendFailure(Component.translatable("admin.reload.failed").withStyle(ChatFormatting.RED));

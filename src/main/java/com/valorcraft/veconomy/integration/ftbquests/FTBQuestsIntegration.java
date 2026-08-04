@@ -7,26 +7,33 @@ import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
 import dev.architectury.event.EventResult;
 import dev.ftb.mods.ftbquests.events.CustomRewardEvent;
+import dev.ftb.mods.ftbquests.events.ObjectCompletedEvent;
+import dev.ftb.mods.ftbquests.quest.Chapter;
+import dev.ftb.mods.ftbquests.quest.Quest;
+import dev.ftb.mods.ftbquests.quest.TeamData;
 import dev.ftb.mods.ftbquests.quest.reward.CustomReward;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraftforge.fml.ModList;
 
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Интеграция с FTB Quests: награда деньгами через встроенный тип «Custom Reward».
+ * Интеграция с FTB Quests: награды деньгами.
  * <p>
- * Ограничения FTB Quests не позволяют серверному моду добавлять собственный тип награды
- * (клиент без такого типа падает при синхронизации квестов), поэтому используется
- * штатное событие {@link CustomRewardEvent}, которое генерируется при получении любой
- * «Кастомной награды».
- * <p>
- * Правило: сумма берётся из названия награды — первое число в заголовке.
- * Примеры названий: {@code 500}, {@code 1500 монет}, {@code Вознаграждение 2500}.
- * Если числа в заголовке нет — награда игнорируется (это обычная кастомная награда).
- * <p>
- * Двойное начисление исключено идемпотентным ключом, привязанным к id награды.
+ * Два механизма:
+ * <ol>
+ *   <li><b>«Кастомная награда»</b> (встроенный тип) — сумма берётся из названия награды,
+ *       первое число в заголовке (например {@code 500}, {@code 1500 монет}). Клиенту мод
+ *       не требуется — отдельный тип награды невозможен без установки мода на клиенте.</li>
+ *   <li><b>Автоначисление по главам</b> — при завершении любого квеста игроки команды
+ *       получают сумму за квест из таблицы {@link QuestRewardConfig}. Удобно для
+ *       нарастающих наград: дальше глава — больше сумма.</li>
+ * </ol>
+ * Двойное начисление исключено идемпотентными ключами.
  */
 public final class FTBQuestsIntegration {
 
@@ -36,15 +43,24 @@ public final class FTBQuestsIntegration {
 
     private FTBQuestsIntegration() {}
 
-    /** Зарегистрировать слушатель (вызывается один раз при загрузке мода). */
+    /** Зарегистрировать слушатели (вызывается один раз при загрузке мода). */
     public static void register() {
         if (registered) {
             return;
         }
+        QuestRewardConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
         CustomRewardEvent.EVENT.register(FTBQuestsIntegration::onCustomReward);
+        ObjectCompletedEvent.QUEST.register(FTBQuestsIntegration::onQuestCompleted);
         registered = true;
-        VEconomyMod.LOGGER.info("Интеграция FTB Quests активна (награды деньгами через Custom Reward)");
+        VEconomyMod.LOGGER.info("Интеграция FTB Quests активна (награды деньгами)");
     }
+
+    /** Перечитать таблицу наград по главам (команда {@code /economy admin reload}). */
+    public static void reloadRewards() {
+        QuestRewardConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
+    }
+
+    // ---------------------------------------------------------------- custom reward
 
     private static EventResult onCustomReward(CustomRewardEvent event) {
         if (!EconomyCore.isStarted()) {
@@ -71,12 +87,137 @@ public final class FTBQuestsIntegration {
 
         if (result.status() == TransactionResult.Status.SUCCESS
                 || result.status() == TransactionResult.Status.DUPLICATE_OPERATION) {
-            player.sendSystemMessage(net.minecraft.network.chat.Component.translatable(
+            player.sendSystemMessage(Component.translatable(
                     "notify.quest.reward", EconomyCore.formatter().format(amountMinor))
-                    .withStyle(net.minecraft.ChatFormatting.GREEN));
+                    .withStyle(ChatFormatting.GREEN));
         }
         return EventResult.pass();
     }
+
+    // ---------------------------------------------------------------- auto reward per chapter
+
+    private static EventResult onQuestCompleted(ObjectCompletedEvent.QuestEvent event) {
+        if (!EconomyCore.isStarted()) {
+            return EventResult.pass();
+        }
+        Quest quest = event.getQuest();
+        if (quest == null) {
+            return EventResult.pass();
+        }
+        Chapter chapter = quest.getQuestChapter();
+        long amountMinor = QuestRewardConfig.rewardForChapter(chapter == null ? null : chapter.getRawTitle());
+        if (amountMinor <= 0) {
+            return EventResult.pass();
+        }
+
+        TeamData teamData = event.getData();
+        if (teamData == null) {
+            return EventResult.pass();
+        }
+        var teamOpt = teamOf(teamData.getTeamId());
+        if (teamOpt.isEmpty()) {
+            return EventResult.pass();
+        }
+        String chapterTitle = chapter == null ? "?" : chapter.getRawTitle();
+        long questId = quest.id;
+        for (UUID member : teamOpt.get().getMembers()) {
+            TransactionResult result = EconomyCore.api().deposit(member, amountMinor,
+                    TransactionContext.of(TransactionType.QUEST_REWARD, member,
+                            "ftbquests:" + chapterTitle,
+                            "ftbquests:quest:" + questId + ":" + member));
+            if (result.status() == TransactionResult.Status.SUCCESS) {
+                notifyMember(member, amountMinor, chapterTitle);
+            }
+        }
+        return EventResult.pass();
+    }
+
+    private static void notifyMember(UUID member, long amount, String chapterTitle) {
+        var server = com.valorcraft.veconomy.util.ServerHolder.get();
+        if (server == null) {
+            return;
+        }
+        ServerPlayer player = server.getPlayerList().getPlayer(member);
+        if (player != null) {
+            player.sendSystemMessage(Component.translatable(
+                    "notify.quest.reward", EconomyCore.formatter().format(amount))
+                    .withStyle(ChatFormatting.GREEN));
+        }
+    }
+
+    // ---------------------------------------------------------------- one-time compensation
+
+    /**
+     * Разовая компенсация за квесты, пройденные до установки мода. Начисляет каждому
+     * игроку сумму за все выполненные квесты по таблице глав. Идемпотентный ключ
+     * {@code questcomp:v1:<uuid>} не даёт выдать повторно.
+     *
+     * @return краткий отчёт о выполнении
+     */
+    public static String compensatePastQuests() {
+        if (!ModList.get().isLoaded("ftbquests") || !EconomyCore.isStarted()) {
+            return "НЕ ИНИЦИАЛИЗИРОВАНО";
+        }
+        try {
+            var questFile = dev.ftb.mods.ftbquests.api.FTBQuestsAPI.api().getQuestFile(true);
+            if (questFile == null) {
+                return "Квестовый файл не найден";
+            }
+            int paidTeams = 0;
+            int paidPlayers = 0;
+            long paidTotal = 0;
+            var teamManager = dev.ftb.mods.ftbteams.api.FTBTeamsAPI.api().getManager();
+            for (TeamData teamData : questFile.getAllTeamData()) {
+                long teamTotal = 0;
+                for (var chapter : questFile.getAllChapters()) {
+                    String chapterTitle = chapter.getRawTitle();
+                    long perQuest = QuestRewardConfig.rewardForChapter(chapterTitle);
+                    if (perQuest <= 0) {
+                        continue;
+                    }
+                    for (Quest quest : chapter.getQuests()) {
+                        if (teamData.isCompleted(quest)) {
+                            teamTotal += perQuest;
+                        }
+                    }
+                }
+                if (teamTotal <= 0) {
+                    continue;
+                }
+                var teamOpt = teamOf(teamData.getTeamId());
+                if (teamOpt.isEmpty()) {
+                    continue;
+                }
+                for (UUID member : teamOpt.get().getMembers()) {
+                    TransactionResult result = EconomyCore.api().deposit(member, teamTotal,
+                            TransactionContext.of(TransactionType.QUEST_REWARD, member,
+                                    "compensation:past-quests",
+                                    "questcomp:v1:" + member));
+                    if (result.status() == TransactionResult.Status.SUCCESS) {
+                        paidPlayers++;
+                        paidTotal += teamTotal;
+                        VEconomyMod.LOGGER.info("Компенсация игроку {}: {} (квесты команды)", member, teamTotal);
+                    }
+                }
+                paidTeams++;
+            }
+            return "Компенсация завершена: команд " + paidTeams
+                    + ", игроков " + paidPlayers + ", сумма " + paidTotal;
+        } catch (Throwable t) {
+            VEconomyMod.LOGGER.error("Ошибка компенсации за квесты", t);
+            return "Ошибка: " + t;
+        }
+    }
+
+    private static java.util.Optional<? extends dev.ftb.mods.ftbteams.api.Team> teamOf(UUID teamId) {
+        try {
+            return dev.ftb.mods.ftbteams.api.FTBTeamsAPI.api().getManager().getTeamByID(teamId);
+        } catch (Exception e) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    // ---------------------------------------------------------------- utils
 
     /** Извлечь сумму (в минимальных единицах) из названия награды; -1 если числа нет. */
     static long parseAmount(String title, int decimalPlaces) {

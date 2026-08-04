@@ -100,6 +100,29 @@ public final class VEconomyBindings {
                 ? EconomyCore.accounts().getBalance(TreasuryService.TREASURY_UUID) : 0L;
     }
 
+    /**
+     * Разовая компенсация за квесты, пройденные до установки мода (см. FTB Quests).
+     * Возвращает краткий отчёт. Безопасно вызывать многократно — повторной выдачи не будет.
+     */
+    public static String compensatePastQuests() {
+        return com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.compensatePastQuests();
+    }
+
+    /** Награда за один квест в главе {@code chapterTitle} (из конфига наград), минимальные единицы. */
+    public static long questReward(String chapterTitle) {
+        return com.valorcraft.veconomy.integration.ftbquests.QuestRewardConfig.rewardForChapter(chapterTitle);
+    }
+
+    /** Перечитать конфиг наград по главам. Возвращает отчёт. */
+    public static String reloadQuestRewards() {
+        try {
+            com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.reloadRewards();
+            return "OK";
+        } catch (Throwable t) {
+            return "Ошибка: " + t;
+        }
+    }
+
     /** Зарезервировать {@code amount} у игрока под {@code referenceId}. Код статуса. */
     public static String escrowReserve(Object player, long amount, String referenceId, String reason) {
         UUID id = resolve(player);
