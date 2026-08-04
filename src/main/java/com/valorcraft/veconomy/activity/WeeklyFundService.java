@@ -11,6 +11,7 @@ import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
 import com.valorcraft.veconomy.persistence.MetaRepository;
 
+import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,7 +66,21 @@ public final class WeeklyFundService {
         if (currentWeek.equals(distributed)) {
             return Map.of();
         }
+        if (distributed == null) {
+            // Первый запуск мода: без накопленной истории активность «предыдущей недели»
+            // не определена, поэтому выплату не производим — лишь фиксируем текущую неделю,
+            // чтобы первая выплата прошла на границе следующей недели по её полной активности.
+            markDistributed(currentWeek);
+            VEconomyMod.LOGGER.info("Недельный фонд: первичная инициализация без выплаты (неделя {})",
+                    currentWeek);
+            return Map.of();
+        }
         Map<UUID, Long> payments = distribute(currentWeek);
+        markDistributed(currentWeek);
+        return payments;
+    }
+
+    private void markDistributed(String currentWeek) {
         try {
             database.inTransaction(connection -> {
                 MetaRepository.set(connection, database.dialect(), DISTRIBUTED_WEEK_KEY, currentWeek);
@@ -74,7 +89,6 @@ public final class WeeklyFundService {
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка отметки распределённой недели", e);
         }
-        return payments;
     }
 
     private Map<UUID, Long> distribute(String currentWeek) {
@@ -94,14 +108,19 @@ public final class WeeklyFundService {
                 resetWeekly(currentWeek);
                 return payments;
             }
-            long perSecond = fund / totalActive;
+            // share = floor(fund * seconds / totalActive). Сначала умножаем, потом делим, иначе
+            // при totalActive > fund множитель обнулился бы и весь фонд ушёл в казну.
+            // Используем BigInteger, чтобы избежать переполнения long при fund * seconds.
+            BigInteger fundBig = BigInteger.valueOf(fund);
+            BigInteger totalBig = BigInteger.valueOf(totalActive);
             long totalPaid = 0;
             long now = System.currentTimeMillis();
             for (PlayerActivityRow row : rows) {
                 if (row.excludedFromRewards() || row.weeklyActiveSeconds() <= 0) {
                     continue;
                 }
-                long share = perSecond * row.weeklyActiveSeconds();
+                long share = fundBig.multiply(BigInteger.valueOf(row.weeklyActiveSeconds()))
+                        .divide(totalBig).longValue();
                 if (share <= 0) {
                     continue;
                 }
