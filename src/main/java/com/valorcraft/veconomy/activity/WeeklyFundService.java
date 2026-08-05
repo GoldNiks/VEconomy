@@ -9,45 +9,44 @@ import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.config.EconomySettings.WeeklyFund;
 import com.valorcraft.veconomy.economy.AccountService;
 import com.valorcraft.veconomy.economy.TreasuryService;
+import com.valorcraft.veconomy.persistence.AccountRepository;
+import com.valorcraft.veconomy.persistence.AccountRow;
 import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
+import com.valorcraft.veconomy.persistence.EscrowRepository;
 import com.valorcraft.veconomy.persistence.MetaRepository;
 
-import java.math.BigInteger;
+import java.sql.Connection;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Недельный фонд. При смене недели активность завершённой недели сохраняется снимком
- * в таблицу {@code weekly_activity_periods} (независимая ротация), после чего недельный
- * накопитель обнуляется — независимо от того, будет ли выплата в этот момент.
+ * Недельный фонд.
  * <p>
- * Выплата обрабатывает <b>самый старый незакрытый период</b>, а не только напрямую
- * предыдущую неделю: если за предыдущие недели остались невыплаченные снимки, они
- * обрабатываются по очереди, а любой ручной {@code run} продолжает с самого раннего.
- * Команды {@code preview}/{@code status}/{@code run confirm} по умолчанию смотрят именно
- * на этот снимок (и умеют принимать явный {@code weekId}).
+ * <b>Закрытие недели</b> происходит независимо от выплаты: активность завершённой недели
+ * читается из таблицы {@code weekly_activity_days} (активность привязана к дню, поэтому
+ * недели на границе никогда не смешиваются), после чего план — размер фонда, коэффициент
+ * экономики, денежная масса, очки, доли и остаток — <b>замораживается</b> в таблицах
+ * {@code weekly_fund_plans} и {@code weekly_activity_periods}. Ни дальнейшая активность,
+ * ни изменение конфига, ни изменение денежной массы не меняют план.
  * <p>
- * Ротация возвращает успешность: при ошибке БД выплата полностью прерывается,
- * {@code distributed_week} не продвигается и снимок не теряется — на следующем
- * интервале попытка повторится. Участие и очки фиксируются при ротации; доля
- * пересчитывается от сохранённых очков на момент выплаты:
- * {@code share = floor(fund * points / totalPoints)} через {@link BigInteger}.
+ * <b>Автономность:</b> если включён {@code weeklyFund.autoPayout}, план помечается временем
+ * автоматической выплаты ({@code planned_at + payoutDelayHours}) и выплачивается сам после
+ * контрольной задержки. Ручной {@code run confirm} платит сразу. Неуспешные строки
+ * (замороженный игрок, лимит) оставляют период открытым — повторный запуск продолжает
+ * с сохранённых долей, остаток казне начисляется только при полном закрытии.
  * <p>
- * Выплата возобновляема и «атомарна»: каждая выплата игроку идемпотентна по ключу
- * {@code weekly:<week>:<uuid>}, а период не закрывается, пока есть строки в статусе
- * не {@code SUCCESS}/{@code DUPLICATE_OPERATION} — повторный {@code run confirm} продолжает
- * с неуспешных. Остаток от деления (округление) уходит в казну только при полном закрытии
- * периода; если начисление казне не пройдёт, период останется незакрытым и будет повторён,
- * чтобы остаток не пропал из учёта.
+ * Денежная масса для коэффициента экономики считается по существующей модели total supply:
+ * все личные балансы (включая казну как системный аккаунт) плюс зарезервированный эскроу.
  * <p>
- * Автозапуск ({@code weeklyFund.autoRun}) по умолчанию выключен; администратор выполняет
- * выплату вручную: {@code /economy admin weekly run confirm}. Первичный запуск не платит —
- * лишь фиксирует текущую неделю, чтобы первая выплата прошла по полной следующей неделе.
+ * Выплата возобновляема и идемпотентна: каждая выплата игроку идемпотентна по ключу
+ * {@code weekly:<week>:<uuid>}; ошибка БД не продвигает {@code distributed_week}.
  */
 public final class WeeklyFundService {
 
@@ -57,22 +56,32 @@ public final class WeeklyFundService {
 
     private final DatabaseManager database;
     private final PlayerActivityRepository activityRepository;
+    private final WeeklyActivityDayRepository days;
     private final WeeklyPeriodRepository periods;
     private final WeeklyTreasuryRepository treasury;
     private final WeeklyPayoutRepository payouts;
-    private final AccountService accounts;
+    private final WeeklyFundPlanRepository plans;
+    private final AccountRepository accounts;
+    private final EscrowRepository escrow;
+    private final AccountService accountService;
     private volatile EconomySettings settings;
 
     public WeeklyFundService(DatabaseManager database, PlayerActivityRepository activityRepository,
-                             WeeklyPeriodRepository periods, WeeklyTreasuryRepository treasury,
-                             WeeklyPayoutRepository payouts,
-                             AccountService accounts, EconomySettings settings) {
+                             WeeklyActivityDayRepository days, WeeklyPeriodRepository periods,
+                             WeeklyTreasuryRepository treasury, WeeklyPayoutRepository payouts,
+                             WeeklyFundPlanRepository plans, AccountRepository accounts,
+                             EscrowRepository escrow, AccountService accountService,
+                             EconomySettings settings) {
         this.database = database;
         this.activityRepository = activityRepository;
+        this.days = days;
         this.periods = periods;
         this.treasury = treasury;
         this.payouts = payouts;
+        this.plans = plans;
         this.accounts = accounts;
+        this.escrow = escrow;
+        this.accountService = accountService;
         this.settings = settings;
     }
 
@@ -82,12 +91,12 @@ public final class WeeklyFundService {
 
     // ---------------------------------------------------------------- run
 
-    /** Автоматическая выплата при смене недели (уважает {@code weeklyFund.autoRun}). */
+    /** Автоматическая выплата (уважает {@code autoPayout} и контрольную задержку). */
     public Map<UUID, Long> maybeDistribute() {
-        return distributeIfDue(settings.weeklyFund.autoRun);
+        return distributeIfDue(false);
     }
 
-    /** Ручная выплата администратором (не зависит от {@code autoRun}); обрабатывает самый старый незакрытый период. */
+    /** Ручная выплата администратором: самый старый незакрытый период, без задержки. */
     public Map<UUID, Long> runNow() {
         return distributeIfDue(true);
     }
@@ -95,7 +104,7 @@ public final class WeeklyFundService {
     /** Ручная выплата конкретной недели ({@code /economy admin weekly run <weekId> confirm}). */
     public Map<UUID, Long> runNow(String weekId) {
         WeeklyFund cfg = settings.weeklyFund;
-        if (weekId == null || !WeekId.isValid(weekId) || !cfg.enabled || cfg.weeklyAmount <= 0) {
+        if (weekId == null || !WeekId.isValid(weekId) || !cfg.enabled) {
             return Map.of();
         }
         String currentWeek = WeekId.current();
@@ -114,14 +123,14 @@ public final class WeeklyFundService {
         if (!has) {
             return Map.of();
         }
-        return distribute(weekId, currentWeek, cfg);
+        return distribute(weekId, currentWeek);
     }
 
     /**
-     * Выплатить фонд, если есть незакрытые периоды и это разрешено. Возвращает выплаты
-     * текущего запуска (игрок → сумма) для уведомлений; пустая карта — если выплаты не было.
+     * Обычный цикл: закрытие недели → план → (авто) выплата. Возвращает выплаты текущего
+     * запуска; пустая карта — если выплаты не было.
      */
-    private Map<UUID, Long> distributeIfDue(boolean allowed) {
+    private Map<UUID, Long> distributeIfDue(boolean manual) {
         WeeklyFund cfg = settings.weeklyFund;
         String currentWeek = WeekId.current();
         String distributed;
@@ -135,37 +144,43 @@ public final class WeeklyFundService {
         if (distributed == null) {
             // Первый запуск мода: без накопленной истории «предыдущая неделя» не определена,
             // поэтому выплату не производим. Чтобы первая полная неделя не потерялась, помечаем
-            // распределённой НЕ текущую, а предыдущую неделю: тогда снимок текущей (первой
-            // полной) недели попадёт в очередь и будет автоматически выплачен при переходе.
+            // распределённой НЕ текущую, а предыдущую неделю.
             String prev = WeekId.previous(currentWeek);
             boolean ok = markFirstWeek(prev);
             VEconomyMod.LOGGER.info("Недельный фонд: первичная инициализация без выплаты (распределена неделя {})",
                     prev);
-            if (!ok) {
-                return Map.of();
-            }
-            return Map.of();
+            return ok ? Map.of() : Map.of();
         }
 
-        // Независимая ротация: сохраняем снимок завершённой недели и обнуляем накопитель.
-        // При ошибке всё прерывается, чтобы неделя не была помечена распределённой вслепую.
+        // Независимая ротация: сохраняем план завершённой недели и обнуляем накопитель.
         String prev = WeekId.previous(currentWeek);
         if (!ensurePrevRotated(prev, currentWeek)) {
             return Map.of();
         }
         // Пропущенные (офлайн) недели без снимка закрываем как пустые, чтобы очередь шла дальше.
         closeEmptyGaps(distributed, currentWeek);
-        // Двигаем распределённую неделю вперёд по уже закрытым периодам (ремонт после сбоев).
+        // Двигаем распределённую неделю вперёд по уже закрытым периодам.
         distributed = advanceClosed(distributed, currentWeek);
         // Самый старый незакрытый период.
         String target = oldestOpenWeek(distributed, currentWeek);
         if (target == null) {
             return Map.of();
         }
-        if (!cfg.enabled || cfg.weeklyAmount <= 0 || !allowed) {
+        if (!cfg.enabled) {
             return Map.of();
         }
-        return distribute(target, currentWeek, cfg);
+        if (!manual) {
+            // Автоматический режим: платим только после контрольной задержки и только при autoPayout.
+            if (!cfg.autoPayout) {
+                return Map.of();
+            }
+            WeeklyFundPlanRow plan = readPlanQuiet(target);
+            if (plan == null || plan.autoPayoutAt() == null
+                    || System.currentTimeMillis() < plan.autoPayoutAt()) {
+                return Map.of();
+            }
+        }
+        return distribute(target, currentWeek);
     }
 
     private void markDistributedWeek(String weekId) {
@@ -189,6 +204,9 @@ public final class WeeklyFundService {
             long now = System.currentTimeMillis();
             database.inTransaction(connection -> {
                 periods.insertEmpty(connection, database.dialect(), prevWeek, now);
+                plans.insert(connection, database.dialect(), new WeeklyFundPlanRow(
+                        prevWeek, 0, 0, WeeklyMath.BPS_100_PERCENT, 0, 0, 0, 0, 0, 0, 0,
+                        WeeklyFundPlanRow.STATUS_PAID, now, null, now));
                 MetaRepository.set(connection, database.dialect(), DISTRIBUTED_WEEK_KEY, prevWeek);
                 return null;
             });
@@ -202,8 +220,7 @@ public final class WeeklyFundService {
 
     // ---------------------------------------------------------------- rotation
 
-    /** Убедиться, что завершённая неделя сохранена снимком. Возвращает успешность: при
-     *  ошибке БД {@code distributed_week} трогать нельзя, поэтому прерываем всю выплату. */
+    /** Убедиться, что завершённая неделя сохранена снимком. */
     private boolean ensurePrevRotated(String paidWeek, String currentWeek) {
         boolean hasSnapshot;
         try {
@@ -218,81 +235,129 @@ public final class WeeklyFundService {
         return rotate(paidWeek, currentWeek);
     }
 
+    /**
+     * Закрыть неделю: рассчитать и заморозить план (фонд, коэффициент, очки, доли) и записать
+     * снимок периодов. Все чтения — в одной транзакции, запись — в другой: при ошибке ни
+     * части плана, ни потерянных секунд не остаётся.
+     */
     private boolean rotate(String paidWeek, String currentWeek) {
         WeeklyFund cfg = settings.weeklyFund;
-        long minAccountAgeMillis = cfg.minAccountAgeDays <= 0 ? 0 : cfg.minAccountAgeDays * 86_400_000L;
-        List<PlayerActivityRow> rows;
+        long now = System.currentTimeMillis();
+        PlanComputation plan;
         try {
-            rows = database.inTransaction(connection ->
-                    activityRepository.listWithWeeklyActivity(connection));
+            plan = database.inTransaction(connection -> computePlan(connection, paidWeek, cfg, now));
         } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка чтения активности для ротации недели {}", paidWeek, e);
+            VEconomyMod.LOGGER.error("Ошибка расчёта плана недели {}", paidWeek, e);
             return false;
         }
-        long now = System.currentTimeMillis();
-        List<Allocation> eligible = new ArrayList<>();
-        for (PlayerActivityRow row : rows) {
-            if (row.excludedFromRewards()) {
-                continue;
-            }
-            // Ротация закрывает неделю paidWeek: учитываем только активность, помеченную этой
-            // неделей или новее. После простоя сервера на несколько недель старая активность
-            // могла остаться со старым current_week_id (< paidWeek) и не подходит под
-            // непосредственно предыдущую неделю — иначе история периодов была бы неверной.
-            String weekId = row.currentWeekId();
-            if (weekId != null && weekId.compareTo(paidWeek) < 0) {
-                continue;
-            }
-            long counted = row.weeklyActiveSeconds();
-            if (cfg.maxCountedSeconds > 0 && counted > cfg.maxCountedSeconds) {
-                counted = cfg.maxCountedSeconds;
-            }
-            if (counted <= 0) {
-                continue;
-            }
-            if (cfg.minActiveSeconds > 0 && counted < cfg.minActiveSeconds) {
-                continue;
-            }
-            if (minAccountAgeMillis > 0) {
-                long accountAgeMillis = accounts.getAccount(row.playerId())
-                        .map(BalanceSnapshot::createdAt).orElse(row.firstSeenAt());
-                if (now - accountAgeMillis < minAccountAgeMillis) {
-                    continue;
-                }
-            }
-            long points = pointsOf(counted, cfg.pointLevels);
-            if (points <= 0) {
-                continue;
-            }
-            eligible.add(new Allocation(row.playerId(), counted, points));
-        }
 
-        // Снимок и сброс накопителя в одной транзакции: в случае ошибки не останется
-        // ни части снимка, ни потерянных секунд — и неделю можно будет ротировать снова.
         try {
-            boolean empty = eligible.isEmpty();
             database.inTransaction(connection -> {
-                if (empty) {
-                    // Некому платить: помечаем неделю пустой служебной строкой, чтобы она
-                    // считалась закрытой и очередь продвигалась дальше.
+                if (plan.isEmpty()) {
                     periods.insertEmpty(connection, database.dialect(), paidWeek, now);
-                } else {
-                    for (Allocation allocation : eligible) {
+                }
+                plans.insert(connection, database.dialect(), plan.toPlanRow(now, cfg.payoutDelayHours, cfg.autoPayout));
+                if (!plan.isEmpty()) {
+                    for (int i = 0; i < plan.eligible().size(); i++) {
+                        Eligible eligible = plan.eligible().get(i);
                         periods.insert(connection, database.dialect(), new WeeklyPeriodRow(
-                                paidWeek, allocation.playerId(), allocation.countedSeconds(),
-                                allocation.points(), WeeklyPeriodRepository.STATUS_PENDING, 0, null));
+                                paidWeek, eligible.playerId(), eligible.countedSeconds(),
+                                eligible.totalPoints(), WeeklyPeriodRepository.STATUS_PENDING, 0, null,
+                                eligible.activeDays(), eligible.timePoints(), eligible.dayPoints(),
+                                plan.shares()[i]));
                     }
                 }
                 activityRepository.resetWeekly(connection, currentWeek);
                 return null;
             });
-            VEconomyMod.LOGGER.info("Недельный фонд: ротация — снимок недели {} на {} игроков",
-                    paidWeek, empty ? 0 : eligible.size());
+            VEconomyMod.LOGGER.info("Недельный фонд: ротация — план недели {} на {} игроков, фонд {}",
+                    paidWeek, plan.eligibleCount(), plan.fundAmount());
         } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка ротации снимка недели {}", paidWeek, e);
+            VEconomyMod.LOGGER.error("Ошибка записи плана недели {}", paidWeek, e);
             return false;
         }
         return true;
+    }
+
+    /**
+     * Чистый расчёт плана для недели: агрегация активности по дням, условия участия, размер
+     * фонда, коэффициент экономики, очки и доли. Не записывает ничего в базу.
+     */
+    private PlanComputation computePlan(Connection connection, String weekId, WeeklyFund cfg, long now) {
+        List<WeeklyActivityDayRow> dayRows = days.listByWeek(connection, weekId);
+        Map<UUID, Aggregated> aggregated = new HashMap<>();
+        for (WeeklyActivityDayRow row : dayRows) {
+            Aggregated value = aggregated.computeIfAbsent(row.playerId(), id -> new Aggregated());
+            value.totalSeconds += row.activeSeconds();
+            if (cfg.minActiveDaySeconds <= 0 || row.activeSeconds() >= cfg.minActiveDaySeconds) {
+                value.activeDays++;
+            }
+        }
+        long minAccountAgeMillis = cfg.minAccountAgeDays <= 0 ? 0 : cfg.minAccountAgeDays * 86_400_000L;
+
+        List<Eligible> eligible = new ArrayList<>();
+        for (Map.Entry<UUID, Aggregated> entry : aggregated.entrySet()) {
+            UUID playerId = entry.getKey();
+            Aggregated data = entry.getValue();
+            PlayerActivityRow activity = activityRepository.find(connection, playerId).orElse(null);
+            if (activity != null && activity.excludedFromRewards()) {
+                continue;
+            }
+            AccountRow account = accounts.find(connection, playerId).orElse(null);
+            if (account != null && account.status() == com.valorcraft.veconomy.api.AccountStatus.FROZEN) {
+                continue;
+            }
+            if (cfg.minActiveSeconds > 0 && data.totalSeconds < cfg.minActiveSeconds) {
+                continue;
+            }
+            if (cfg.minActiveDays > 0 && data.activeDays < cfg.minActiveDays) {
+                continue;
+            }
+            if (minAccountAgeMillis > 0) {
+                long created = account != null ? account.createdAt()
+                        : (activity != null ? activity.firstSeenAt() : now);
+                if (now - created < minAccountAgeMillis) {
+                    continue;
+                }
+            }
+            long timePoints = WeeklyMath.timePoints(data.totalSeconds, cfg.timePointLevels);
+            long dayPoints = WeeklyMath.dayPoints(data.activeDays, cfg.dayPointLevels);
+            long points = timePoints + dayPoints;
+            if (points <= 0) {
+                continue;
+            }
+            eligible.add(new Eligible(playerId, data.totalSeconds, data.activeDays,
+                    timePoints, dayPoints, points));
+        }
+
+        int count = eligible.size();
+        long baseFund = WeeklyMath.baseFund(count, cfg.baseAmountPerEligiblePlayer);
+        long moneySupply = accounts.sumBalance(connection, false) + escrow.sumReserved(connection);
+        long supplyPerEligible = count > 0 ? moneySupply / count : 0;
+        long coefficientBps = WeeklyMath.economyCoefficientBps(
+                supplyPerEligible, cfg.targetSupplyPerEligiblePlayer, cfg.economyCoefficientTiers);
+        long fundAmount = WeeklyMath.finalFund(baseFund, coefficientBps, cfg.minimumFund, cfg.maximumFund);
+
+        long totalPoints = 0;
+        for (Eligible e : eligible) {
+            totalPoints += e.totalPoints();
+        }
+        long[] shares = new long[eligible.size()];
+        long remainder = 0;
+        if (count > 0 && fundAmount > 0 && totalPoints > 0) {
+            List<WeeklyMath.Participant> participants = new ArrayList<>(count);
+            for (Eligible e : eligible) {
+                participants.add(new WeeklyMath.Participant(e.playerId(), e.totalPoints()));
+            }
+            WeeklyMath.Distribution distribution = WeeklyMath.distribute(
+                    fundAmount, participants, cfg.maximumPlayerSharePercent);
+            shares = distribution.shares();
+            remainder = distribution.remainder();
+        }
+        long totalShare = fundAmount - remainder;
+        return new PlanComputation(weekId, baseFund, coefficientBps, moneySupply, supplyPerEligible,
+                cfg.targetSupplyPerEligiblePlayer, fundAmount, eligible, shares, totalPoints,
+                totalShare, remainder);
     }
 
     // ---------------------------------------------------------------- queue
@@ -321,6 +386,9 @@ public final class WeeklyFundService {
                     String week = w;
                     database.inTransaction(connection -> {
                         periods.insertEmpty(connection, database.dialect(), week, now);
+                        plans.insert(connection, database.dialect(), new WeeklyFundPlanRow(
+                                week, 0, 0, WeeklyMath.BPS_100_PERCENT, 0, 0, 0, 0, 0, 0, 0,
+                                WeeklyFundPlanRow.STATUS_PAID, now, null, now));
                         return null;
                     });
                 } catch (DatabaseException e) {
@@ -332,7 +400,7 @@ public final class WeeklyFundService {
         }
     }
 
-    /** Продвинуть распределённую неделю вперёд по уже закрытым периодам (в т.ч. ремонт после сбоев). */
+    /** Продвинуть распределённую неделю вперёд по уже закрытым периодам. */
     private String advanceClosed(String distributed, String currentWeek) {
         String prev = WeekId.previous(currentWeek);
         String cursor = distributed;
@@ -352,8 +420,6 @@ public final class WeeklyFundService {
                 VEconomyMod.LOGGER.error("Ошибка проверки закрытой недели {}", w, e);
                 return cursor;
             }
-            // Ошибка чтения задолженности казне приравнивается к открытому периоду:
-            // при сбое очередь не продвигается мимо недели.
             boolean treasuryPending;
             try {
                 String week = w;
@@ -381,8 +447,6 @@ public final class WeeklyFundService {
             if (++guard > SCAN_LIMIT) {
                 return null;
             }
-            // Ошибка чтения задолженности казне приравнивается к открытому периоду: очередь
-            // не продвигается дальше, чтобы долг остатка не был потерян из-за сбоя чтения.
             boolean treasuryPending;
             try {
                 String week = w;
@@ -420,11 +484,11 @@ public final class WeeklyFundService {
         return open == null ? WeekId.previous(currentWeek) : open;
     }
 
-    /** Что будет выплачено за указанную неделю (без изменения балансов), читая снимок. */
+    /** Что будет выплачено за указанную неделю (без изменения балансов), читая замороженный план. */
     public List<WeeklyAllocation> preview() {
         String currentWeek = WeekId.current();
         String distributed = readDistributedWeekQuiet();
-        return computeAllocationsFor(displayWeek(distributed, currentWeek));
+        return preview(displayWeek(distributed, currentWeek));
     }
 
     public List<WeeklyAllocation> preview(String weekId) {
@@ -434,11 +498,49 @@ public final class WeeklyFundService {
         return computeAllocationsFor(weekId);
     }
 
+    /** Прогноз текущей недели (живой расчёт из таблицы дней, не источник истины). */
+    public WeeklyForecast forecast() {
+        WeeklyFund cfg = settings.weeklyFund;
+        String currentWeek = WeekId.current();
+        long now = System.currentTimeMillis();
+        try {
+            PlanComputation plan = database.inTransaction(connection ->
+                    computePlan(connection, currentWeek, cfg, now));
+            List<WeeklyForecast.PlayerForecast> players = new ArrayList<>(plan.eligible().size());
+            for (int i = 0; i < plan.eligible().size(); i++) {
+                Eligible eligible = plan.eligible().get(i);
+                players.add(new WeeklyForecast.PlayerForecast(eligible.playerId(),
+                        eligible.countedSeconds(), eligible.activeDays(), eligible.timePoints(),
+                        eligible.dayPoints(), eligible.totalPoints(), plan.shares()[i]));
+            }
+            players.sort(java.util.Comparator.comparingLong(WeeklyForecast.PlayerForecast::share).reversed());
+            return new WeeklyForecast(currentWeek, plan.fundAmount(), plan.baseFund(),
+                    plan.coefficientBps(), plan.moneySupply(), plan.supplyPerEligible(),
+                    plan.eligibleCount(), plan.totalPoints(), plan.totalShare(), players);
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка прогноза недельного фонда", e);
+            return new WeeklyForecast(currentWeek, 0, 0, 0, 0, 0, 0, 0, 0, List.of());
+        }
+    }
+
+    /** Прогноз по игроку для {@code /money weekly}: участие, очки и примерная доля. */
+    public Optional<WeeklyForecast.PlayerForecast> forecastFor(UUID playerId) {
+        WeeklyForecast forecast = forecast();
+        for (WeeklyForecast.PlayerForecast candidate : forecast.players()) {
+            if (candidate.playerId().equals(playerId)) {
+                return Optional.of(candidate);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** Состояние фонда для административной команды. */
     public WeeklyStatus status() {
         WeeklyFund cfg = settings.weeklyFund;
         String currentWeek = WeekId.current();
         String distributed = readDistributedWeekQuiet();
         String target = displayWeek(distributed, currentWeek);
+        WeeklyFundPlanRow plan = readPlanQuiet(target);
         List<WeeklyAllocation> allocations = computeAllocationsFor(target);
         long totalShare = 0;
         long totalPoints = 0;
@@ -448,9 +550,13 @@ public final class WeeklyFundService {
             totalPoints += allocation.points();
             totalSeconds += allocation.countedSeconds();
         }
-        return new WeeklyStatus(cfg.enabled, cfg.autoRun, cfg.weeklyAmount, currentWeek,
-                distributed, WeekId.previous(currentWeek).equals(distributed), target,
-                allocations.size(), totalPoints, totalSeconds, totalShare);
+        String payoutStatus = plan == null ? WeeklyFundPlanRow.STATUS_PLANNED : plan.payoutStatus();
+        Long autoPayoutAt = plan == null ? null : plan.autoPayoutAt();
+        long fundAmount = plan == null ? 0 : plan.fundAmount();
+        return new WeeklyStatus(cfg.enabled, cfg.autoPayout, cfg.payoutDelayHours, fundAmount,
+                currentWeek, distributed, WeekId.previous(currentWeek).equals(distributed), target,
+                allocations.size(), totalPoints, totalSeconds, totalShare, payoutStatus,
+                autoPayoutAt, WeekId.endMillis(currentWeek));
     }
 
     private String readDistributedWeekQuiet() {
@@ -463,111 +569,74 @@ public final class WeeklyFundService {
         }
     }
 
-    /** Расчёт по снимку недели: доли пересчитываются от сохранённых очков. */
+    /** Расчёт по замороженному плану: доли берутся как есть, ничего не пересчитывается. */
     private List<WeeklyAllocation> computeAllocationsFor(String weekId) {
-        WeeklyFund cfg = settings.weeklyFund;
-        long fund = cfg.weeklyAmount;
-        List<WeeklyPeriodRow> rows;
         try {
-            rows = database.inTransaction(connection -> periods.listByWeek(connection, weekId));
+            return database.inTransaction(connection -> {
+                List<WeeklyPeriodRow> rows = periods.listByWeek(connection, weekId);
+                List<WeeklyAllocation> result = new ArrayList<>(rows.size());
+                for (WeeklyPeriodRow row : rows) {
+                    result.add(new WeeklyAllocation(row.playerId(), row.countedSeconds(),
+                            row.activeDays(), row.points(), row.timePoints(), row.dayPoints(),
+                            row.share()));
+                }
+                result.sort(java.util.Comparator.comparingLong(WeeklyAllocation::share).reversed());
+                return result;
+            });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка чтения снимка недели {}", weekId, e);
             return List.of();
         }
-        if (rows.isEmpty()) {
-            return List.of();
+    }
+
+    private WeeklyFundPlanRow readPlanQuiet(String weekId) {
+        try {
+            return database.inTransaction(connection -> plans.find(connection, weekId).orElse(null));
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка чтения плана недели {}", weekId, e);
+            return null;
         }
-        long totalPoints = 0;
-        for (WeeklyPeriodRow row : rows) {
-            totalPoints += row.points();
-        }
-        if (totalPoints <= 0) {
-            return List.of();
-        }
-        BigInteger fundBig = BigInteger.valueOf(fund);
-        BigInteger totalBig = BigInteger.valueOf(totalPoints);
-        List<WeeklyAllocation> result = new ArrayList<>(rows.size());
-        for (WeeklyPeriodRow row : rows) {
-            long share = fundBig.multiply(BigInteger.valueOf(row.points()))
-                    .divide(totalBig).longValue();
-            if (share <= 0) {
-                continue;
-            }
-            result.add(new WeeklyAllocation(row.playerId(),
-                    row.countedSeconds(), row.points(), share));
-        }
-        result.sort(Comparator.comparingLong(WeeklyAllocation::share).reversed());
-        return result;
     }
 
     // ---------------------------------------------------------------- distribution
 
     /**
-     * Выплатить снимок недели. Возобновляемо: заново пытаются строки не в статусе
-     * {@code PAID}; успех или идемпотентный повтор закрывает сроку, любой другой исход
-     * оставляет период открытым. Остаток от деления выплачивается в казну только при полном
-     * закрытии периода; при неудаче период остаётся незакрытым и будет повторён, чтобы
-     * остаток не пропал из учёта.
+     * Выплатить снимок недели по замороженному плану. Возобновляемо: заново пытаются строки не
+     * в статусе {@code PAID}; доли берутся из плана. Остаток в казну начисляется только при
+     * полном закрытии; при неудаче период остаётся незакрытым и будет повторён.
      */
-    private Map<UUID, Long> distribute(String paidWeek, String currentWeek, WeeklyFund cfg) {
+    private Map<UUID, Long> distribute(String paidWeek, String currentWeek) {
+        WeeklyFundPlanRow plan;
         List<WeeklyPeriodRow> rows;
         try {
-            rows = database.inTransaction(connection -> periods.listByWeek(connection, paidWeek));
+            PlanAndRows data = database.inTransaction(connection ->
+                    new PlanAndRows(plans.find(connection, paidWeek).orElse(null),
+                            periods.listByWeek(connection, paidWeek)));
+            plan = data.plan();
+            rows = data.rows();
         } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка чтения снимка недели {}", paidWeek, e);
+            VEconomyMod.LOGGER.error("Ошибка чтения плана недели {}", paidWeek, e);
             return Map.of();
         }
-        if (rows.isEmpty()) {
+        if (rows.isEmpty() || plan == null || plan.fundAmount() <= 0) {
             closeAndAdvance(paidWeek, currentWeek);
             return Map.of();
         }
-        long totalPoints = 0;
-        for (WeeklyPeriodRow row : rows) {
-            totalPoints += row.points();
-        }
-        if (totalPoints <= 0) {
-            // Только служебная пустая строка (некому платить) — закрываем без выплат.
-            long now = System.currentTimeMillis();
-            for (WeeklyPeriodRow row : rows) {
-                if (!WeeklyPeriodRepository.STATUS_PAID.equals(row.status())) {
-                    markPaid(paidWeek, row.playerId(), now, null);
-                }
-            }
-            closeAndAdvance(paidWeek, currentWeek);
-            return Map.of();
-        }
-        long fund = cfg.weeklyAmount;
-        BigInteger fundBig = BigInteger.valueOf(fund);
-        BigInteger totalBig = BigInteger.valueOf(totalPoints);
-
-        // Итоговый остаток фиксирован для периода: fund минус сумма всех долей строк.
-        long grossShares = 0;
-        long[] shares = new long[rows.size()];
-        for (int i = 0; i < rows.size(); i++) {
-            long share = fundBig.multiply(BigInteger.valueOf(rows.get(i).points()))
-                    .divide(totalBig).longValue();
-            shares[i] = share;
-            grossShares += share;
-        }
-        long remainder = Math.max(0, fund - grossShares);
 
         Map<UUID, Long> payments = new HashMap<>();
         long totalPaid = 0;
         long now = System.currentTimeMillis();
-        for (int i = 0; i < rows.size(); i++) {
-            WeeklyPeriodRow row = rows.get(i);
+        for (WeeklyPeriodRow row : rows) {
             if (WeeklyPeriodRepository.STATUS_PAID.equals(row.status())) {
                 continue;
             }
             UUID playerId = row.playerId();
-            long share = shares[i];
+            long share = row.share();
             if (share <= 0) {
-                // Доля меньше минимальной единицы: выплаты нет, но строку закрываем,
-                // чтобы период мог завершиться и неделя продвинулась вперёд.
                 markPaid(paidWeek, playerId, now, null);
                 continue;
             }
-            TransactionResult result = accounts.deposit(playerId, share,
+            TransactionResult result = accountService.deposit(playerId, share,
                     TransactionContext.of(TransactionType.WEEKLY_REWARD, null,
                             "weekly-fund:" + paidWeek, "weekly:" + paidWeek + ":" + playerId));
             if (result.status() == TransactionResult.Status.SUCCESS
@@ -599,6 +668,7 @@ public final class WeeklyFundService {
         boolean closed = allPaid(paidWeek);
         if (closed) {
             boolean ok = true;
+            long remainder = plan.remainderAmount();
             if (remainder > 0) {
                 ok = creditTreasury(paidWeek, remainder);
                 if (!ok) {
@@ -607,28 +677,34 @@ public final class WeeklyFundService {
                 }
             }
             if (ok) {
+                markPlanPaid(paidWeek, now);
                 closeAndAdvance(paidWeek, currentWeek);
             }
         }
         VEconomyMod.LOGGER.info("Недельный фонд {} за неделю {}: игроков {}, выплачено {}, закрыта {}",
-                fund, paidWeek, payments.size(), totalPaid, closed);
+                plan.fundAmount(), paidWeek, payments.size(), totalPaid, closed);
         return payments;
     }
 
-    /**
-     * Закрыть оплаченную неделю и продвинуть распределённую неделю вперёд через закрытые
-     * периоды, останавливаясь на первом незакрытом. Так явный {@code run <weekId>} младшей
-     * недели не «проглатывает» более старый незакрытый период: он останется в очереди.
-     */
+    /** Закрыть оплаченную неделю и продвинуть распределённую неделю вперёд. */
     private void closeAndAdvance(String paidWeek, String currentWeek) {
         advanceClosed(readDistributedWeekQuiet(), currentWeek);
     }
 
+    private void markPlanPaid(String weekId, long paidAt) {
+        try {
+            database.inTransaction(connection -> {
+                plans.markPaid(connection, weekId, paidAt);
+                return null;
+            });
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка отметки плана недели {} завершённым", weekId, e);
+        }
+    }
+
     /**
-     * Зачислить остаток в казну. Сначала статус фиксируется как {@code PENDING} (до перевода), затем
-     * выполняется перевод и при успехе помечается {@code PAID}. Если запись статуса или сам перевод
-     * не пройдут, долг остаётся {@code PENDING}, и очередь не продвинется — повтор на следующем
-     * запуске продолжит с неполученного остатка. Возвращает успех (идемпотентный повтор тоже успех).
+     * Зачислить остаток в казну. Сначала статус фиксируется как {@code PENDING}, затем выполняется
+     * перевод и при успехе помечается {@code PAID}. Возвращает успех (идемпотентный повтор тоже успех).
      */
     private boolean creditTreasury(String weekId, long amount) {
         long now = System.currentTimeMillis();
@@ -638,13 +714,11 @@ public final class WeeklyFundService {
                 return null;
             });
         } catch (DatabaseException e) {
-            // Не удалось зафиксировать долг — без него остаток может потеряться, поэтому
-            // прерываем выплату и оставляем период открытым.
             VEconomyMod.LOGGER.error("Недельный фонд: не удалось зафиксировать остаток недели {}",
                     weekId, e);
             return false;
         }
-        TransactionResult result = accounts.deposit(TreasuryService.TREASURY_UUID, amount,
+        TransactionResult result = accountService.deposit(TreasuryService.TREASURY_UUID, amount,
                 TransactionContext.of(TransactionType.WEEKLY_REWARD, null,
                         "weekly-fund:remainder:" + weekId, "weekly:treasury:" + weekId));
         boolean success = result.status() == TransactionResult.Status.SUCCESS
@@ -699,34 +773,77 @@ public final class WeeklyFundService {
         }
     }
 
-    // ---------------------------------------------------------------- helpers
+    // ---------------------------------------------------------------- records
 
-    private static long pointsOf(long countedSeconds, List<WeeklyFund.PointLevel> levels) {
-        if (levels.isEmpty()) {
-            return countedSeconds;
-        }
-        long points = 0;
-        for (WeeklyFund.PointLevel level : levels) {
-            if (countedSeconds >= level.activeSeconds()) {
-                points += level.points();
-            }
-        }
-        return points;
+    /** Участник плана: учитываемое время, активные дни и очки (внутреннее представление). */
+    private record Eligible(UUID playerId, long countedSeconds, int activeDays,
+                            long timePoints, long dayPoints, long totalPoints) {
     }
 
-    /** Участник снимка недели: учитываемое время и очки (внутреннее представление). */
-    private record Allocation(UUID playerId, long countedSeconds, long points) {
+    /** Агрегат активности игрока за неделю. */
+    private static final class Aggregated {
+        long totalSeconds;
+        int activeDays;
+    }
+
+    /** Результат чистого расчёта плана (ничего не записывает). */
+    private record PlanComputation(String weekId, long baseFund, long coefficientBps,
+                                   long moneySupply, long supplyPerEligible,
+                                   long targetSupplyPerEligible, long fundAmount,
+                                   List<Eligible> eligible, long[] shares, long totalPoints,
+                                   long totalShare, long remainder) {
+
+        boolean isEmpty() {
+            return eligible.isEmpty();
+        }
+
+        int eligibleCount() {
+            return eligible.size();
+        }
+
+        WeeklyFundPlanRow toPlanRow(long plannedAt, long payoutDelayHours, boolean autoPayout) {
+            long autoPayoutAt = 0;
+            if (autoPayout) {
+                autoPayoutAt = plannedAt + payoutDelayHours * 3600_000L;
+            }
+            return new WeeklyFundPlanRow(weekId, fundAmount, baseFund, coefficientBps,
+                    moneySupply, supplyPerEligible, targetSupplyPerEligible, eligibleCount(),
+                    totalPoints, totalShare, remainder,
+                    isEmpty() ? WeeklyFundPlanRow.STATUS_PAID : WeeklyFundPlanRow.STATUS_PLANNED,
+                    plannedAt, autoPayout ? autoPayoutAt : null, isEmpty() ? plannedAt : null);
+        }
+    }
+
+    /** Контейнер чтения плана + строк периода в одной транзакции. */
+    private record PlanAndRows(WeeklyFundPlanRow plan, List<WeeklyPeriodRow> rows) {
     }
 
     /** Публичный снимок расчётной выплаты за неделю. */
-    public record WeeklyAllocation(UUID playerId, long countedSeconds, long points, long share) {
+    public record WeeklyAllocation(UUID playerId, long countedSeconds, int activeDays, long points,
+                                   long timePoints, long dayPoints, long share) {
+    }
+
+    /** Прогноз недельного фонда (текущая неделя, живой расчёт). */
+    public record WeeklyForecast(String weekId, long fundAmount, long baseFund,
+                                 long economyCoefficientBps, long moneySupply, long supplyPerEligible,
+                                 int eligiblePlayers, long totalPoints, long totalShare,
+                                 List<PlayerForecast> players) {
+
+        /** Прогноз по конкретному игроку: участие, очки и примерная доля. */
+        public record PlayerForecast(UUID playerId, long activeSeconds, int activeDays,
+                                     long timePoints, long dayPoints, long totalPoints, long share) {
+        }
+
+        public List<PlayerForecast> players() {
+            return players;
+        }
     }
 
     /** Состояние недельного фонда для административной команды. */
-    public record WeeklyStatus(boolean enabled, boolean autoRun, long weeklyAmount,
-                               String currentWeek, String distributedWeek,
-                               boolean weekDistributed, String targetWeek,
-                               int eligiblePlayers, long totalPoints,
-                               long totalCountedSeconds, long totalShare) {
+    public record WeeklyStatus(boolean enabled, boolean autoPayout, int payoutDelayHours,
+                               long fundAmount, String currentWeek, String distributedWeek,
+                               boolean weekDistributed, String targetWeek, int eligiblePlayers,
+                               long totalPoints, long totalCountedSeconds, long totalShare,
+                               String payoutStatus, Long autoPayoutAt, long weekEndMillis) {
     }
 }

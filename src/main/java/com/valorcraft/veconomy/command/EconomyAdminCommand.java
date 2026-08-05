@@ -270,13 +270,13 @@ public final class EconomyAdminCommand {
         source.sendSuccess(() -> Component.translatable("admin.weekly.status.target",
                 status.targetWeek()).withStyle(ChatFormatting.YELLOW), false);
         String enabled = status.enabled() ? "admin.yes" : "admin.no";
-        String autoRun = status.autoRun() ? "admin.yes" : "admin.no";
+        String autoPayout = status.autoPayout() ? "admin.yes" : "admin.no";
         source.sendSuccess(() -> Component.translatable("admin.weekly.status.enabled",
                 Component.translatable(enabled)), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.autorun",
-                Component.translatable(autoRun)), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.amount",
-                EconomyCore.formatter().format(status.weeklyAmount())).withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.autopayout",
+                Component.translatable(autoPayout), status.payoutDelayHours()), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.fund",
+                EconomyCore.formatter().format(status.fundAmount())).withStyle(ChatFormatting.YELLOW), false);
         if (status.distributedWeek() != null) {
             source.sendSuccess(() -> Component.translatable("admin.weekly.status.distributed",
                     status.distributedWeek()).withStyle(ChatFormatting.YELLOW), false);
@@ -293,21 +293,25 @@ public final class EconomyAdminCommand {
                 formatDuration(status.totalCountedSeconds())).withStyle(ChatFormatting.YELLOW), false);
         source.sendSuccess(() -> Component.translatable("admin.weekly.status.total",
                 EconomyCore.formatter().format(status.totalShare())).withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.payout",
+                status.payoutStatus(),
+                status.autoPayoutAt() == null ? "-" : formatTimestamp(status.autoPayoutAt()))
+                .withStyle(ChatFormatting.GRAY), false);
         return 1;
     }
 
     private static int weeklyPreview(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
                                      String weekId) {
         CommandSourceStack source = context.getSource();
-        EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
         java.util.List<com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation> allocations =
                 EconomyCore.weeklyFund().preview(weekId);
         // Неделя для заголовка: указанная команде, либо та, что видит сервис по умолчанию.
-        String shownWeek = weekId != null ? weekId
-                : EconomyCore.weeklyFund().status().targetWeek();
+        com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyStatus status =
+                EconomyCore.weeklyFund().status();
+        String shownWeek = weekId != null ? weekId : status.targetWeek();
         source.sendSuccess(() -> Component.translatable("admin.weekly.preview.header",
                 shownWeek,
-                EconomyCore.formatter().format(cfg.weeklyAmount)).withStyle(ChatFormatting.GOLD), false);
+                EconomyCore.formatter().format(status.fundAmount())).withStyle(ChatFormatting.GOLD), false);
         if (allocations.isEmpty()) {
             source.sendSuccess(() -> Component.translatable("admin.weekly.preview.empty")
                     .withStyle(ChatFormatting.GRAY), false);
@@ -325,7 +329,8 @@ public final class EconomyAdminCommand {
             line.append(Component.literal(" — ").withStyle(ChatFormatting.DARK_GRAY));
             line.append(Component.translatable("admin.weekly.preview.row",
                     EconomyCore.formatter().format(allocation.share()),
-                    formatDuration(allocation.countedSeconds()), allocation.points()));
+                    formatDuration(allocation.countedSeconds()), allocation.points(),
+                    allocation.activeDays()));
             source.sendSuccess(() -> line, false);
         }
         if (allocations.size() > PREVIEW_LINES) {
@@ -335,7 +340,7 @@ public final class EconomyAdminCommand {
         long finalTotal = totalShare;
         source.sendSuccess(() -> Component.translatable("admin.weekly.preview.total",
                 allocations.size(), EconomyCore.formatter().format(finalTotal),
-                EconomyCore.formatter().format(Math.max(0, cfg.weeklyAmount - finalTotal)))
+                EconomyCore.formatter().format(Math.max(0, status.fundAmount() - finalTotal)))
                 .withStyle(ChatFormatting.YELLOW), false);
         return 1;
     }
@@ -398,6 +403,12 @@ public final class EconomyAdminCommand {
         }
         builder.append(seconds).append("с");
         return builder.toString();
+    }
+
+    private static String formatTimestamp(long millis) {
+        return java.time.Instant.ofEpochMilli(millis)
+                .atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
     }
 
     private static int invalidAmount(CommandSourceStack source) {

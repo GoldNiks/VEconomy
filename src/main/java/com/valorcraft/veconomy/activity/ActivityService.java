@@ -21,13 +21,15 @@ public final class ActivityService {
 
     private final DatabaseManager database;
     private final PlayerActivityRepository repository;
+    private final WeeklyActivityDayRepository days;
     private volatile EconomySettings settings;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
 
     public ActivityService(DatabaseManager database, PlayerActivityRepository repository,
-                           EconomySettings settings) {
+                           WeeklyActivityDayRepository days, EconomySettings settings) {
         this.database = database;
         this.repository = repository;
+        this.days = days;
         this.settings = settings;
     }
 
@@ -44,7 +46,8 @@ public final class ActivityService {
 
     void onPlayerJoinedAt(UUID playerId, String dimension, long startMillis) {
         sessions.put(playerId, new Session(playerId, startMillis, startMillis,
-                settings.activity.afkTimeoutSeconds * 1000L, dimension));
+                settings.activity.afkTimeoutSeconds * 1000L, dimension,
+                settings.weeklyFund.timeZone));
     }
 
     public void onPlayerMove(UUID playerId, double x, double y, double z,
@@ -119,9 +122,16 @@ public final class ActivityService {
         // активное время.
         long activeUntil = session.lastActiveAt + afkTimeoutMillis;
         long activeMillis = Math.max(0, Math.min(dtMillis, activeUntil - fromSample));
-        session.activeSeconds += activeMillis / 1000;
+        long activeSeconds = activeMillis / 1000;
+        session.activeSeconds += activeSeconds;
+        session.afkSeconds += dtSeconds - activeSeconds;
+        if (activeSeconds > 0) {
+            // Активность относится к календарному дню (в зоне фонда) — неделя дня определится
+            // по самому дню, поэтому активность никогда не смешает недели на границе.
+            String dayKey = WeeklyMath.dayKey(nowMillis, session.timeZone);
+            session.daySeconds.merge(dayKey, activeSeconds, Long::sum);
+        }
         long afkMillis = dtMillis - activeMillis;
-        session.afkSeconds += afkMillis / 1000;
         if (afkMillis > 0) {
             session.afk = true;
         }
@@ -246,6 +256,19 @@ public final class ActivityService {
                 session.dimension,
                 excluded);
         repository.upsert(connection, database.dialect(), merged);
+        // Накопленная по дням активность: неделя дня берётся по самому дню, а не по текущей
+        // неделе сессии — это гарантирует корректную атрибуцию на границе недель.
+        if (!session.daySeconds.isEmpty()) {
+            for (Map.Entry<String, Long> entry : session.daySeconds.entrySet()) {
+                String dayKey = entry.getKey();
+                String dayWeek = WeeklyMath.weekOfDay(dayKey);
+                if (dayWeek != null) {
+                    days.addSeconds(connection, database.dialect(), session.playerId,
+                            dayWeek, dayKey, entry.getValue());
+                }
+            }
+            session.daySeconds.clear();
+        }
         session.onlineSeconds = 0;
         session.activeSeconds = 0;
         session.afkSeconds = 0;
@@ -261,6 +284,7 @@ public final class ActivityService {
     private static final class Session {
         final UUID playerId;
         final long afkTimeoutMillis;
+        final String timeZone;
         long lastSample;
         long lastActiveAt;
         long onlineSeconds;
@@ -275,14 +299,16 @@ public final class ActivityService {
         boolean hasPosition;
         double movedDistance;
         String dimension;
+        final Map<String, Long> daySeconds = new ConcurrentHashMap<>();
 
         Session(UUID playerId, long lastSample, long lastActiveAt, long afkTimeoutMillis,
-                String dimension) {
+                String dimension, String timeZone) {
             this.playerId = playerId;
             this.lastSample = lastSample;
             this.lastActiveAt = lastActiveAt;
             this.afkTimeoutMillis = afkTimeoutMillis;
             this.dimension = dimension;
+            this.timeZone = timeZone;
         }
 
         void setPosition(double x, double y, double z, float yaw, float pitch) {

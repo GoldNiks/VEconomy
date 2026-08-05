@@ -178,43 +178,115 @@ public final class EconomySettings {
         public final boolean notify;
     }
 
+    /** Один уровень очков: порог (секунды активного времени за неделю или число активных
+     *  дней) → начисляемые очки. Для времени поле {@code activeSeconds} — секунды; для дней —
+     *  количество дней, а points — уже достигнутое кумулятивное значение за это количество. */
+    public record PointLevel(long activeSeconds, long points) {
+    }
+
+    /** Ступень экономического коэффициента: соотношение {@code supply / (target*eligible)}
+     *  строго < {@code upperRatioPercent} в процентах → коэффициент {@code coefficientBps}
+     *  (базисные пункты, 10000 = 100%). Список отсортирован по возрастанию верхней границы. */
+    public record EconomyTier(long upperRatioPercent, long coefficientBps) {
+    }
+
     /** Настройки недельного фонда. */
     public static final class WeeklyFund {
         public final boolean enabled;
-        public final long weeklyAmount;
         public final boolean notify;
-        /** Автоматический запуск выплаты при смене недели. По умолчанию выключен — фонд
-         *  раздаётся администратором вручную через {@code /economy admin weekly run confirm}. */
-        public final boolean autoRun;
+        /** Автоматическая выплата закрытой недели после {@link #payoutDelayHours} часов:
+         *  администратору не нужно еженедельно подтверждать обычную выплату. */
+        public final boolean autoPayout;
+        /** Контрольная задержка (часов) между закрытием недели и автоматической выплатой. */
+        public final int payoutDelayHours;
         /** Минимальный возраст аккаунта (в днях) для участия в выплате; 0 — не ограничено. */
         public final long minAccountAgeDays;
         /** Минимум активного времени за неделю (в секундах) для участия; 0 — не ограничено. */
         public final long minActiveSeconds;
-        /** Потолок учитываемых за неделю активных секунд на игрока; 0 — без потолка. */
-        public final long maxCountedSeconds;
-        /** Очковые уровни. Если список непустой, фонд делится пропорционально очкам,
-         *  а не сырым секундам: за каждый пройденный порог начисляются очки уровня. */
-        public final List<PointLevel> pointLevels;
+        /** Минимум активных дней за неделю для участия. */
+        public final int minActiveDays;
+        /** Минимум активного времени в день (в секундах), чтобы день считался активным. */
+        public final long minActiveDaySeconds;
+        /** Базовая сумма фонда на одного подходящего игрока (минимальные единицы). */
+        public final long baseAmountPerEligiblePlayer;
+        /** Минимальный размер фонда (минимальные единицы). */
+        public final long minimumFund;
+        /** Максимальный размер фонда (минимальные единицы). */
+        public final long maximumFund;
+        /** Целевая денежная масса на одного подходящего игрока для коэффициента экономики. */
+        public final long targetSupplyPerEligiblePlayer;
+        /** Ступени экономического коэффициента (верхняя граница % → коэффициент в БП). */
+        public final List<EconomyTier> economyCoefficientTiers;
+        /** Очки за активное время: уровни «секунды → очки» (кумулятивные по достижению). */
+        public final List<PointLevel> timePointLevels;
+        /** Очки за активные дни: уровни «дни → очки». */
+        public final List<PointLevel> dayPointLevels;
+        /** Максимальная доля фонда на одного игрока (процентов); остаток перераспределяется. */
+        public final int maximumPlayerSharePercent;
+        /** Временная зона для подсчёта активных дней. */
+        public final String timeZone;
 
-        public WeeklyFund(boolean enabled, long weeklyAmount, boolean notify, boolean autoRun,
-                          long minAccountAgeDays, long minActiveSeconds, long maxCountedSeconds,
-                          List<PointLevel> pointLevels) {
+        public WeeklyFund(boolean enabled, boolean notify, boolean autoPayout, int payoutDelayHours,
+                          long minAccountAgeDays, long minActiveSeconds, int minActiveDays,
+                          long minActiveDaySeconds, long baseAmountPerEligiblePlayer,
+                          long minimumFund, long maximumFund, long targetSupplyPerEligiblePlayer,
+                          List<EconomyTier> economyCoefficientTiers,
+                          List<PointLevel> timePointLevels, List<PointLevel> dayPointLevels,
+                          int maximumPlayerSharePercent, String timeZone) {
             this.enabled = enabled;
-            this.weeklyAmount = Math.max(0, weeklyAmount);
             this.notify = notify;
-            this.autoRun = autoRun;
+            this.autoPayout = autoPayout;
+            this.payoutDelayHours = Math.max(0, payoutDelayHours);
             this.minAccountAgeDays = Math.max(0, minAccountAgeDays);
             this.minActiveSeconds = Math.max(0, minActiveSeconds);
-            this.maxCountedSeconds = Math.max(0, maxCountedSeconds);
-            this.pointLevels = pointLevels == null ? List.of() : List.copyOf(pointLevels);
+            this.minActiveDays = Math.max(0, minActiveDays);
+            this.minActiveDaySeconds = Math.max(0, minActiveDaySeconds);
+            this.baseAmountPerEligiblePlayer = Math.max(0, baseAmountPerEligiblePlayer);
+            this.minimumFund = Math.max(0, minimumFund);
+            this.maximumFund = Math.max(minimumFund, maximumFund);
+            this.targetSupplyPerEligiblePlayer = Math.max(1, targetSupplyPerEligiblePlayer);
+            this.economyCoefficientTiers = sorted(EconomyTier::upperRatioPercent, economyCoefficientTiers);
+            this.timePointLevels = sorted(PointLevel::activeSeconds, timePointLevels);
+            this.dayPointLevels = sorted(PointLevel::activeSeconds, dayPointLevels);
+            this.maximumPlayerSharePercent = Math.max(1, Math.min(100, maximumPlayerSharePercent));
+            this.timeZone = timeZone == null || timeZone.isBlank() ? "Europe/Berlin" : timeZone;
         }
 
-        /** Один очковый уровень: порог активных секунд за неделю → начисляемые очки. */
-        public record PointLevel(long activeSeconds, long points) {
+        private static <T> List<T> sorted(java.util.function.ToLongFunction<T> key, List<T> values) {
+            if (values == null) {
+                return List.of();
+            }
+            List<T> copy = new java.util.ArrayList<>(values);
+            copy.sort(java.util.Comparator.comparingLong(key));
+            return List.copyOf(copy);
         }
 
+        /** Кумулятивная сверка: очки за время берутся с последнего пройденного порога. */
         public static WeeklyFund defaults() {
-            return new WeeklyFund(true, 100_000L, true, false, 7, 3_600L, 0, List.of());
+            return new WeeklyFund(
+                    true, true, true, 6,
+                    7, 7_200L, 2, 1_800L,
+                    500L, 1_000L, 5_000_000L, 100_000L,
+                    List.of(
+                            new EconomyTier(70, 12000),
+                            new EconomyTier(90, 11000),
+                            new EconomyTier(110, 10000),
+                            new EconomyTier(140, 8500),
+                            new EconomyTier(100_000, 7000)),
+                    List.of(
+                            new PointLevel(7_200L, 10),
+                            new PointLevel(18_000L, 25),
+                            new PointLevel(36_000L, 40),
+                            new PointLevel(72_000L, 55),
+                            new PointLevel(108_000L, 70)),
+                    List.of(
+                            new PointLevel(2, 5),
+                            new PointLevel(3, 10),
+                            new PointLevel(4, 15),
+                            new PointLevel(5, 20),
+                            new PointLevel(6, 25),
+                            new PointLevel(7, 30)),
+                    10, "Europe/Berlin");
         }
     }
 

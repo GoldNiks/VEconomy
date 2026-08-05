@@ -28,7 +28,8 @@ public final class WeeklyPeriodRepository {
     /** Служебный маркер пустой недели (некому платить): строка сразу в статусе {@code PAID}. */
     public static final UUID EMPTY_WEEK = new UUID(0L, 0L);
 
-    private static final String COLUMNS = "week_id, player_uuid, counted_seconds, points, status, paid_at, transaction_id";
+    private static final String COLUMNS = "week_id, player_uuid, counted_seconds, points, status, paid_at, transaction_id, "
+            + "active_days, time_points, day_points, share";
 
     /** Есть ли снимок для недели (в любом статусе). */
     public boolean hasWeek(Connection connection, String weekId) {
@@ -63,8 +64,8 @@ public final class WeeklyPeriodRepository {
     /** Добавить строку снимка. Идемпотентно по первичному ключу (week_id, player_uuid). */
     public void insert(Connection connection, DatabaseManager.Dialect dialect, WeeklyPeriodRow row) {
         String sql = dialect == DatabaseManager.Dialect.MYSQL
-                ? "INSERT IGNORE INTO weekly_activity_periods (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?)"
-                : "INSERT OR IGNORE INTO weekly_activity_periods (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?)";
+                ? "INSERT IGNORE INTO weekly_activity_periods (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                : "INSERT OR IGNORE INTO weekly_activity_periods (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, row.weekId());
             statement.setString(2, row.playerId().toString());
@@ -73,6 +74,10 @@ public final class WeeklyPeriodRepository {
             statement.setString(5, row.status());
             setNullableLong(statement, 6, row.paidAt() > 0 ? row.paidAt() : null);
             statement.setString(7, row.transactionId());
+            statement.setInt(8, row.activeDays());
+            statement.setLong(9, row.timePoints());
+            statement.setLong(10, row.dayPoints());
+            statement.setLong(11, row.share());
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new DatabaseException("Ошибка записи снимка недели " + row.weekId(), e);
@@ -139,7 +144,11 @@ public final class WeeklyPeriodRepository {
                 rs.getLong("points"),
                 rs.getString("status"),
                 rs.getLong("paid_at"),
-                rs.getString("transaction_id"));
+                rs.getString("transaction_id"),
+                rs.getInt("active_days"),
+                rs.getLong("time_points"),
+                rs.getLong("day_points"),
+                rs.getLong("share"));
     }
 
     private static void setNullableLong(PreparedStatement statement, int index, Long value) throws SQLException {

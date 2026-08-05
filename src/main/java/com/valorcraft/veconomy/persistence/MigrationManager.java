@@ -137,6 +137,41 @@ public final class MigrationManager {
                 transaction_id TEXT,
                 updated_at INTEGER NOT NULL
             );
+            """,
+            // v4 — автоматический размер фонда, активность по дням и замороженный план выплаты.
+            // Активность хранится по ключу (player_uuid, week_id, день): это исключает смешение
+            // недель на границе (день относится к своей неделе по дате, а не по счётчику).
+            """
+            CREATE TABLE IF NOT EXISTS weekly_activity_days (
+                player_uuid TEXT NOT NULL,
+                week_id TEXT NOT NULL,
+                day_key TEXT NOT NULL,
+                active_seconds INTEGER NOT NULL,
+                PRIMARY KEY (player_uuid, week_id, day_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS weekly_fund_plans (
+                week_id TEXT PRIMARY KEY,
+                fund_amount INTEGER NOT NULL,
+                base_fund_amount INTEGER NOT NULL,
+                economy_coefficient_bps INTEGER NOT NULL,
+                money_supply INTEGER NOT NULL,
+                supply_per_eligible INTEGER NOT NULL,
+                target_supply_per_eligible INTEGER NOT NULL,
+                eligible_players INTEGER NOT NULL,
+                total_points INTEGER NOT NULL,
+                total_share INTEGER NOT NULL,
+                remainder_amount INTEGER NOT NULL,
+                payout_status TEXT NOT NULL DEFAULT 'PLANNED',
+                planned_at INTEGER NOT NULL,
+                auto_payout_at INTEGER,
+                paid_at INTEGER
+            );
+
+            ALTER TABLE weekly_activity_periods ADD COLUMN active_days INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE weekly_activity_periods ADD COLUMN time_points INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE weekly_activity_periods ADD COLUMN day_points INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE weekly_activity_periods ADD COLUMN share INTEGER NOT NULL DEFAULT 0;
             """
     };
 
@@ -247,6 +282,40 @@ public final class MigrationManager {
                 updated_at BIGINT NOT NULL,
                 PRIMARY KEY (week_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            // v4 — авторазмер фонда, активность по дням и замороженный план (см. SQLite-скрипт).
+            """
+            CREATE TABLE IF NOT EXISTS weekly_activity_days (
+                player_uuid VARCHAR(36) NOT NULL,
+                week_id VARCHAR(20) NOT NULL,
+                day_key VARCHAR(10) NOT NULL,
+                active_seconds BIGINT NOT NULL,
+                PRIMARY KEY (player_uuid, week_id, day_key)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS weekly_fund_plans (
+                week_id VARCHAR(20) NOT NULL,
+                fund_amount BIGINT NOT NULL,
+                base_fund_amount BIGINT NOT NULL,
+                economy_coefficient_bps INT NOT NULL,
+                money_supply BIGINT NOT NULL,
+                supply_per_eligible BIGINT NOT NULL,
+                target_supply_per_eligible BIGINT NOT NULL,
+                eligible_players INT NOT NULL,
+                total_points BIGINT NOT NULL,
+                total_share BIGINT NOT NULL,
+                remainder_amount BIGINT NOT NULL,
+                payout_status VARCHAR(16) NOT NULL DEFAULT 'PLANNED',
+                planned_at BIGINT NOT NULL,
+                auto_payout_at BIGINT,
+                paid_at BIGINT,
+                PRIMARY KEY (week_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            ALTER TABLE weekly_activity_periods ADD COLUMN active_days INT NOT NULL DEFAULT 0;
+            ALTER TABLE weekly_activity_periods ADD COLUMN time_points INT NOT NULL DEFAULT 0;
+            ALTER TABLE weekly_activity_periods ADD COLUMN day_points INT NOT NULL DEFAULT 0;
+            ALTER TABLE weekly_activity_periods ADD COLUMN share BIGINT NOT NULL DEFAULT 0;
             """
     };
 

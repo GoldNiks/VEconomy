@@ -8,3 +8,5 @@ logs/
 build_log.txt
 !gradle/wrapper/gradle-wrapper.jar
 libs/
+
+compile.log

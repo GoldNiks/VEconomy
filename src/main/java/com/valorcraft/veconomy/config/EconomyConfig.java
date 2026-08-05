@@ -62,13 +62,22 @@ public final class EconomyConfig {
 
     // --- weekly fund ---
     public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_ENABLED;
-    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_AMOUNT;
     public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_NOTIFY;
-    public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_AUTO_RUN;
+    public static final ForgeConfigSpec.BooleanValue WEEKLY_FUND_AUTO_PAYOUT;
+    public static final ForgeConfigSpec.IntValue WEEKLY_FUND_PAYOUT_DELAY_HOURS;
     public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MIN_ACCOUNT_AGE_DAYS;
     public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MIN_ACTIVE_SECONDS;
-    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MAX_COUNTED_HOURS;
-    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> WEEKLY_FUND_POINT_LEVELS;
+    public static final ForgeConfigSpec.IntValue WEEKLY_FUND_MIN_ACTIVE_DAYS;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MIN_ACTIVE_DAY_SECONDS;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_BASE_PER_PLAYER;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MINIMUM_FUND;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_MAXIMUM_FUND;
+    public static final ForgeConfigSpec.LongValue WEEKLY_FUND_TARGET_SUPPLY_PER_PLAYER;
+    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> WEEKLY_FUND_ECONOMY_TIERS;
+    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> WEEKLY_FUND_TIME_POINT_LEVELS;
+    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> WEEKLY_FUND_DAY_POINT_LEVELS;
+    public static final ForgeConfigSpec.IntValue WEEKLY_FUND_MAX_PLAYER_SHARE_PERCENT;
+    public static final ForgeConfigSpec.ConfigValue<String> WEEKLY_FUND_TIME_ZONE;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -159,36 +168,75 @@ public final class EconomyConfig {
         builder.pop();
 
         builder.comment("Недельный фонд.",
-                "Каждую неделю (ISO-неделя, понедельник 00:00 UTC) фонд делится между игроками",
-                "пропорционально их активности за завершённую неделю (без AFK).",
-                "Участие ограничено: минимальный возраст аккаунта, минимум активного времени",
-                "и потолок учитываемых часов. Можно делить не по сырым секундам, а по очковым",
-                "уровням (pointLevels): пары (секунды активного времени, очки).",
-                "Автоматический запуск по умолчанию ВЫКЛЮЧЕН: выплату выполняет администратор",
-                "командой /economy admin weekly run confirm. Остаток от деления — в казну.").push("weeklyFund");
+                "Каждую неделю (ISO-неделя, понедельник 00:00 UTC) закрытый период раздаётся между",
+                "подходящими игроками по очкам (активное время + активные дни).",
+                "Размер фонда рассчитывается автоматически: базовая сумма на одного подходящего",
+                "игрока умножается на число подходящих игроков, умножается на коэффициент экономики",
+                "и зажимается между minimumFund и maximumFund.",
+                "Коэффициент зависит от денежной массы на одного подходящего игрока относительно",
+                "targetSupplyPerEligiblePlayer. Ступени задаются парами (верхняя_граница_%, коэфф_в_БП);",
+                "БП 10000 = 100%. Пример ('менее 70% → 120%') = 70,12000.",
+                "Очки за время и дни: пары (секунды/дни, очки). Время от 2ч до 30ч даёт до 70 очков,",
+                "число активных дней (мин активного времени в день — minActiveDaySeconds) — до 30.",
+                "Автоматическая выплата после payoutDelayHours часов с закрытия недели.").push("weeklyFund");
         WEEKLY_FUND_ENABLED = builder.comment("Включить недельный фонд").define("enabled", true);
-        WEEKLY_FUND_AMOUNT = builder.comment("Размер фонда в минимальных единицах (эмиссия за неделю)")
-                .defineInRange("weeklyAmount", 100_000L, 0L, Long.MAX_VALUE);
         WEEKLY_FUND_NOTIFY = builder.comment("Уведомлять игрока о выплате")
                 .define("notify", true);
-        WEEKLY_FUND_AUTO_RUN = builder.comment(
-                "Автоматически раздавать фонд в момент смены недели. false — только вручную",
-                "(/economy admin weekly run confirm)")
-                .define("autoRun", false);
+        WEEKLY_FUND_AUTO_PAYOUT = builder.comment(
+                "Автоматически выплачивать закрытую неделю после контрольной задержки")
+                .define("autoPayout", true);
+        WEEKLY_FUND_PAYOUT_DELAY_HOURS = builder.comment(
+                "Контрольная задержка (часов) между закрытием недели и автоматической выплатой")
+                .defineInRange("payoutDelayHours", 6, 0, 24 * 7);
         WEEKLY_FUND_MIN_ACCOUNT_AGE_DAYS = builder.comment(
                 "Минимальный возраст аккаунта (дней) для участия; 0 — без ограничения")
                 .defineInRange("minAccountAgeDays", 7L, 0L, 100_000L);
         WEEKLY_FUND_MIN_ACTIVE_SECONDS = builder.comment(
-                "Минимум активного времени за неделю (секунд) для участия; 0 — без ограничения")
-                .defineInRange("minActiveSeconds", 3_600L, 0L, Long.MAX_VALUE);
-        WEEKLY_FUND_MAX_COUNTED_HOURS = builder.comment(
-                "Потолок учитываемых часов активности за неделю на игрока; 0 — без потолка")
-                .defineInRange("maxCountedHours", 0L, 0L, 24L * 7L);
-        WEEKLY_FUND_POINT_LEVELS = builder.comment(
-                "Очковые уровни: пары (секунды, очки) через запятую. Если список пустой, фонд",
-                "делится пропорционально времени. Пример: [3600, 10, 10800, 30, 43200, 70] =",
-                "1ч даёт 10 очков, 3ч — ещё 30, 12ч — ещё 70.")
-                .defineList("pointLevels", List.of(), element -> element instanceof Integer integer && integer > 0);
+                "Минимум активного времени за неделю (секунд) для участия")
+                .defineInRange("minActiveSeconds", 7_200L, 0L, Long.MAX_VALUE);
+        WEEKLY_FUND_MIN_ACTIVE_DAYS = builder.comment(
+                "Минимум активных дней за неделю для участия")
+                .defineInRange("minActiveDays", 2, 0, 7);
+        WEEKLY_FUND_MIN_ACTIVE_DAY_SECONDS = builder.comment(
+                "Минимум активного времени в день (секунд), чтобы день считался активным")
+                .defineInRange("minActiveDaySeconds", 1_800L, 0L, 86_400L);
+        WEEKLY_FUND_BASE_PER_PLAYER = builder.comment(
+                "Базовая сумма фонда на одного подходящего игрока (минимальные единицы)")
+                .defineInRange("baseAmountPerEligiblePlayer", 500L, 0L, Long.MAX_VALUE);
+        WEEKLY_FUND_MINIMUM_FUND = builder.comment(
+                "Минимальный размер фонда (минимальные единицы)")
+                .defineInRange("minimumFund", 1_000L, 0L, Long.MAX_VALUE);
+        WEEKLY_FUND_MAXIMUM_FUND = builder.comment(
+                "Максимальный размер фонда (минимальные единицы)")
+                .defineInRange("maximumFund", 5_000_000L, 0L, Long.MAX_VALUE);
+        WEEKLY_FUND_TARGET_SUPPLY_PER_PLAYER = builder.comment(
+                "Целевая денежная масса на одного подходящего игрока (минимальные единицы)")
+                .defineInRange("targetSupplyPerEligiblePlayer", 100_000L, 1L, Long.MAX_VALUE);
+        WEEKLY_FUND_ECONOMY_TIERS = builder.comment(
+                "Ступени экономического коэффициента: пары (вверхняя_граница_%, коэфф_в_БП). ",
+                "Порядок важен: берётся первая ступень, где соотношение supply/цель ниже границы.",
+                "Пример: 70,12000, 90,11000, 110,10000, 140,8500, 100000,7000")
+                .defineList("economyCoefficientTiers",
+                        List.of(70, 12000, 90, 11000, 110, 10000, 140, 8500, 100000, 7000),
+                        element -> element instanceof Integer integer && integer > 0);
+        WEEKLY_FUND_TIME_POINT_LEVELS = builder.comment(
+                "Очки за активное время: пары (секунды, очки). Берётся последний пройденный порог.",
+                "Пример: 7200,10, 18000,25, 36000,40, 72000,55, 108000,70")
+                .defineList("timePointLevels",
+                        List.of(7200, 10, 18000, 25, 36000, 40, 72000, 55, 108000, 70),
+                        element -> element instanceof Integer integer && integer > 0);
+        WEEKLY_FUND_DAY_POINT_LEVELS = builder.comment(
+                "Очки за активные дни: пары (дни, очки). Берётся последний пройденный порог.",
+                "Пример: 2,5, 3,10, 4,15, 5,20, 6,25, 7,30")
+                .defineList("dayPointLevels",
+                        List.of(2, 5, 3, 10, 4, 15, 5, 20, 6, 25, 7, 30),
+                        element -> element instanceof Integer integer && integer > 0);
+        WEEKLY_FUND_MAX_PLAYER_SHARE_PERCENT = builder.comment(
+                "Максимальная доля фонда на одного игрока (процентов); излишек перераспределяется")
+                .defineInRange("maximumPlayerSharePercent", 10, 1, 100);
+        WEEKLY_FUND_TIME_ZONE = builder.comment(
+                "Временная зона для подсчёта активных дней, например 'Europe/Berlin'")
+                .define("timeZone", "Europe/Berlin");
         builder.pop();
 
         SPEC = builder.build();
@@ -233,27 +281,50 @@ public final class EconomyConfig {
                         MILESTONES_NOTIFY.get()),
                 new EconomySettings.WeeklyFund(
                         WEEKLY_FUND_ENABLED.get(),
-                        WEEKLY_FUND_AMOUNT.get(),
                         WEEKLY_FUND_NOTIFY.get(),
-                        WEEKLY_FUND_AUTO_RUN.get(),
+                        WEEKLY_FUND_AUTO_PAYOUT.get(),
+                        WEEKLY_FUND_PAYOUT_DELAY_HOURS.get(),
                         WEEKLY_FUND_MIN_ACCOUNT_AGE_DAYS.get(),
                         WEEKLY_FUND_MIN_ACTIVE_SECONDS.get(),
-                        WEEKLY_FUND_MAX_COUNTED_HOURS.get() * 3600L,
-                        toPointLevels(WEEKLY_FUND_POINT_LEVELS.get())));
+                        WEEKLY_FUND_MIN_ACTIVE_DAYS.get(),
+                        WEEKLY_FUND_MIN_ACTIVE_DAY_SECONDS.get(),
+                        WEEKLY_FUND_BASE_PER_PLAYER.get(),
+                        WEEKLY_FUND_MINIMUM_FUND.get(),
+                        WEEKLY_FUND_MAXIMUM_FUND.get(),
+                        WEEKLY_FUND_TARGET_SUPPLY_PER_PLAYER.get(),
+                        toTiers(WEEKLY_FUND_ECONOMY_TIERS.get()),
+                        toPointLevels(WEEKLY_FUND_TIME_POINT_LEVELS.get()),
+                        toPointLevels(WEEKLY_FUND_DAY_POINT_LEVELS.get()),
+                        WEEKLY_FUND_MAX_PLAYER_SHARE_PERCENT.get(),
+                        WEEKLY_FUND_TIME_ZONE.get()));
     }
 
     /** Преобразовать плоский список (сек, очки, сек, очки…) в очковые уровни. */
-    private static List<EconomySettings.WeeklyFund.PointLevel> toPointLevels(List<? extends Integer> flat) {
-        List<EconomySettings.WeeklyFund.PointLevel> levels = new java.util.ArrayList<>();
+    private static List<EconomySettings.PointLevel> toPointLevels(List<? extends Integer> flat) {
+        List<EconomySettings.PointLevel> levels = new java.util.ArrayList<>();
         for (int i = 0; i + 1 < flat.size(); i += 2) {
             long seconds = flat.get(i);
             long points = flat.get(i + 1);
             if (seconds > 0 && points > 0) {
-                levels.add(new EconomySettings.WeeklyFund.PointLevel(seconds, points));
+                levels.add(new EconomySettings.PointLevel(seconds, points));
             }
         }
-        levels.sort(java.util.Comparator.comparingLong(EconomySettings.WeeklyFund.PointLevel::activeSeconds));
+        levels.sort(java.util.Comparator.comparingLong(EconomySettings.PointLevel::activeSeconds));
         return List.copyOf(levels);
+    }
+
+    /** Преобразовать плоский список (граница_%, коэфф_в_БП, …) в ступени коэффициента. */
+    private static List<EconomySettings.EconomyTier> toTiers(List<? extends Integer> flat) {
+        List<EconomySettings.EconomyTier> tiers = new java.util.ArrayList<>();
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            long upperPercent = flat.get(i);
+            long coefficientBps = flat.get(i + 1);
+            if (upperPercent > 0 && coefficientBps > 0) {
+                tiers.add(new EconomySettings.EconomyTier(upperPercent, coefficientBps));
+            }
+        }
+        tiers.sort(java.util.Comparator.comparingLong(EconomySettings.EconomyTier::upperRatioPercent));
+        return List.copyOf(tiers);
     }
 
     /** Преобразовать плоский список (сек, награда, сек, награда…) в пары порогов. */

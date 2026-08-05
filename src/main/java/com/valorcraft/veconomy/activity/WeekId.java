@@ -62,6 +62,12 @@ public final class WeekId {
         return weekId != null && WEEK.matcher(weekId).matches();
     }
 
+    /** Момент окончания недели (понедельник следующей недели, 00:00 UTC) в миллисекундах. */
+    public static long endMillis(String weekId) {
+        return mondayOf(weekId).plusDays(7)
+                .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+    }
+
     private static LocalDate mondayOf(String weekId) {
         Matcher matcher = WEEK.matcher(weekId);
         if (!matcher.matches()) {
