@@ -26,7 +26,9 @@ public final class ActivityService {
     private final WeeklyActivityDayRepository days;
     private volatile EconomySettings settings;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
-    /** Выходы, данные которых ещё не подтверждены в базе (офлайн, повторно записываются). */
+    /** Выходы, данные которых ещё не подтверждены в базе (офлайн, повторно записываются).
+     *  На один UUID хранится одна слитая сессия: при втором выходе до сохранения счётчики
+     *  и дни складываются, иначе вторая сессия заменила бы первую несохранённую. */
     private final Map<UUID, Session> pendingLogouts = new ConcurrentHashMap<>();
 
     public ActivityService(DatabaseManager database, PlayerActivityRepository repository,
@@ -297,7 +299,15 @@ public final class ActivityService {
         sessions.remove(playerId);
         // Данные выхода удерживаем в памяти до подтверждённого сохранения: если запись не
         // удалась, сессия остаётся в pendingLogouts и попадёт в базу на следующем persistAll().
-        pendingLogouts.put(playerId, session);
+        // Если до сохранения был ещё один выход того же игрока (зашёл и вышел снова), сессии
+        // сливаются в одну, чтобы первая несохранённая не потерялась при put.
+        pendingLogouts.compute(playerId, (id, existing) -> {
+            if (existing == null) {
+                return session;
+            }
+            existing.merge(session);
+            return existing;
+        });
         saveLogout(session, now);
     }
 
@@ -395,6 +405,21 @@ public final class ActivityService {
             this.yaw = yaw;
             this.pitch = pitch;
             this.hasPosition = true;
+        }
+
+        /** Слить несохранённый выход того же игрока с уже удержанным: счётчики и дни складываются. */
+        void merge(Session other) {
+            onlineSeconds += other.onlineSeconds;
+            activeSeconds += other.activeSeconds;
+            afkSeconds += other.afkSeconds;
+            for (Map.Entry<String, Long> entry : other.daySeconds.entrySet()) {
+                daySeconds.merge(entry.getKey(), entry.getValue(), Long::sum);
+            }
+            if (other.lastActiveAt > lastActiveAt) {
+                lastActiveAt = other.lastActiveAt;
+                dimension = other.dimension;
+            }
+            lastSample = Math.max(lastSample, other.lastSample);
         }
     }
 }

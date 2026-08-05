@@ -321,4 +321,30 @@ class ActivityServiceTest {
             assertEquals(0, info.totalAfkSeconds());
         }
     }
+
+    @Test
+    void doubleLogoutDuringDbOutageMergesPendingSessions() {
+        // Два выхода одного игрока до успешного сохранения не должны терять первый:
+        // несохранённые сессии сливаются и записываются одной суммой.
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            db.activityService.sampleAt(start + 5_000);
+
+            db.database.close();
+            // первый выход при недоступной базе: 7 секунд удержаны в памяти
+            db.activityService.onPlayerLeftAt(player, start + 7_000);
+            // повторный вход и выход до восстановления базы: 7 секунд второй сессии
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start + 8_000);
+            db.activityService.sampleAt(start + 13_000);
+            db.activityService.onPlayerLeftAt(player, start + 15_000);
+
+            db.database.open(db.database.path(), db.settings);
+            assertTrue(db.activityService.persistAll());
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(14, info.totalOnlineSeconds());
+            assertEquals(14, info.totalActiveSeconds());
+        }
+    }
 }
