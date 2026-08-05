@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WeeklyFundServiceTest {
@@ -27,6 +28,26 @@ class WeeklyFundServiceTest {
      */
     private static final List<PointLevel> ONE_TO_ONE = List.of(
             new PointLevel(1, 1), new PointLevel(10_000, 10_000));
+
+    /** Фонд со сдвигом автовыплаты: ротация закрывает неделю, но платит не сразу. */
+    private static EconomySettings fundWithDelay(long weeklyAmount, int payoutDelayHours) {
+        EconomySettings defaults = EconomySettings.defaults();
+        return new EconomySettings(
+                defaults.currencyNameSingular, defaults.currencyNameFew, defaults.currencyNameMany,
+                defaults.currencySymbol, defaults.decimalPlaces, defaults.maximumBalance,
+                defaults.transfersEnabled, defaults.allowOfflineRecipients,
+                defaults.minimumTransferAmount, defaults.maximumTransferAmount,
+                defaults.transferCooldownSeconds,
+                defaults.dbType, defaults.databaseFile, defaults.busyTimeoutMillis, defaults.walEnabled,
+                defaults.mysqlHost, defaults.mysqlPort, defaults.mysqlDatabase,
+                defaults.mysqlUser, defaults.mysqlPassword, defaults.mysqlPoolSize,
+                defaults.broadcastAdminChanges,
+                defaults.activity, defaults.milestones,
+                new EconomySettings.WeeklyFund(true, true, true, payoutDelayHours,
+                        0, 0, 0, 0,
+                        weeklyAmount / 2, weeklyAmount, weeklyAmount, 1_000_000L,
+                        List.of(), ONE_TO_ONE, List.of(), 100, "Europe/Berlin"));
+    }
 
     /** Залить активность в закрытую неделю (предыдущую от текущей): строку дней + строку активности. */
     private static void seedWeekly(TestDb db, UUID player, long seconds) {
@@ -42,7 +63,7 @@ class WeeklyFundServiceTest {
         db.database.inTransaction(connection -> {
             db.activityRepository.upsert(connection, DatabaseManager.Dialect.SQLITE,
                     new PlayerActivityRow(player, firstSeen, firstSeen, seconds, seconds, 0,
-                            week, seconds, 0L, "minecraft:overworld", excluded));
+                            week, 0L, "minecraft:overworld", excluded));
             db.dayRepository.addSeconds(connection, DatabaseManager.Dialect.SQLITE, player, week, "1", seconds);
             return null;
         });
@@ -391,7 +412,7 @@ class WeeklyFundServiceTest {
     }
 
     @Test
-    void rotationSnapshotsPreviousWeekAndResetsAccumulator() {
+    void rotationSnapshotsPreviousWeekAndIgnoresNewWeekActivity() {
         try (TestDb db = TestDb.create(fund(100))) {
             markSnapshotDue(db);
             UUID alice = UUID.randomUUID();
@@ -400,12 +421,6 @@ class WeeklyFundServiceTest {
             Map<UUID, Long> payments = db.weeklyFundService.maybeDistribute();
             assertEquals(100L, payments.get(alice));
             assertEquals(100, db.accountService.getBalance(alice));
-
-            // накопитель недели сброшен после ротации
-            long weeklyLeft = db.database.inTransaction(connection ->
-                    db.activityRepository.find(connection, alice)
-                            .map(PlayerActivityRow::weeklyActiveSeconds).orElse(-1L));
-            assertEquals(0, weeklyLeft);
 
             // новая активность текущей недели не меняет снимок закрытой недели
             seedDay(db, alice, WeekId.current(), "1", 40);
@@ -541,6 +556,104 @@ class WeeklyFundServiceTest {
             // казне при возобновлении дублировать нечего: 60+40 = весь фонд
             assertEquals(0, db.accountService.getBalance(TreasuryService.TREASURY_UUID));
             assertTrue(db.weeklyFundService.status().weekDistributed());
+        }
+    }
+
+    /**
+     * Блокер: игрок онлайн через границу недели, между сэмплом и границей не сохранялся.
+     * Первый persist уже в понедельник: воскресная часть сессии должна попасть в план
+     * старой недели, понедельничная — остаться в текущей. Потерянных минут быть не должно.
+     */
+    @Test
+    void onlineSessionAcrossWeekBoundarySavesSundayToOldWeekAndMondayToNew() {
+        java.time.ZoneId zone = java.time.ZoneId.of("Europe/Berlin");
+        long boundary = java.time.ZonedDateTime.of(2026, 8, 10, 0, 0, 0, 0, zone)
+                .toInstant().toEpochMilli();
+        long start = boundary - 3600_000L;            // вс 23:00
+        long end = boundary + 1800_000L;              // пн 00:30
+        try (TestDb db = TestDb.create(fund(100))) {
+            // распределена неделя до W32, чтобы очередь закрытия начиналась с W32
+            markDistributed(db, "2026-W31");
+            WeekId.useDate(() -> java.time.LocalDate.of(2026, 8, 10)); // текущая неделя W33
+            try {
+                UUID alice = UUID.randomUUID();
+                db.activityService.onPlayerJoinedAt(alice, "minecraft:overworld", start);
+                // без сохранений до границы; перед сэмплом отмечаем активность
+                db.activityService.onPlayerActiveAt(alice, end);
+                db.activityService.sampleAt(end);
+                // первый persist уже в понедельник
+                db.activityService.persistAllAt(end);
+
+                Map<UUID, Long> payments = db.weeklyFundService.maybeDistribute();
+                assertEquals(1, payments.size());
+                assertEquals(100L, payments.get(alice));
+
+                // снимок W32 содержит только воскресную часть сессии
+                List<WeeklyFundService.WeeklyAllocation> allocations =
+                        db.weeklyFundService.preview("2026-W32");
+                assertEquals(1, allocations.size());
+                assertEquals(3600, allocations.get(0).countedSeconds(),
+                        "воскресные часы должны попасть в план завершённой недели");
+
+                // понедельничная часть осталась в текущей неделе, а не в снимке
+                long mondaySeconds = db.database.inTransaction(connection ->
+                        db.dayRepository.listByWeekAndPlayer(connection, "2026-W33", alice)
+                                .stream().mapToLong(WeeklyActivityDayRow::activeSeconds).sum());
+                assertEquals(1800, mondaySeconds,
+                        "понедельничные минуты не должны попасть в прошлую неделю");
+            } finally {
+                WeekId.resetDate();
+            }
+        }
+    }
+
+    /** Блокер: кэш прогноза жив (TTL 30с), а игрок успел стать подходящим после его
+     *  расчёта. Он отсутствует в кэшированном прогнозе — сервис не должен показывать
+     *  «недостаточно очков», а должен пересчитать прогноз один раз. */
+    @Test
+    void eligiblePlayerMissingFromStaleForecastCacheGetsFreshForecast() {
+        try (TestDb db = TestDb.create(fund(100, 100, 0, 0, ONE_TO_ONE))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            seedDay(db, alice, WeekId.current(), "1", 50); // пока недостаточно: 50 < 100
+
+            // первый вызов строит кэш прогноза без Алисы (не проходит минимум)
+            WeeklyFundService.WeeklyPlayerInfo before = db.weeklyFundService.playerWeekly(alice);
+            assertFalse(before.eligible());
+            assertEquals(WeeklyFundService.NotEligibleReason.MIN_ACTIVE_SECONDS, before.reason());
+
+            // активность выросла до подходящей; кэш прогноза ещё жив (TTL 30с)
+            seedDay(db, alice, WeekId.current(), "1", 200);
+            WeeklyFundService.WeeklyPlayerInfo after = db.weeklyFundService.playerWeekly(alice);
+            assertTrue(after.eligible(),
+                    "подходящий игрок вне кэша должен получить свежий прогноз, а не «недостаточно очков»");
+            assertEquals(100, after.projectedShare());
+        }
+    }
+
+    /** Блокер: в период задержки автовыплаты «за прошлую неделю» читается замороженная
+     *  доля из снимка периодов, а не нуль из ещё не записанной выплаты. */
+    @Test
+    void lastWeekAccrualReadsFrozenShareWhilePayoutIsDelayed() {
+        try (TestDb db = TestDb.create(fundWithDelay(100, 6))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            seedWeekly(db, alice, 100);
+
+            // ротация закрыла неделю, но автовыплата ещё не наступила (задержка 6ч)
+            assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+
+            WeeklyFundService.WeeklyPlayerInfo info = db.weeklyFundService.playerWeekly(alice);
+            assertEquals(100, info.lastWeekAccrued(),
+                    "замороженная доля должна читаться из закрытого периода");
+            assertTrue(info.lastWeekAutoPayoutAt() > System.currentTimeMillis(),
+                    "момент автовыплаты должен быть в будущем");
+
+            // после реальной выплаты «за прошлую неделю» читается из выплат
+            db.weeklyFundService.runNow();
+            assertEquals(100, db.accountService.getBalance(alice));
+            WeeklyFundService.WeeklyPlayerInfo paid = db.weeklyFundService.playerWeekly(alice);
+            assertEquals(100, paid.lastWeekAccrued());
         }
     }
 

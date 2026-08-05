@@ -94,6 +94,15 @@ public final class ActivityService {
         }
     }
 
+    /** Отметить игрока активным в указанный момент (для тестов с фиксированным временем). */
+    void onPlayerActiveAt(UUID playerId, long nowMillis) {
+        Session session = sessions.get(playerId);
+        if (session != null) {
+            session.lastActiveAt = nowMillis;
+            session.afk = false;
+        }
+    }
+
     /** Накапливать счётчики всех онлайн-сессий (вызывается раз в sampleIntervalTicks). */
     public void sampleNow() {
         sampleAt(System.currentTimeMillis());
@@ -185,14 +194,24 @@ public final class ActivityService {
                         + (session == null ? 0 : session.activeSeconds);
                 long afk = (row == null ? 0 : row.totalAfkSeconds())
                         + (session == null ? 0 : session.afkSeconds);
-                long weekly = (row == null ? 0 : row.weeklyActiveSeconds())
-                        + (session == null ? 0 : session.activeSeconds);
                 boolean afkNow = session != null && session.afk;
                 long lastActivityAt = row != null ? row.lastActivityAt() : 0;
                 String lastDimension = row != null ? row.lastDimension()
                         : (session == null ? null : session.dimension);
-                String week = row != null && row.currentWeekId() != null
-                        ? row.currentWeekId() : WeekId.current();
+                // Активность за текущую календарную неделю считается по дням
+                // (weekly_activity_days): сохранённая часть + несохранённые дни сессии.
+                String week = WeekId.current();
+                long weekly = 0;
+                for (WeeklyActivityDayRow day : days.listByWeekAndPlayer(connection, week, playerId)) {
+                    weekly += day.activeSeconds();
+                }
+                if (session != null) {
+                    for (Map.Entry<String, Long> entry : session.daySeconds.entrySet()) {
+                        if (week.equals(WeeklyMath.weekOfDay(entry.getKey()))) {
+                            weekly += entry.getValue();
+                        }
+                    }
+                }
                 return Optional.of(new ActivityInfo(playerId, online, active, afk, week, weekly,
                         afkNow, lastActivityAt, lastDimension));
             });
@@ -212,15 +231,19 @@ public final class ActivityService {
 
     /** Записать все онлайн-сессии в базу (периодически и при остановке). */
     public void persistAll() {
+        persistAllAt(System.currentTimeMillis());
+    }
+
+    /** Записать все онлайн-сессии в базу в указанный момент времени (для тестов). */
+    void persistAllAt(long nowMillis) {
         if (sessions.isEmpty()) {
             return;
         }
         String week = WeekId.current();
-        long now = System.currentTimeMillis();
         try {
             database.inTransaction(connection -> {
                 for (Session session : sessions.values()) {
-                    persist(connection, session, week, now);
+                    persist(connection, session, week, nowMillis);
                 }
                 return null;
             });
@@ -266,7 +289,6 @@ public final class ActivityService {
                 (existing == null ? 0 : existing.totalActiveSeconds()) + session.activeSeconds,
                 (existing == null ? 0 : existing.totalAfkSeconds()) + session.afkSeconds,
                 week,
-                (existing == null ? 0 : existing.weeklyActiveSeconds()) + session.activeSeconds,
                 session.lastActiveAt,
                 session.dimension,
                 excluded);

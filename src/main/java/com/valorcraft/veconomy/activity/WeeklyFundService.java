@@ -156,7 +156,9 @@ public final class WeeklyFundService {
             return ok ? Map.of() : Map.of();
         }
 
-        // Независимая ротация: сохраняем план завершённой недели и обнуляем накопитель.
+        // Независимая ротация: сохраняем план завершённой недели. К этому моменту
+        // периодическое сохранение уже записало активность по дням, поэтому снимок
+        // включает последние часы завершённой недели.
         String prev = WeekId.previous(currentWeek);
         if (!ensurePrevRotated(prev, currentWeek)) {
             return Map.of();
@@ -271,7 +273,6 @@ public final class WeeklyFundService {
                                 plan.shares()[i]));
                     }
                 }
-                activityRepository.resetWeekly(connection, currentWeek);
                 return null;
             });
             VEconomyMod.LOGGER.info("Недельный фонд: ротация — план недели {} на {} игроков, фонд {}",
@@ -485,7 +486,8 @@ public final class WeeklyFundService {
     /**
      * Прогноз текущей недели (живой расчёт из таблицы дней, не источник истины).
      * Кэшируется с TTL, чтобы повторные вызовы {@code /money weekly} не пересчитывали
-     * фонд и денежную массу на каждый запрос.
+     * фонд и денежную массу на каждый запрос. При ошибке БД кэшируется пустой прогноз —
+     * ошибка неотличима от пустого фонда, пока это не проверено прямым пересчётом.
      */
     public WeeklyForecast forecast() {
         String currentWeek = WeekId.current();
@@ -495,8 +497,20 @@ public final class WeeklyFundService {
                 && now - entry.createdAtMillis() < FORECAST_TTL_MILLIS) {
             return entry.forecast();
         }
+        WeeklyForecast result = computeForecast(currentWeek);
+        if (result == null) {
+            result = new WeeklyForecast(currentWeek, 0, 0, 0, 0, 0, 0, 0, 0, List.of());
+        }
+        synchronized (this) {
+            forecastCache = new ForecastCacheEntry(currentWeek, now, result);
+        }
+        return result;
+    }
+
+    /** Пересчитать прогноз недели без кэша; {@code null} — расчёт недоступен (ошибка БД). */
+    private WeeklyForecast computeForecast(String currentWeek) {
         WeeklyFund cfg = settings.weeklyFund;
-        WeeklyForecast result;
+        long now = System.currentTimeMillis();
         try {
             PlanComputation plan = database.inTransaction(connection ->
                     computePlan(connection, currentWeek, cfg, now));
@@ -509,17 +523,26 @@ public final class WeeklyFundService {
             }
             players.sort(java.util.Comparator.comparingLong(
                     WeeklyForecast.PlayerForecast::share).reversed());
-            result = new WeeklyForecast(currentWeek, plan.fundAmount(), plan.baseFund(),
+            return new WeeklyForecast(currentWeek, plan.fundAmount(), plan.baseFund(),
                     plan.coefficientBps(), plan.moneySupply(), plan.supplyPerEligible(),
                     plan.eligibleCount(), plan.totalPoints(), plan.totalShare(), players);
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка прогноза недельного фонда", e);
-            result = new WeeklyForecast(currentWeek, 0, 0, 0, 0, 0, 0, 0, 0, List.of());
+            return null;
         }
-        synchronized (this) {
-            forecastCache = new ForecastCacheEntry(currentWeek, now, result);
+    }
+
+    /** Найти прогноз игрока в списке прогноза (или {@code null}). */
+    private static WeeklyForecast.PlayerForecast findPlayer(WeeklyForecast forecast, UUID playerId) {
+        if (forecast == null) {
+            return null;
         }
-        return result;
+        for (WeeklyForecast.PlayerForecast candidate : forecast.players()) {
+            if (candidate.playerId().equals(playerId)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /** Прогноз по игроку для {@code /money weekly}: участие, очки и примерная доля. */
@@ -528,23 +551,22 @@ public final class WeeklyFundService {
         String currentWeek = WeekId.current();
         long now = System.currentTimeMillis();
         long weekEndMillis = WeekId.endMillis(currentWeek);
+        Accrued lastWeek = lastWeekState(playerId, currentWeek);
 
         if (!cfg.enabled) {
             return new WeeklyPlayerInfo(currentWeek, false,
                     NotEligibleReason.WEEKLY_FUND_DISABLED, 0, 0, 0, 0, 0, 0,
-                    previousWeekPayout(playerId, currentWeek), weekEndMillis);
+                    lastWeek.accrued(), lastWeek.autoPayoutAt(), weekEndMillis);
         }
 
         // Стабильная опорная точка прогноза (кэш): доли участников считаются один раз.
-        WeeklyForecast forecast = forecast();
-        for (WeeklyForecast.PlayerForecast candidate : forecast.players()) {
-            if (candidate.playerId().equals(playerId)) {
-                return new WeeklyPlayerInfo(currentWeek, true, null,
-                        candidate.activeSeconds(), candidate.activeDays(),
-                        candidate.timePoints(), candidate.dayPoints(),
-                        candidate.totalPoints(), candidate.share(),
-                        previousWeekPayout(playerId, currentWeek), weekEndMillis);
-            }
+        WeeklyForecast.PlayerForecast found = findPlayer(forecast(), playerId);
+        if (found != null) {
+            return new WeeklyPlayerInfo(currentWeek, true, null,
+                    found.activeSeconds(), found.activeDays(),
+                    found.timePoints(), found.dayPoints(),
+                    found.totalPoints(), found.share(),
+                    lastWeek.accrued(), lastWeek.autoPayoutAt(), weekEndMillis);
         }
 
         // Не попал в прогноз — показать конкретную причину из прямого чтения данных игрока.
@@ -561,12 +583,30 @@ public final class WeeklyFundService {
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка проверки участия в недельном фонде {}", playerId, e);
-            return new WeeklyPlayerInfo(currentWeek, false, NotEligibleReason.NO_POINTS,
-                    0, 0, 0, 0, 0, 0, previousWeekPayout(playerId, currentWeek), weekEndMillis);
+            return new WeeklyPlayerInfo(currentWeek, false, NotEligibleReason.FORECAST_UNAVAILABLE,
+                    0, 0, 0, 0, 0, 0, lastWeek.accrued(), lastWeek.autoPayoutAt(), weekEndMillis);
         }
         Eligibility status = eligibility(cfg, data.activity(), data.account(), data.aggregated(), now);
         long timePoints = WeeklyMath.timePoints(data.aggregated().totalSeconds, cfg.timePointLevels);
         long dayPoints = WeeklyMath.dayPoints(data.aggregated().activeDays, cfg.dayPointLevels);
+        if (status == Eligibility.ELIGIBLE && timePoints + dayPoints > 0) {
+            // Игрок подходит и набрал очки, но его нет в кэшированном прогнозе — кэш мог
+            // устареть (игрок стал подходящим после расчёта). Пересчитываем один раз без TTL.
+            WeeklyForecast.PlayerForecast fresh = findPlayer(computeForecast(currentWeek), playerId);
+            if (fresh != null) {
+                return new WeeklyPlayerInfo(currentWeek, true, null,
+                        fresh.activeSeconds(), fresh.activeDays(),
+                        fresh.timePoints(), fresh.dayPoints(),
+                        fresh.totalPoints(), fresh.share(),
+                        lastWeek.accrued(), lastWeek.autoPayoutAt(), weekEndMillis);
+            }
+            // Прогноз недоступен (ошибка БД) или пуст: подходящему игроку нельзя
+            // показывать «недостаточно очков».
+            return new WeeklyPlayerInfo(currentWeek, false, NotEligibleReason.FORECAST_UNAVAILABLE,
+                    data.aggregated().totalSeconds, data.aggregated().activeDays,
+                    timePoints, dayPoints, timePoints + dayPoints, 0,
+                    lastWeek.accrued(), lastWeek.autoPayoutAt(), weekEndMillis);
+        }
         NotEligibleReason reason = switch (status) {
             case EXCLUDED -> NotEligibleReason.EXCLUDED;
             case FROZEN -> NotEligibleReason.ACCOUNT_FROZEN;
@@ -578,18 +618,34 @@ public final class WeeklyFundService {
         return new WeeklyPlayerInfo(currentWeek, false, reason,
                 data.aggregated().totalSeconds, data.aggregated().activeDays,
                 timePoints, dayPoints, timePoints + dayPoints, 0,
-                previousWeekPayout(playerId, currentWeek), weekEndMillis);
+                lastWeek.accrued(), lastWeek.autoPayoutAt(), weekEndMillis);
     }
 
-    /** Сумма выплаты игроку за неделю до текущей (для «за прошлую неделю» в {@code /money weekly}). */
-    private long previousWeekPayout(UUID playerId, String currentWeek) {
+    /**
+     * Начисление за прошлую неделю: замороженная доля из снимка периодов, пока она ещё
+     * не выплачена, иначе фактическая выплата; плюс момент запланированной автовыплаты.
+     */
+    private Accrued lastWeekState(UUID playerId, String currentWeek) {
         String previous = WeekId.previous(currentWeek);
         try {
-            return database.inTransaction(connection ->
-                    payouts.amountForWeek(connection, previous, playerId).orElse(0L));
+            return database.inTransaction(connection -> {
+                WeeklyPeriodRow period = periods.findByWeekAndPlayer(connection, previous, playerId)
+                        .orElse(null);
+                long accrued = 0;
+                if (period != null && !WeeklyPeriodRepository.STATUS_PAID.equals(period.status())
+                        && period.share() > 0) {
+                    accrued = period.share();
+                } else {
+                    accrued = payouts.amountForWeek(connection, previous, playerId).orElse(0L);
+                }
+                WeeklyFundPlanRow plan = plans.find(connection, previous).orElse(null);
+                long autoPayoutAt = plan == null ? 0
+                        : (plan.autoPayoutAt() == null ? 0 : plan.autoPayoutAt());
+                return new Accrued(accrued, autoPayoutAt);
+            });
         } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка чтения прошлой выплаты игрока {}", playerId, e);
-            return 0;
+            VEconomyMod.LOGGER.error("Ошибка чтения начисления прошлой недели игрока {}", playerId, e);
+            return new Accrued(0, 0);
         }
     }
 
@@ -931,6 +987,10 @@ public final class WeeklyFundService {
     private record DataAndChecks(Aggregated aggregated, PlayerActivityRow activity, AccountRow account) {
     }
 
+    /** Начисление за прошлую неделю: сумма и момент запланированной автовыплаты. */
+    private record Accrued(long accrued, long autoPayoutAt) {
+    }
+
     /** Публичный снимок расчётной выплаты за неделю. */
     public record WeeklyAllocation(UUID playerId, long countedSeconds, int activeDays, long points,
                                    long timePoints, long dayPoints, long share) {
@@ -944,14 +1004,16 @@ public final class WeeklyFundService {
         MIN_ACTIVE_SECONDS,
         MIN_ACTIVE_DAYS,
         MIN_ACCOUNT_AGE,
-        NO_POINTS
+        NO_POINTS,
+        /** Игрок подходит, но прогноз сейчас рассчитать нельзя (ошибка БД или устаревший кэш). */
+        FORECAST_UNAVAILABLE
     }
 
     /** Состояние игрока для {@code /money weekly}: участие, очки и оценка доли. */
     public record WeeklyPlayerInfo(String weekId, boolean eligible, NotEligibleReason reason,
                                    long activeSeconds, int activeDays, long timePoints, long dayPoints,
-                                   long totalPoints, long projectedShare, long lastWeekPayout,
-                                   long weekEndMillis) {
+                                   long totalPoints, long projectedShare, long lastWeekAccrued,
+                                   long lastWeekAutoPayoutAt, long weekEndMillis) {
     }
 
     /** Прогноз недельного фонда (текущая неделя, живой расчёт). */

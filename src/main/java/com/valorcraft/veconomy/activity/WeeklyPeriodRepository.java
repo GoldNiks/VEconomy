@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -58,6 +59,20 @@ public final class WeeklyPeriodRepository {
             }
         } catch (SQLException e) {
             throw new DatabaseException("Ошибка чтения снимка недели " + weekId, e);
+        }
+    }
+
+    /** Строка снимка недели для конкретного игрока (для «за прошлую неделю» в {@code /money weekly}). */
+    public Optional<WeeklyPeriodRow> findByWeekAndPlayer(Connection connection, String weekId, UUID playerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT " + COLUMNS + " FROM weekly_activity_periods WHERE week_id = ? AND player_uuid = ?")) {
+            statement.setString(1, weekId);
+            statement.setString(2, playerId.toString());
+            try (ResultSet rs = statement.executeQuery()) {
+                return rs.next() ? Optional.of(map(rs)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения снимка игрока " + playerId + " за " + weekId, e);
         }
     }
 

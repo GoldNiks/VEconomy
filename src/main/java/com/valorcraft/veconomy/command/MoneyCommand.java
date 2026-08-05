@@ -6,12 +6,12 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.activity.ActivityService.ActivityInfo;
-import com.valorcraft.veconomy.activity.WeeklyFundService.NotEligibleReason;
 import com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyPlayerInfo;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.persistence.TransactionRow;
 import com.valorcraft.veconomy.util.CurrencyParser;
@@ -259,37 +259,33 @@ public final class MoneyCommand {
             ServerPlayer player = source.getPlayerOrException();
             WeeklyPlayerInfo info = EconomyCore.weeklyFund().playerWeekly(player.getUUID());
             long untilEnd = Math.max(0, info.weekEndMillis() - System.currentTimeMillis());
-            source.sendSuccess(() -> Component.translatable("cmd.weekly.title", info.weekId())
+            source.sendSuccess(() -> Component.translatable("cmd.weekly.title")
                     .withStyle(ChatFormatting.GOLD), false);
             if (info.eligible()) {
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.summary",
-                        localizedDuration(info.activeSeconds()), info.activeDays(), info.totalPoints())
-                        .withStyle(ChatFormatting.GREEN), false);
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.activeTime",
+                        localizedDuration(info.activeSeconds())), false);
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.activeDays",
+                        info.activeDays()), false);
                 source.sendSuccess(() -> Component.translatable("cmd.weekly.share",
                         EconomyCore.formatter().format(info.projectedShare()))
                         .withStyle(ChatFormatting.AQUA), false);
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.mayChange")
-                        .withStyle(ChatFormatting.GRAY), false);
                 source.sendSuccess(() -> Component.translatable("cmd.weekly.untilEnd",
                         localizedDuration(untilEnd)), false);
             } else {
                 source.sendSuccess(() -> Component.translatable("cmd.weekly.notEligible")
                         .withStyle(ChatFormatting.RED), false);
-                source.sendSuccess(() -> Component.translatable(reasonKey(info.reason()))
-                        .withStyle(ChatFormatting.GRAY), false);
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.summary",
-                        localizedDuration(info.activeSeconds()), info.activeDays(), info.totalPoints())
-                        .withStyle(ChatFormatting.DARK_GRAY), false);
+                source.sendSuccess(() -> reasonLine(info), false);
             }
-            if (info.lastWeekPayout() > 0) {
+            if (info.lastWeekAccrued() > 0) {
                 source.sendSuccess(() -> Component.translatable("cmd.weekly.lastWeek",
-                        EconomyCore.formatter().format(info.lastWeekPayout()))
+                        EconomyCore.formatter().format(info.lastWeekAccrued()))
                         .withStyle(ChatFormatting.DARK_GRAY), false);
-            }
-            int delay = EconomyCore.settings().weeklyFund.payoutDelayHours;
-            if (delay > 0) {
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.payoutInfo", delay)
-                        .withStyle(ChatFormatting.GRAY), false);
+                long autoPayoutAt = info.lastWeekAutoPayoutAt();
+                if (autoPayoutAt > 0 && autoPayoutAt > System.currentTimeMillis()) {
+                    source.sendSuccess(() -> Component.translatable("cmd.weekly.payoutSoon",
+                            localizedDuration(autoPayoutAt - System.currentTimeMillis()))
+                            .withStyle(ChatFormatting.GRAY), false);
+                }
             }
         } catch (Exception e) {
             source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
@@ -297,16 +293,51 @@ public final class MoneyCommand {
         return 1;
     }
 
-    private static String reasonKey(NotEligibleReason reason) {
-        return switch (reason) {
-            case WEEKLY_FUND_DISABLED -> "cmd.weekly.reason.disabled";
-            case EXCLUDED -> "cmd.weekly.reason.excluded";
-            case ACCOUNT_FROZEN -> "cmd.weekly.reason.frozen";
-            case MIN_ACTIVE_SECONDS -> "cmd.weekly.reason.minActive";
-            case MIN_ACTIVE_DAYS -> "cmd.weekly.reason.minDays";
-            case MIN_ACCOUNT_AGE -> "cmd.weekly.reason.minAge";
-            case NO_POINTS -> "cmd.weekly.reason.noPoints";
+    /** Конкретная причина неучастия: сколько именно не хватает до ближайшего порога. */
+    private static MutableComponent reasonLine(WeeklyPlayerInfo info) {
+        EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
+        return switch (info.reason()) {
+            case MIN_ACTIVE_SECONDS -> Component.translatable("cmd.weekly.reason.minActive",
+                    localizedDuration(Math.max(0, cfg.minActiveSeconds - info.activeSeconds())))
+                    .withStyle(ChatFormatting.GRAY);
+            case MIN_ACTIVE_DAYS -> Component.translatable(
+                    minDaysKey(Math.max(0, cfg.minActiveDays - info.activeDays())),
+                    Math.max(0, cfg.minActiveDays - info.activeDays())).withStyle(ChatFormatting.GRAY);
+            case NO_POINTS -> {
+                if (!cfg.timePointLevels.isEmpty()) {
+                    long missing = cfg.timePointLevels.get(0).activeSeconds() - info.activeSeconds();
+                    if (missing > 0) {
+                        yield Component.translatable("cmd.weekly.reason.noPoints",
+                                localizedDuration(missing)).withStyle(ChatFormatting.GRAY);
+                    }
+                }
+                yield Component.translatable("cmd.weekly.reason.noPointsNone")
+                        .withStyle(ChatFormatting.GRAY);
+            }
+            case FORECAST_UNAVAILABLE -> Component.translatable("cmd.weekly.reason.unavailable")
+                    .withStyle(ChatFormatting.GRAY);
+            case WEEKLY_FUND_DISABLED -> Component.translatable("cmd.weekly.reason.disabled")
+                    .withStyle(ChatFormatting.GRAY);
+            case EXCLUDED -> Component.translatable("cmd.weekly.reason.excluded")
+                    .withStyle(ChatFormatting.GRAY);
+            case ACCOUNT_FROZEN -> Component.translatable("cmd.weekly.reason.frozen")
+                    .withStyle(ChatFormatting.GRAY);
+            case MIN_ACCOUNT_AGE -> Component.translatable("cmd.weekly.reason.minAge")
+                    .withStyle(ChatFormatting.GRAY);
         };
+    }
+
+    /** Ключ множественного числа «дней» (русская плюрализация; en использует один текст). */
+    private static String minDaysKey(int count) {
+        int mod10 = count % 10;
+        int mod100 = count % 100;
+        if (mod10 == 1 && mod100 != 11) {
+            return "cmd.weekly.reason.minDays.one";
+        }
+        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+            return "cmd.weekly.reason.minDays.few";
+        }
+        return "cmd.weekly.reason.minDays.many";
     }
 
     private static int history(CommandContext<CommandSourceStack> context, int page) {

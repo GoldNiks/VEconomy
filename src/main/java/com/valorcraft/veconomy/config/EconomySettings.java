@@ -245,9 +245,9 @@ public final class EconomySettings {
             this.minimumFund = Math.max(0, minimumFund);
             this.maximumFund = Math.max(minimumFund, maximumFund);
             this.targetSupplyPerEligiblePlayer = Math.max(1, targetSupplyPerEligiblePlayer);
-            this.economyCoefficientTiers = sorted(EconomyTier::upperRatioPercent, economyCoefficientTiers);
-            this.timePointLevels = sorted(PointLevel::activeSeconds, timePointLevels);
-            this.dayPointLevels = sorted(PointLevel::activeSeconds, dayPointLevels);
+            this.economyCoefficientTiers = economyTiers(economyCoefficientTiers);
+            this.timePointLevels = pointLevels(timePointLevels, "timePointLevels");
+            this.dayPointLevels = pointLevels(dayPointLevels, "dayPointLevels");
             this.maximumPlayerSharePercent = Math.max(1, Math.min(100, maximumPlayerSharePercent));
             this.timeZone = normalizeTimeZone(timeZone);
         }
@@ -266,13 +266,57 @@ public final class EconomySettings {
             return timeZone;
         }
 
-        private static <T> List<T> sorted(java.util.function.ToLongFunction<T> key, List<T> values) {
-            if (values == null) {
+        /**
+         * Очковые уровни: сортировка по порогу, строгий рост порогов (по дубликатам — ошибка),
+         * очки не могут уменьшаться по мере роста порога. Пустой список допустим (очки = 0).
+         */
+        private static List<PointLevel> pointLevels(List<PointLevel> levels, String name) {
+            if (levels == null) {
                 return List.of();
             }
-            List<T> copy = new java.util.ArrayList<>(values);
-            copy.sort(java.util.Comparator.comparingLong(key));
-            return List.copyOf(copy);
+            List<PointLevel> sorted = new java.util.ArrayList<>(levels);
+            sorted.sort(java.util.Comparator.comparingLong(PointLevel::activeSeconds));
+            PointLevel previous = null;
+            for (PointLevel level : sorted) {
+                if (previous != null) {
+                    if (level.activeSeconds() <= previous.activeSeconds()) {
+                        throw new IllegalArgumentException("Пороги очковых уровней '" + name
+                                + "' должны строго возрастать без повторов: " + level.activeSeconds());
+                    }
+                    if (level.points() < previous.points()) {
+                        throw new IllegalArgumentException("Очки уровней '" + name
+                                + "' не могут уменьшаться при росте порога: " + level.points());
+                    }
+                }
+                previous = level;
+            }
+            return List.copyOf(sorted);
+        }
+
+        /**
+         * Ступени экономического коэффициента: сортировка по верхней границе, строгий рост
+         * границ, положительный коэффициент. Пустой список допустим (коэффициент 100%).
+         */
+        private static List<EconomyTier> economyTiers(List<EconomyTier> tiers) {
+            if (tiers == null) {
+                return List.of();
+            }
+            List<EconomyTier> sorted = new java.util.ArrayList<>(tiers);
+            sorted.sort(java.util.Comparator.comparingLong(EconomyTier::upperRatioPercent));
+            EconomyTier previous = null;
+            for (EconomyTier tier : sorted) {
+                if (tier.coefficientBps() <= 0) {
+                    throw new IllegalArgumentException(
+                            "Коэффициент ступени экономики должен быть положительным: " + tier.coefficientBps());
+                }
+                if (previous != null && tier.upperRatioPercent() <= previous.upperRatioPercent()) {
+                    throw new IllegalArgumentException(
+                            "Верхние границы ступеней экономики должны строго возрастать: "
+                                    + tier.upperRatioPercent());
+                }
+                previous = tier;
+            }
+            return List.copyOf(sorted);
         }
 
         /** Кумулятивная сверка: очки за время берутся с последнего пройденного порога. */

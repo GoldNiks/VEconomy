@@ -40,7 +40,7 @@ class MilestoneServiceTest {
         db.database.inTransaction(connection -> {
             db.activityRepository.upsert(connection, DatabaseManager.Dialect.SQLITE,
                     new PlayerActivityRow(player, 1L, 1L, seconds, seconds, 0,
-                            WeekId.current(), seconds, 1L, "minecraft:overworld", false));
+                            WeekId.current(), 1L, "minecraft:overworld", false));
             return null;
         });
     }

@@ -11,7 +11,6 @@ public record PlayerActivityRow(
         long totalActiveSeconds,
         long totalAfkSeconds,
         String currentWeekId,
-        long weeklyActiveSeconds,
         long lastActivityAt,
         String lastDimension,
         boolean excludedFromRewards) {
