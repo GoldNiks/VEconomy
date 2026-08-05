@@ -48,6 +48,7 @@
   "admin.yes": "yes",
   "admin.no": "no",
   "admin.weekly.status.header": "Weekly fund (current week %s)",
+  "admin.weekly.status.target": "Target week (oldest open): %s",
   "admin.weekly.status.enabled": "Enabled: %s",
   "admin.weekly.status.autorun": "Auto-run: %s",
   "admin.weekly.status.amount": "Fund per week: %s",

@@ -3,7 +3,6 @@ package com.valorcraft.veconomy.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.valorcraft.veconomy.EconomyCore;
-import com.valorcraft.veconomy.activity.WeekId;
 import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
@@ -71,11 +70,18 @@ public final class EconomyAdminCommand {
                                 .then(Commands.literal("status")
                                         .executes(EconomyAdminCommand::weeklyStatus))
                                 .then(Commands.literal("preview")
-                                        .executes(EconomyAdminCommand::weeklyPreview))
+                                        .executes(context -> weeklyPreview(context, null))
+                                        .then(Commands.argument("week", StringArgumentType.word())
+                                                .executes(context -> weeklyPreview(context,
+                                                        StringArgumentType.getString(context, "week")))))
                                 .then(Commands.literal("run")
                                         .executes(EconomyAdminCommand::weeklyRunPrompt)
                                         .then(Commands.literal("confirm")
-                                                .executes(EconomyAdminCommand::weeklyRunConfirm))))));
+                                                .executes(context -> weeklyRunConfirm(context, null)))
+                                        .then(Commands.argument("week", StringArgumentType.word())
+                                                .then(Commands.literal("confirm")
+                                                        .executes(context -> weeklyRunConfirm(context,
+                                                                StringArgumentType.getString(context, "week")))))))));
     }
 
     private static int balanceGet(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
@@ -261,6 +267,8 @@ public final class EconomyAdminCommand {
                 EconomyCore.weeklyFund().status();
         source.sendSuccess(() -> Component.translatable("admin.weekly.status.header",
                 status.currentWeek()).withStyle(ChatFormatting.GOLD), false);
+        source.sendSuccess(() -> Component.translatable("admin.weekly.status.target",
+                status.targetWeek()).withStyle(ChatFormatting.YELLOW), false);
         String enabled = status.enabled() ? "admin.yes" : "admin.no";
         String autoRun = status.autoRun() ? "admin.yes" : "admin.no";
         source.sendSuccess(() -> Component.translatable("admin.weekly.status.enabled",
@@ -288,13 +296,17 @@ public final class EconomyAdminCommand {
         return 1;
     }
 
-    private static int weeklyPreview(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+    private static int weeklyPreview(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                     String weekId) {
         CommandSourceStack source = context.getSource();
         EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
         java.util.List<com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation> allocations =
-                EconomyCore.weeklyFund().preview();
+                EconomyCore.weeklyFund().preview(weekId);
+        // Неделя для заголовка: указанная команде, либо та, что видит сервис по умолчанию.
+        String shownWeek = weekId != null ? weekId
+                : EconomyCore.weeklyFund().status().targetWeek();
         source.sendSuccess(() -> Component.translatable("admin.weekly.preview.header",
-                WeekId.previous(WeekId.current()),
+                shownWeek,
                 EconomyCore.formatter().format(cfg.weeklyAmount)).withStyle(ChatFormatting.GOLD), false);
         if (allocations.isEmpty()) {
             source.sendSuccess(() -> Component.translatable("admin.weekly.preview.empty")
@@ -320,9 +332,10 @@ public final class EconomyAdminCommand {
             source.sendSuccess(() -> Component.translatable("admin.weekly.preview.more",
                     allocations.size() - PREVIEW_LINES).withStyle(ChatFormatting.GRAY), false);
         }
+        long finalTotal = totalShare;
         source.sendSuccess(() -> Component.translatable("admin.weekly.preview.total",
-                allocations.size(), EconomyCore.formatter().format(totalShare),
-                EconomyCore.formatter().format(Math.max(0, cfg.weeklyAmount - totalShare)))
+                allocations.size(), EconomyCore.formatter().format(finalTotal),
+                EconomyCore.formatter().format(Math.max(0, cfg.weeklyAmount - finalTotal)))
                 .withStyle(ChatFormatting.YELLOW), false);
         return 1;
     }
@@ -330,21 +343,22 @@ public final class EconomyAdminCommand {
     private static int weeklyRunPrompt(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
         EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
-        java.util.List<com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation> allocations =
-                EconomyCore.weeklyFund().preview();
-        long totalShare = allocations.stream()
-                .mapToLong(com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyAllocation::share).sum();
+        com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyStatus status =
+                EconomyCore.weeklyFund().status();
         source.sendSuccess(() -> Component.translatable("admin.weekly.run.prompt",
-                WeekId.previous(WeekId.current()),
-                EconomyCore.formatter().format(totalShare)).withStyle(ChatFormatting.GOLD), true);
+                status.targetWeek(),
+                EconomyCore.formatter().format(status.totalShare())).withStyle(ChatFormatting.GOLD), true);
         source.sendSuccess(() -> Component.translatable("admin.weekly.run.hint")
                 .withStyle(ChatFormatting.GRAY), false);
         return 1;
     }
 
-    private static int weeklyRunConfirm(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+    private static int weeklyRunConfirm(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                        String weekId) {
         CommandSourceStack source = context.getSource();
-        java.util.Map<UUID, Long> payments = EconomyCore.weeklyFund().runNow();
+        java.util.Map<UUID, Long> payments = weekId == null
+                ? EconomyCore.weeklyFund().runNow()
+                : EconomyCore.weeklyFund().runNow(weekId);
         if (payments.isEmpty()) {
             source.sendFailure(Component.translatable("admin.weekly.run.empty")
                     .withStyle(ChatFormatting.RED));

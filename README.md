@@ -61,9 +61,9 @@ gradlew build
 | `/economy admin stats`                             | 4     | Статистика экономики                |
 | `/economy admin reload`                            | 4     | Перечитать конфиг с диска           |
 | `/economy admin weekly status`                     | 4     | Состояние недельного фонда          |
-| `/economy admin weekly preview`                    | 4     | Предпросмотр выплаты за неделю      |
+| `/economy admin weekly preview [неделя]`           | 4     | Предпросмотр выплаты (по умолчанию — самый старый незакрытый период) |
 | `/economy admin weekly run`                        | 4     | Показать сумму, запросить подтверждение |
-| `/economy admin weekly run confirm`                | 4     | Выполнить выплату недельного фонда  |
+| `/economy admin weekly run [неделя] confirm`       | 4     | Выполнить выплату недельного фонда  |
 
 Для команд `add`/`remove`/`set` причина обязательна. Казна — системный аккаунт,
 изменять её баланс командами нельзя.

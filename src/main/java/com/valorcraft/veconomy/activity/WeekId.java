@@ -30,15 +30,34 @@ public final class WeekId {
 
     /** Неделя, предшествующая {@code weekId} (например {@code 2026-W32} → {@code 2026-W31}). */
     public static String previous(String weekId) {
+        if (!isValid(weekId)) {
+            return weekId;
+        }
+        return forDate(mondayOf(weekId).minusDays(7));
+    }
+
+    /** Неделя, следующая за {@code weekId} (например {@code 2026-W32} → {@code 2026-W33}). */
+    public static String next(String weekId) {
+        if (!isValid(weekId)) {
+            return weekId;
+        }
+        return forDate(mondayOf(weekId).plusDays(7));
+    }
+
+    /** Корректный ли идентификатор недели ({@code YYYY-WWW}). */
+    public static boolean isValid(String weekId) {
+        return weekId != null && WEEK.matcher(weekId).matches();
+    }
+
+    private static LocalDate mondayOf(String weekId) {
         Matcher matcher = WEEK.matcher(weekId);
         if (!matcher.matches()) {
-            return weekId;
+            throw new IllegalArgumentException("Неверный идентификатор недели: " + weekId);
         }
         int year = Integer.parseInt(matcher.group(1));
         int week = Integer.parseInt(matcher.group(2));
         LocalDate firstWeek = LocalDate.of(year, 1, 4);
         LocalDate firstMonday = firstWeek.with(java.time.temporal.ChronoField.DAY_OF_WEEK, 1);
-        LocalDate monday = firstMonday.plusWeeks(week - 1L);
-        return forDate(monday.minusDays(7));
+        return firstMonday.plusWeeks(week - 1L);
     }
 }

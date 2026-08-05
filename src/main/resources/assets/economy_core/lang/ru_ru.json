@@ -48,6 +48,7 @@
   "admin.yes": "да",
   "admin.no": "нет",
   "admin.weekly.status.header": "Недельный фонд (текущая неделя %s)",
+  "admin.weekly.status.target": "Целевая неделя (самый старый незакрытый период): %s",
   "admin.weekly.status.enabled": "Включён: %s",
   "admin.weekly.status.autorun": "Автозапуск: %s",
   "admin.weekly.status.amount": "Фонд за неделю: %s",

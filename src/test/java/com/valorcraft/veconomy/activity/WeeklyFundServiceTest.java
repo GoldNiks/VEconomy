@@ -337,6 +337,80 @@ class WeeklyFundServiceTest {
         }
     }
 
+    /** Вставить вручную снимок недели со строкой в статусе ожидания выплаты. */
+    private static void seedPeriod(TestDb db, String weekId, UUID player, long seconds) {
+        WeeklyPeriodRepository periods = new WeeklyPeriodRepository();
+        db.database.inTransaction(connection -> {
+            periods.insert(connection, DatabaseManager.Dialect.SQLITE, new WeeklyPeriodRow(
+                    weekId, player, seconds, seconds, WeeklyPeriodRepository.STATUS_PENDING, 0, null));
+            return null;
+        });
+    }
+
+    /** Установить распределённую неделю (состояние после завершения указанной недели). */
+    private static void markDistributed(TestDb db, String weekId) {
+        db.database.inTransaction(connection -> {
+            MetaRepository.set(connection, DatabaseManager.Dialect.SQLITE,
+                    DISTRIBUTED_WEEK_KEY, weekId);
+            return null;
+        });
+    }
+
+    /**
+     * Блокер: если по какой-то причине пропущены две недели (W1 и W2 уже сохранены снимками
+     * в очереди), выплата должна брать самую старую незакрытую (W1), а не предыдущую от текущей.
+     */
+    @Test
+    void paysOldestUnclosedPeriodFirst() {
+        try (TestDb db = TestDb.create(fund(100))) {
+            String current = WeekId.current();
+            String w2 = WeekId.previous(current);
+            String w1 = WeekId.previous(w2);
+            // распределена неделя до W1 — значит W1 и W2 ещё не обработаны, но уже сняты в очередь
+            markDistributed(db, WeekId.previous(w1));
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            seedPeriod(db, w1, alice, 50);
+            seedPeriod(db, w2, bob, 50);
+
+            Map<UUID, Long> first = db.weeklyFundService.runNow();
+            assertEquals(1, first.size());
+            assertEquals(100L, first.get(alice), "выплата должна взять самую старую неделю W1");
+            assertEquals(100, db.accountService.getBalance(alice));
+            assertEquals(0, db.accountService.getBalance(bob), "младшая неделя W2 ещё не обработана");
+
+            Map<UUID, Long> second = db.weeklyFundService.runNow();
+            assertEquals(1, second.size());
+            assertEquals(100L, second.get(bob), "следующая выплата берёт W2");
+            assertEquals(100, db.accountService.getBalance(bob));
+
+            assertTrue(db.weeklyFundService.runNow().isEmpty(), "после обеих недель больше нечего платить");
+        }
+    }
+
+    /**
+     * Пропущенная (офлайн) неделя без снимка не должна блокировать выплату более новых периодов:
+     * она закрывается как пустая, и очередь продвигается дальше.
+     */
+    @Test
+    void emptyGapWeekDoesNotBlockNewerPayouts() {
+        try (TestDb db = TestDb.create(fund(100))) {
+            String current = WeekId.current();
+            String w2 = WeekId.previous(current);
+            String w1 = WeekId.previous(w2);
+            // распределена неделя до W1; W1 — пропущена (снимка нет), W2 — есть участник
+            markDistributed(db, WeekId.previous(w1));
+            UUID bob = UUID.randomUUID();
+            seedPeriod(db, w2, bob, 50);
+
+            // первый runNow закрывает пустой W1 как закрытую пустую неделю и платит W2
+            Map<UUID, Long> first = db.weeklyFundService.runNow();
+            assertEquals(100L, first.get(bob));
+            assertEquals(100, db.accountService.getBalance(bob));
+            assertTrue(db.weeklyFundService.runNow().isEmpty());
+        }
+    }
+
     @Test
     void resumablePaymentContinuesAfterFailure() {
         try (TestDb db = TestDb.create(fund(100))) {
@@ -368,6 +442,44 @@ class WeeklyFundServiceTest {
             assertEquals(40, db.accountService.getBalance(bob));
             // казне при возобновлении дублировать нечего: 60+40 = весь фонд
             assertEquals(0, db.accountService.getBalance(TreasuryService.TREASURY_UUID));
+            assertTrue(db.weeklyFundService.status().weekDistributed());
+        }
+    }
+
+    /**
+     * Блокер: если перевод остатка в казну не удался, период не должен закрываться —
+     * иначе остаток исчезнет из учёта. Неделя остаётся открытой и повторяется после
+     * устранения причины.
+     */
+    @Test
+    void treasuryRemainderFailureKeepsPeriodOpenAndRetries() {
+        long max = EconomySettings.defaults().maximumBalance;
+        try (TestDb db = TestDb.create(fund(100))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            seedWeekly(db, alice, 60);
+            seedWeekly(db, bob, 10);
+            // заполнить казну до предела: остаток 1 в казну уже не влезет (60+10=70 → остаток 1)
+            db.accountService.deposit(TreasuryService.TREASURY_UUID, max,
+                    com.valorcraft.veconomy.api.TransactionContext.of(
+                            com.valorcraft.veconomy.api.TransactionType.ADMIN_DEPOSIT, null, "test", "test:treasury:fill"));
+
+            Map<UUID, Long> first = db.weeklyFundService.runNow();
+            // игроки выплачены, но период НЕ закрыт: остаток казне не ушёл
+            assertEquals(85, db.accountService.getBalance(alice));
+            assertEquals(14, db.accountService.getBalance(bob));
+            assertTrue(!db.weeklyFundService.status().weekDistributed(),
+                    "при неудаче перевода остатка период должен остаться открытым");
+
+            // освободить место в казне и повторить — остаток наконец уходит, период закрывается
+            db.accountService.withdraw(TreasuryService.TREASURY_UUID, 1,
+                    com.valorcraft.veconomy.api.TransactionContext.of(
+                            com.valorcraft.veconomy.api.TransactionType.ADMIN_WITHDRAW, null, "test", "test:treasury:free"));
+            Map<UUID, Long> retry = db.weeklyFundService.runNow();
+            assertTrue(retry.isEmpty(), "игроки уже выплачены повторно");
+            // казна: max − 1 (свободное место) + 1 (остаток) = max
+            assertEquals(max, db.accountService.getBalance(TreasuryService.TREASURY_UUID));
             assertTrue(db.weeklyFundService.status().weekDistributed());
         }
     }

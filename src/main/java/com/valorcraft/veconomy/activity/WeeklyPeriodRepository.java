@@ -25,6 +25,9 @@ public final class WeeklyPeriodRepository {
     public static final String STATUS_PAID = "PAID";
     public static final String STATUS_FAILED = "FAILED";
 
+    /** Служебный маркер пустой недели (некому платить): строка сразу в статусе {@code PAID}. */
+    public static final UUID EMPTY_WEEK = new UUID(0L, 0L);
+
     private static final String COLUMNS = "week_id, player_uuid, counted_seconds, points, status, paid_at, transaction_id";
 
     /** Есть ли снимок для недели (в любом статусе). */
@@ -120,6 +123,12 @@ public final class WeeklyPeriodRepository {
         } catch (SQLException e) {
             throw new DatabaseException("Ошибка проверки завершения недели " + weekId, e);
         }
+    }
+
+    /** Вставить служебную строку пустой недели (сразу {@code PAID}), чтобы неделя считалась закрытой. */
+    public void insertEmpty(Connection connection, DatabaseManager.Dialect dialect, String weekId, long paidAt) {
+        insert(connection, dialect,
+                new WeeklyPeriodRow(weekId, EMPTY_WEEK, 0, 0, STATUS_PAID, paidAt, null));
     }
 
     private static WeeklyPeriodRow map(ResultSet rs) throws SQLException {
