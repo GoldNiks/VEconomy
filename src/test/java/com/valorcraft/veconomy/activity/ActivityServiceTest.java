@@ -1,8 +1,12 @@
 package com.valorcraft.veconomy.activity;
 
 import com.valorcraft.veconomy.TestDb;
+import com.valorcraft.veconomy.config.EconomySettings;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -12,6 +16,115 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ActivityServiceTest {
 
     private static final String DIMENSION = "minecraft:overworld";
+
+    /** Настройки по умолчанию с другой зоной фонда. */
+    private static EconomySettings withTimeZone(String timeZone) {
+        EconomySettings d = EconomySettings.defaults();
+        EconomySettings.WeeklyFund wf = d.weeklyFund;
+        EconomySettings.WeeklyFund custom = new EconomySettings.WeeklyFund(
+                wf.enabled, wf.notify, wf.autoPayout, wf.payoutDelayHours,
+                wf.minAccountAgeDays, wf.minActiveSeconds, wf.minActiveDays, wf.minActiveDaySeconds,
+                wf.baseAmountPerEligiblePlayer, wf.minimumFund, wf.maximumFund,
+                wf.targetSupplyPerEligiblePlayer, wf.economyCoefficientTiers,
+                wf.timePointLevels, wf.dayPointLevels, wf.maximumPlayerSharePercent, timeZone);
+        return new EconomySettings(
+                d.currencyNameSingular, d.currencyNameFew, d.currencyNameMany,
+                d.currencySymbol, d.decimalPlaces, d.maximumBalance,
+                d.transfersEnabled, d.allowOfflineRecipients,
+                d.minimumTransferAmount, d.maximumTransferAmount, d.transferCooldownSeconds,
+                d.dbType, d.databaseFile, d.busyTimeoutMillis, d.walEnabled,
+                d.mysqlHost, d.mysqlPort, d.mysqlDatabase, d.mysqlUser, d.mysqlPassword, d.mysqlPoolSize,
+                d.broadcastAdminChanges, d.activity, d.milestones, custom);
+    }
+
+    /** Сделать сессию активной на всём интервале: сброс AFK реальным движением (порог 0.5 м). */
+    private static void keepActive(TestDb db, UUID player, String dimension) {
+        db.activityService.onPlayerMove(player, 1, 64, 0, 0, 0, dimension);
+        db.activityService.onPlayerMove(player, 2, 64, 0, 0, 0, dimension);
+    }
+
+    /** Секунды активности за неделю из таблицы дней (0, если строк нет). */
+    private static long daySeconds(TestDb db, String weekId) {
+        return db.database.inTransaction(connection ->
+                db.dayRepository.listByWeek(connection, weekId).stream()
+                        .mapToLong(WeeklyActivityDayRow::activeSeconds).sum());
+    }
+
+    @Test
+    void sessionAcrossLocalMidnightSplitsIntoTwoDayRows() {
+        // понедельник 23:30 → вторник 00:30 (Берлин, UTC+2): час сессии делится поровну
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = Instant.parse("2026-08-03T21:30:00Z").toEpochMilli();
+            long end = Instant.parse("2026-08-03T22:30:00Z").toEpochMilli();
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            keepActive(db, player, DIMENSION);
+            db.activityService.onPlayerLeftAt(player, end);
+
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(3_600, info.totalActiveSeconds());
+            assertEquals(0, info.totalAfkSeconds());
+            List<WeeklyActivityDayRow> rows = db.database.inTransaction(connection ->
+                    db.dayRepository.listByWeekAndPlayer(connection, "2026-W32", player));
+            assertEquals(2, rows.size());
+            assertEquals(1_800, rows.get(0).activeSeconds());
+            assertEquals(1_800, rows.get(1).activeSeconds());
+        }
+    }
+
+    @Test
+    void sessionAcrossWeekBoundaryAttributesEachDayToItsWeek() {
+        // воскресенье 23:30 (неделя W31) → понедельник 00:30 (неделя W32)
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = Instant.parse("2026-08-02T21:30:00Z").toEpochMilli();
+            long end = Instant.parse("2026-08-02T22:30:00Z").toEpochMilli();
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            keepActive(db, player, DIMENSION);
+            db.activityService.onPlayerLeftAt(player, end);
+
+            assertEquals(1_800, daySeconds(db, "2026-W31"));
+            assertEquals(1_800, daySeconds(db, "2026-W32"));
+        }
+    }
+
+    @Test
+    void dayBoundaryFollowsConfiguredTimeZone() {
+        // 2026-08-02 19:00Z — по Берлину ещё 02.08, по Токио (UTC+9) уже 03.08 (понедельник)
+        try (TestDb db = TestDb.create(withTimeZone("Asia/Tokyo"))) {
+            UUID player = UUID.randomUUID();
+            long start = Instant.parse("2026-08-02T19:00:00Z").toEpochMilli();
+            long end = Instant.parse("2026-08-02T20:30:00Z").toEpochMilli();
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            keepActive(db, player, DIMENSION);
+            db.activityService.onPlayerLeftAt(player, end);
+
+            // вся сессия относится к одному дню в зоне конфига (03.08, W32)
+            List<WeeklyActivityDayRow> rows = db.database.inTransaction(connection ->
+                    db.dayRepository.listByWeek(connection, "2026-W32"));
+            assertEquals(1, rows.size());
+            assertEquals(Long.toString(LocalDate.of(2026, 8, 3).toEpochDay()), rows.get(0).dayKey());
+            assertEquals(5_400, rows.get(0).activeSeconds());
+            assertEquals(0, daySeconds(db, "2026-W31"));
+        }
+    }
+
+    @Test
+    void afkSecondsAreNotCountedToAnyDay() {
+        // активны только первые 300 секунд (таймаут AFK), остаток сессии в дни не попадает
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = Instant.parse("2026-08-03T10:00:00Z").toEpochMilli();
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            db.activityService.onPlayerLeftAt(player, start + 301_000);
+
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(301, info.totalOnlineSeconds());
+            assertEquals(300, info.totalActiveSeconds());
+            assertEquals(1, info.totalAfkSeconds());
+            assertEquals(300, daySeconds(db, "2026-W32"));
+        }
+    }
 
     @Test
     void accumulatesOnlineAndActiveSeconds() {

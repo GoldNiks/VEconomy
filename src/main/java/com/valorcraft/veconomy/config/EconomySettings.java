@@ -249,7 +249,21 @@ public final class EconomySettings {
             this.timePointLevels = sorted(PointLevel::activeSeconds, timePointLevels);
             this.dayPointLevels = sorted(PointLevel::activeSeconds, dayPointLevels);
             this.maximumPlayerSharePercent = Math.max(1, Math.min(100, maximumPlayerSharePercent));
-            this.timeZone = timeZone == null || timeZone.isBlank() ? "Europe/Berlin" : timeZone;
+            this.timeZone = normalizeTimeZone(timeZone);
+        }
+
+        /** Непустая строка зоны: пустая строка → Europe/Berlin; неверная зона → ошибка конфига. */
+        private static String normalizeTimeZone(String timeZone) {
+            if (timeZone == null || timeZone.isBlank()) {
+                return "Europe/Berlin";
+            }
+            try {
+                java.time.ZoneId.of(timeZone);
+            } catch (java.time.DateTimeException e) {
+                throw new IllegalArgumentException(
+                        "Неверная временная зона недельного фонда: '" + timeZone + "'", e);
+            }
+            return timeZone;
         }
 
         private static <T> List<T> sorted(java.util.function.ToLongFunction<T> key, List<T> values) {

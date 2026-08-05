@@ -84,4 +84,27 @@ public final class WeeklyActivityDayRepository {
             throw new DatabaseException("Ошибка чтения активности дня недели " + weekId, e);
         }
     }
+
+    /** Продления активности конкретного игрока за неделю (для проверки участия в {@code /money weekly}). */
+    public List<WeeklyActivityDayRow> listByWeekAndPlayer(Connection connection, String weekId, UUID playerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT player_uuid, week_id, day_key, active_seconds FROM weekly_activity_days "
+                        + "WHERE week_id = ? AND player_uuid = ?")) {
+            statement.setString(1, weekId);
+            statement.setString(2, playerId.toString());
+            try (ResultSet rs = statement.executeQuery()) {
+                List<WeeklyActivityDayRow> rows = new ArrayList<>();
+                while (rs.next()) {
+                    rows.add(new WeeklyActivityDayRow(
+                            UUID.fromString(rs.getString("player_uuid")),
+                            rs.getString("week_id"),
+                            rs.getString("day_key"),
+                            rs.getLong("active_seconds")));
+                }
+                return rows;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения активности игрока " + playerId + " за неделю " + weekId, e);
+        }
+    }
 }

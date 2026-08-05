@@ -6,6 +6,8 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.activity.ActivityService.ActivityInfo;
+import com.valorcraft.veconomy.activity.WeeklyFundService.NotEligibleReason;
+import com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyPlayerInfo;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
@@ -58,9 +60,11 @@ public final class MoneyCommand {
                 .then(Commands.literal("history")
                         .executes(context -> history(context, 1))
                         .then(Commands.argument("page", IntegerArgumentType.integer(1))
-                                .executes(context -> history(context, IntegerArgumentType.getInteger(context, "page"))))
+                                .executes(context -> history(context, IntegerArgumentType.getInteger(context, "page")))))
                 .then(Commands.literal("activity")
-                        .executes(MoneyCommand::activity))));
+                        .executes(MoneyCommand::activity))
+                .then(Commands.literal("weekly")
+                        .executes(MoneyCommand::weekly)));
 
         dispatcher.register(Commands.literal("balance").executes(MoneyCommand::balanceSelf));
         dispatcher.register(Commands.literal("bal").executes(MoneyCommand::balanceSelf));
@@ -215,6 +219,94 @@ public final class MoneyCommand {
         }
         builder.append(seconds).append("с");
         return builder.toString();
+    }
+
+    /** Длительность в локализованных единицах (для команд игрока). */
+    private static MutableComponent localizedDuration(long totalSeconds) {
+        long days = totalSeconds / 86400;
+        long hours = (totalSeconds % 86400) / 3600;
+        long minutes = (totalSeconds % 3600) / 60;
+        long seconds = totalSeconds % 60;
+        MutableComponent component = Component.empty();
+        boolean any = false;
+        if (days > 0) {
+            component.append(Component.translatable("cmd.duration.days", days));
+            any = true;
+        }
+        if (hours > 0) {
+            if (any) {
+                component.append(Component.literal(" "));
+            }
+            component.append(Component.translatable("cmd.duration.hours", hours));
+            any = true;
+        }
+        if (minutes > 0) {
+            if (any) {
+                component.append(Component.literal(" "));
+            }
+            component.append(Component.translatable("cmd.duration.minutes", minutes));
+            any = true;
+        }
+        if (!any) {
+            component.append(Component.translatable("cmd.duration.seconds", seconds));
+        }
+        return component;
+    }
+
+    private static int weekly(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            WeeklyPlayerInfo info = EconomyCore.weeklyFund().playerWeekly(player.getUUID());
+            long untilEnd = Math.max(0, info.weekEndMillis() - System.currentTimeMillis());
+            source.sendSuccess(() -> Component.translatable("cmd.weekly.title", info.weekId())
+                    .withStyle(ChatFormatting.GOLD), false);
+            if (info.eligible()) {
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.summary",
+                        localizedDuration(info.activeSeconds()), info.activeDays(), info.totalPoints())
+                        .withStyle(ChatFormatting.GREEN), false);
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.share",
+                        EconomyCore.formatter().format(info.projectedShare()))
+                        .withStyle(ChatFormatting.AQUA), false);
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.mayChange")
+                        .withStyle(ChatFormatting.GRAY), false);
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.untilEnd",
+                        localizedDuration(untilEnd)), false);
+            } else {
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.notEligible")
+                        .withStyle(ChatFormatting.RED), false);
+                source.sendSuccess(() -> Component.translatable(reasonKey(info.reason()))
+                        .withStyle(ChatFormatting.GRAY), false);
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.summary",
+                        localizedDuration(info.activeSeconds()), info.activeDays(), info.totalPoints())
+                        .withStyle(ChatFormatting.DARK_GRAY), false);
+            }
+            if (info.lastWeekPayout() > 0) {
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.lastWeek",
+                        EconomyCore.formatter().format(info.lastWeekPayout()))
+                        .withStyle(ChatFormatting.DARK_GRAY), false);
+            }
+            int delay = EconomyCore.settings().weeklyFund.payoutDelayHours;
+            if (delay > 0) {
+                source.sendSuccess(() -> Component.translatable("cmd.weekly.payoutInfo", delay)
+                        .withStyle(ChatFormatting.GRAY), false);
+            }
+        } catch (Exception e) {
+            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+        }
+        return 1;
+    }
+
+    private static String reasonKey(NotEligibleReason reason) {
+        return switch (reason) {
+            case WEEKLY_FUND_DISABLED -> "cmd.weekly.reason.disabled";
+            case EXCLUDED -> "cmd.weekly.reason.excluded";
+            case ACCOUNT_FROZEN -> "cmd.weekly.reason.frozen";
+            case MIN_ACTIVE_SECONDS -> "cmd.weekly.reason.minActive";
+            case MIN_ACTIVE_DAYS -> "cmd.weekly.reason.minDays";
+            case MIN_ACCOUNT_AGE -> "cmd.weekly.reason.minAge";
+            case NO_POINTS -> "cmd.weekly.reason.noPoints";
+        };
     }
 
     private static int history(CommandContext<CommandSourceStack> context, int page) {

@@ -1,6 +1,7 @@
 package com.valorcraft.veconomy.activity;
 
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.WeekFields;
 import java.util.regex.Matcher;
@@ -9,20 +10,24 @@ import java.util.regex.Pattern;
 /**
  * Идентификатор ISO-недели вида {@code 2026-W32}. Неделя начинается с понедельника,
  * используется для недельного фонда и учёта еженедельной активности.
+ * <p>
+ * Текущая неделя и границы недели считаются в таймзоне конфига недельного фонда
+ * ({@link #useZone}): сервисы ставят зону при применении настроек. Для тестов источник
+ * текущей даты можно заменить через {@link #useDate}.
  */
 public final class WeekId {
 
     private static final WeekFields ISO = WeekFields.ISO;
     private static final Pattern WEEK = Pattern.compile("(\\d{4})-W(\\d{2})");
 
-    private static volatile java.util.function.Supplier<java.time.LocalDate> currentDate =
-            () -> java.time.LocalDate.now(ZoneOffset.UTC);
+    private static volatile ZoneId currentZone = ZoneOffset.UTC;
+    private static volatile java.util.function.Supplier<java.time.LocalDate> currentDate;
 
     private WeekId() {}
 
-    /** Текущая неделя в UTC. */
+    /** Текущая неделя: в зоне конфига, либо из подменённого источника даты (тесты). */
     public static String current() {
-        return forDate(currentDate.get());
+        return forDate(currentDate != null ? currentDate.get() : LocalDate.now(currentZone));
     }
 
     /** Сменить источник текущей даты (для тестов). */
@@ -30,9 +35,15 @@ public final class WeekId {
         currentDate = supplier;
     }
 
-    /** Вернуть источник текущей даты к реальному времени (для тестов). */
+    /** Задать зону для текущей недели и границ недели (таймзона конфига). */
+    public static void useZone(ZoneId zone) {
+        currentZone = zone == null ? ZoneOffset.UTC : zone;
+    }
+
+    /** Вернуть источник текущей даты к реальному времени, а зону — к UTC (для тестов). */
     public static void resetDate() {
-        currentDate = () -> java.time.LocalDate.now(ZoneOffset.UTC);
+        currentDate = null;
+        currentZone = ZoneOffset.UTC;
     }
 
     public static String forDate(LocalDate date) {
@@ -62,10 +73,10 @@ public final class WeekId {
         return weekId != null && WEEK.matcher(weekId).matches();
     }
 
-    /** Момент окончания недели (понедельник следующей недели, 00:00 UTC) в миллисекундах. */
+    /** Момент окончания недели (понедельник следующей недели, 00:00 в зоне конфига) в миллисекундах. */
     public static long endMillis(String weekId) {
         return mondayOf(weekId).plusDays(7)
-                .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+                .atStartOfDay(currentZone).toInstant().toEpochMilli();
     }
 
     private static LocalDate mondayOf(String weekId) {

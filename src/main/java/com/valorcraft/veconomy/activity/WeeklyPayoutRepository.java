@@ -5,7 +5,10 @@ import com.valorcraft.veconomy.persistence.DatabaseManager;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Optional;
+import java.util.UUID;
 
 /** Репозиторий выплат недельного фонда (таблица {@code weekly_payouts}). */
 public final class WeeklyPayoutRepository {
@@ -28,6 +31,20 @@ public final class WeeklyPayoutRepository {
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new DatabaseException("Ошибка записи недельной выплаты " + row.playerId(), e);
+        }
+    }
+
+    /** Сумма выплаты игроку за конкретную неделю (для «за прошлую неделю» в {@code /money weekly}). */
+    public Optional<Long> amountForWeek(Connection connection, String weekId, UUID playerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT amount_minor FROM weekly_payouts WHERE week_id = ? AND player_uuid = ?")) {
+            statement.setString(1, weekId);
+            statement.setString(2, playerId.toString());
+            try (ResultSet rs = statement.executeQuery()) {
+                return rs.next() ? Optional.of(rs.getLong(1)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения выплаты " + playerId + " за " + weekId, e);
         }
     }
 }

@@ -6,7 +6,9 @@ import com.valorcraft.veconomy.config.EconomySettings.PointLevel;
 import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -23,15 +25,56 @@ public final class WeeklyMath {
     /** 100% в базисных пунктах. */
     public static final long BPS_100_PERCENT = 10_000L;
 
+    /** Зона по умолчанию для подсчёта дней/недель фонда, задокументированная в конфиге. */
+    public static final String DEFAULT_TIME_ZONE = "Europe/Berlin";
+
+    /** Разобрать зону из строки конфига. Пустая строка — {@link #DEFAULT_TIME_ZONE}. */
+    public static ZoneId zoneOf(String timeZone) {
+        if (timeZone == null || timeZone.isBlank()) {
+            return ZoneId.of(DEFAULT_TIME_ZONE);
+        }
+        return ZoneId.of(timeZone);
+    }
+
     /** Ключ календарного дня (эпохальный день) для {@code weekly_activity_days} в заданной зоне. */
     public static String dayKey(long epochMillis, String timeZone) {
-        ZoneId zone;
-        try {
-            zone = ZoneId.of(timeZone);
-        } catch (RuntimeException e) {
-            zone = ZoneId.of("Europe/Berlin");
+        return Long.toString(Instant.ofEpochMilli(epochMillis).atZone(zoneOf(timeZone))
+                .toLocalDate().toEpochDay());
+    }
+
+    // ------------------------------------------------------------ day split
+
+    /** Сегмент интервала, приходящийся на один локальный день (полуночи по зоне). */
+    public record DaySegment(LocalDate date, long fromInclusiveMillis, long endExclusiveMillis) {
+    }
+
+    /**
+     * Разбить полуоткрытый интервал {@code [fromInclusive, endExclusive)} на отрезки по локальным
+     * полуночам зоны. Границы считаются через {@code LocalDate.atStartOfDay(zone)}, поэтому дни
+     * длиной 23/25 часов (переход на летнее/зимнее время) учитываются точно, а не делением
+     * на 86 400 секунд. Сумма длин сегментов всегда равна исходной длине интервала.
+     */
+    public static List<DaySegment> splitInterval(long fromInclusiveMillis, long endExclusiveMillis, ZoneId zone) {
+        List<DaySegment> segments = new ArrayList<>();
+        if (endExclusiveMillis <= fromInclusiveMillis) {
+            return segments;
         }
-        return Long.toString(Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate().toEpochDay());
+        ZonedDateTime cursor = Instant.ofEpochMilli(fromInclusiveMillis).atZone(zone);
+        long from = fromInclusiveMillis;
+        while (from < endExclusiveMillis) {
+            LocalDate date = cursor.toLocalDate();
+            ZonedDateTime nextMidnight = cursor.plusDays(1).with(LocalTime.MIN);
+            long boundary = nextMidnight.toInstant().toEpochMilli();
+            if (boundary <= from) {
+                // Защита от бесконечного цикла (зона без полуночи в конкретном дне и т.п.).
+                boundary = endExclusiveMillis;
+            }
+            long end = Math.min(endExclusiveMillis, boundary);
+            segments.add(new DaySegment(date, from, end));
+            from = end;
+            cursor = nextMidnight;
+        }
+        return segments;
     }
 
     /** ISO-неделя, которой принадлежит календарный день (для атрибуции активности на границе недель). */
@@ -153,18 +196,29 @@ public final class WeeklyMath {
 
     /**
      * Распределить фонд между участниками по очкам с ограничением максимальной доли на
-     * игрока (в процентах). Детерминировано: порядок сортировки по UUID не влияет на сумму.
-     * Излишек сверх лимита перераспределяется между теми, кто ещё не достиг лимита; остаток,
-     * который нельзя распределить целыми единицами, возвращается как нераспределённый.
+     * игрока (в процентах). Детерминировано: результат не зависит от порядка участников.
+     * <p>
+     * Алгоритм пакетный — без помонетных циклов: первичные пропорциональные доли (floor),
+     * затем остаток перераспределяется пропорционально очкам ещё не достигших лимита
+     * цельными раундами (каждый раунд снимает с очереди минимум одного игрока у лимита,
+     * так что число раундов не больше числа участников). Нераздаваемый целыми единицами
+     * остаток распределяется по наибольшему дробному остатку (при равенстве — по UUID):
+     * это тоже пакетная операция, по одной единице на игрока сверху доли. Сложность
+     * определяется числом игроков, а не размером фонда.
      */
     public static Distribution distribute(long fund, List<Participant> participants, int maximumPlayerSharePercent) {
         int count = participants.size();
         long[] shares = new long[count];
-        long totalPoints = 0;
-        for (Participant p : participants) {
-            totalPoints += p.points();
+        if (fund <= 0 || count == 0) {
+            return new Distribution(shares, fund);
         }
-        if (fund <= 0 || totalPoints <= 0) {
+        long totalPoints = 0;
+        for (Participant participant : participants) {
+            if (participant.points() > 0) {
+                totalPoints += participant.points();
+            }
+        }
+        if (totalPoints <= 0) {
             return new Distribution(shares, fund);
         }
         long cap = BigInteger.valueOf(fund)
@@ -174,36 +228,107 @@ public final class WeeklyMath {
         if (cap < 0) {
             cap = fund;
         }
-        // Базовый пропорциональный расчёт с ограничением сверху.
+        // Первичные пропорциональные доли; достигающие лимита сразу фиксируются на нём.
+        boolean[] capped = new boolean[count];
         for (int i = 0; i < count; i++) {
-            shares[i] = Math.min(rawShare(fund, participants.get(i).points(), totalPoints), cap);
+            long share = rawShare(fund, participants.get(i).points(), totalPoints);
+            if (share >= cap) {
+                share = cap;
+                capped[i] = true;
+            }
+            shares[i] = share;
         }
         long remaining = fund - sum(shares);
-        // Перераспределение остатка: детерминированный порядок — очки по убыванию, UUID по возрастанию.
-        List<Integer> order = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            order.add(i);
-        }
-        order.sort(Comparator.<Integer>comparingLong(i -> -participants.get(i).points())
-                .thenComparing(i -> participants.get(i).playerId()));
+
+        // Пакетное перераспределение остатка между не достигшими лимита.
         int guard = 0;
-        while (remaining > 0 && guard++ < 1_000_000) {
-            boolean gave = false;
-            for (int i : order) {
-                if (remaining <= 0) {
-                    break;
-                }
-                if (shares[i] < cap) {
-                    shares[i]++;
-                    remaining--;
-                    gave = true;
+        while (remaining > 0 && guard++ <= count + 1) {
+            long activePoints = 0;
+            for (int i = 0; i < count; i++) {
+                if (!capped[i]) {
+                    activePoints += participants.get(i).points();
                 }
             }
-            if (!gave) {
+            if (activePoints <= 0) {
+                break;
+            }
+            long roundRemaining = remaining;
+            long sumGiven = 0;
+            long excess = 0;
+            boolean cappedAny = false;
+            for (int i = 0; i < count; i++) {
+                if (capped[i]) {
+                    continue;
+                }
+                long give = rawShare(roundRemaining, participants.get(i).points(), activePoints);
+                if (give <= 0) {
+                    continue;
+                }
+                long updated = shares[i] + give;
+                if (updated >= cap) {
+                    excess += updated - cap;
+                    shares[i] = cap;
+                    capped[i] = true;
+                    cappedAny = true;
+                } else {
+                    shares[i] = updated;
+                }
+                sumGiven += give;
+            }
+            remaining = (roundRemaining - sumGiven) + excess;
+            if (!cappedAny) {
+                // Больше никого нельзя ограничить сверху — остаток раздаётся по дробным остаткам.
                 break;
             }
         }
+
+        remaining = distributeLargestRemainder(remaining, participants, capped, shares, count);
         return new Distribution(shares, remaining);
+    }
+
+    /** Раздать остаток по одной единице участникам с наибольшим дробным остатком (UUID — при равенстве). */
+    private static long distributeLargestRemainder(long remaining, List<Participant> participants,
+                                                   boolean[] capped, long[] shares, int count) {
+        if (remaining <= 0) {
+            return remaining;
+        }
+        long activePoints = 0;
+        for (int i = 0; i < count; i++) {
+            if (!capped[i]) {
+                activePoints += participants.get(i).points();
+            }
+        }
+        if (activePoints <= 0) {
+            return remaining;
+        }
+        List<Integer> order = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            if (!capped[i] && participants.get(i).points() > 0) {
+                order.add(i);
+            }
+        }
+        final long shareRemaining = remaining;
+        final long shareActivePoints = activePoints;
+        order.sort(Comparator
+                .<Integer>comparingLong(i -> remainderFraction(shareRemaining,
+                        participants.get(i).points(), shareActivePoints))
+                .reversed()
+                .thenComparing(i -> participants.get(i).playerId()));
+        for (int i : order) {
+            if (remaining <= 0) {
+                break;
+            }
+            shares[i] += 1;
+            remaining -= 1;
+        }
+        return remaining;
+    }
+
+    /** Дробная часть доли {@code remaining × points / activePoints} в виде целого {0 … activePoints-1}. */
+    private static long remainderFraction(long remaining, long points, long activePoints) {
+        return BigInteger.valueOf(remaining)
+                .multiply(BigInteger.valueOf(points))
+                .mod(BigInteger.valueOf(activePoints)).longValue();
     }
 
     private static long sum(long[] values) {

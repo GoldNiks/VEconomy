@@ -6,6 +6,7 @@ import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
 
 import java.sql.Connection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,10 +32,12 @@ public final class ActivityService {
         this.repository = repository;
         this.days = days;
         this.settings = settings;
+        WeekId.useZone(WeeklyMath.zoneOf(settings.weeklyFund.timeZone));
     }
 
     public void applySettings(EconomySettings settings) {
         this.settings = settings;
+        WeekId.useZone(WeeklyMath.zoneOf(settings.weeklyFund.timeZone));
     }
 
     // ---------------------------------------------------------------- events
@@ -121,15 +124,27 @@ public final class ActivityService {
         // весь интервал засчитывался бы активным, итерация пересечения границы переоценивала
         // активное время.
         long activeUntil = session.lastActiveAt + afkTimeoutMillis;
-        long activeMillis = Math.max(0, Math.min(dtMillis, activeUntil - fromSample));
+        long activeFrom = fromSample;
+        long activeTo = Math.min(nowMillis, activeUntil);
+        long activeMillis = Math.max(0, activeTo - activeFrom);
         long activeSeconds = activeMillis / 1000;
         session.activeSeconds += activeSeconds;
         session.afkSeconds += dtSeconds - activeSeconds;
-        if (activeSeconds > 0) {
-            // Активность относится к календарному дню (в зоне фонда) — неделя дня определится
-            // по самому дню, поэтому активность никогда не смешает недели на границе.
-            String dayKey = WeeklyMath.dayKey(nowMillis, session.timeZone);
-            session.daySeconds.merge(dayKey, activeSeconds, Long::sum);
+        if (activeMillis >= 1000) {
+            // Активный интервал делится по локальным полуночам (зона фонда): каждая часть
+            // относится к своему календарному дню, неделя дня определится по самому дню —
+            // активность никогда не смешает недели на границе и не запишется целиком
+            // на день конца интервала.
+            List<WeeklyMath.DaySegment> segments = WeeklyMath.splitInterval(
+                    activeFrom, activeTo, WeeklyMath.zoneOf(session.timeZone));
+            for (WeeklyMath.DaySegment segment : segments) {
+                long segmentSeconds =
+                        (segment.endExclusiveMillis() - segment.fromInclusiveMillis()) / 1000;
+                if (segmentSeconds > 0) {
+                    String dayKey = Long.toString(segment.date().toEpochDay());
+                    session.daySeconds.merge(dayKey, segmentSeconds, Long::sum);
+                }
+            }
         }
         long afkMillis = dtMillis - activeMillis;
         if (afkMillis > 0) {
