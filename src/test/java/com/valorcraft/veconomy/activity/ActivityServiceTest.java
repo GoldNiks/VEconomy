@@ -269,4 +269,56 @@ class ActivityServiceTest {
             assertEquals(0, info.totalAfkSeconds());
         }
     }
+
+    @Test
+    void persistFailureKeepsActivityInMemoryAndWritesOnceOnRetry() {
+        // Упавшая транзакция (база недоступна) не должна стирать счётчики: следующая
+        // успешная попытка записывает их ровно один раз, без дублей и потерь.
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            db.activityService.sampleAt(start + 10_000);
+
+            // база недоступна: persist обязан вернуть false и НЕ очистить память
+            db.database.close();
+            assertFalse(db.activityService.persistAll());
+
+            // база снова доступна: повторный persist записывает накопленное ровно один раз
+            db.database.open(db.database.path(), db.settings);
+            assertTrue(db.activityService.persistAll());
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(10, info.totalOnlineSeconds());
+            assertEquals(10, info.totalActiveSeconds());
+
+            // ещё один persist не дублирует запись
+            assertTrue(db.activityService.persistAll());
+            ActivityService.ActivityInfo after = db.activityService.info(player).orElseThrow();
+            assertEquals(10, after.totalOnlineSeconds());
+            assertEquals(10, after.totalActiveSeconds());
+        }
+    }
+
+    @Test
+    void failedLogoutSaveKeepsDataPendingUntilNextPersist() {
+        // Ошибка базы при выходе игрока не должна выбрасывать его данные: сессия
+        // удерживается в памяти и попадает в базу на следующем успешном сохранении.
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            db.activityService.sampleAt(start + 5_000);
+
+            db.database.close();
+            // выход при недоступной базе: данные удержаны, исключения нет
+            db.activityService.onPlayerLeftAt(player, start + 7_000);
+
+            db.database.open(db.database.path(), db.settings);
+            assertTrue(db.activityService.persistAll());
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(7, info.totalOnlineSeconds());
+            assertEquals(7, info.totalActiveSeconds());
+            assertEquals(0, info.totalAfkSeconds());
+        }
+    }
 }

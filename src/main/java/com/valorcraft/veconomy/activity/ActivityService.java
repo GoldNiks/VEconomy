@@ -6,6 +6,7 @@ import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
 
 import java.sql.Connection;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -25,6 +26,8 @@ public final class ActivityService {
     private final WeeklyActivityDayRepository days;
     private volatile EconomySettings settings;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
+    /** Выходы, данные которых ещё не подтверждены в базе (офлайн, повторно записываются). */
+    private final Map<UUID, Session> pendingLogouts = new ConcurrentHashMap<>();
 
     public ActivityService(DatabaseManager database, PlayerActivityRepository repository,
                            WeeklyActivityDayRepository days, EconomySettings settings) {
@@ -229,27 +232,53 @@ public final class ActivityService {
 
     // ---------------------------------------------------------------- persistence
 
-    /** Записать все онлайн-сессии в базу (периодически и при остановке). */
-    public void persistAll() {
-        persistAllAt(System.currentTimeMillis());
+    /**
+     * Записать все онлайн-сессии и несохранённые выходы в базу (периодически и при остановке).
+     * Возвращает {@code true} только после подтверждённого commit: счётчики очищаются уже
+     * после фиксации; при неудаче данные остаются в памяти (с перенесённой точкой отсчёта),
+     * и следующая попытка запишет их целиком, без дублей.
+     */
+    public boolean persistAll() {
+        return persistAllAt(System.currentTimeMillis());
     }
 
-    /** Записать все онлайн-сессии в базу в указанный момент времени (для тестов). */
-    void persistAllAt(long nowMillis) {
-        if (sessions.isEmpty()) {
-            return;
+    /** Записать все сессии в базу в указанный момент времени (для тестов). */
+    boolean persistAllAt(long nowMillis) {
+        List<Session> toSave = new ArrayList<>(sessions.size() + pendingLogouts.size());
+        toSave.addAll(sessions.values());
+        toSave.addAll(pendingLogouts.values());
+        if (toSave.isEmpty()) {
+            return true;
         }
         String week = WeekId.current();
         try {
             database.inTransaction(connection -> {
-                for (Session session : sessions.values()) {
+                for (Session session : toSave) {
                     persist(connection, session, week, nowMillis);
                 }
                 return null;
             });
         } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка сохранения активности", e);
+            // Транзакция не подтверждена (недоступна база или ошибка commit): счётчики не
+            // очищаем. Точку отсчёта переносим на момент попытки, чтобы время не считалось
+            // дважды на следующих сэмплах, а сами накопленные секунды остались в памяти.
+            VEconomyMod.LOGGER.error("Ошибка сохранения активности: данные удержаны в памяти "
+                    + "и будут повторены на следующем сохранении", e);
+            for (Session session : toSave) {
+                session.lastSample = nowMillis;
+            }
+            return false;
         }
+        // Транзакция подтверждена: сохранённые значения можно освободить.
+        for (Session session : toSave) {
+            pendingLogouts.remove(session.playerId);
+            session.lastSample = nowMillis;
+            session.daySeconds.clear();
+            session.onlineSeconds = 0;
+            session.activeSeconds = 0;
+            session.afkSeconds = 0;
+        }
+        return true;
     }
 
     /** Закрыть сессию игрока (выход): финальный сэмпл и запись. */
@@ -266,6 +295,13 @@ public final class ActivityService {
         // фрагмент (от lastSample до выхода) потерялся бы из-за sampleNow() по sessions.
         sampleSession(session, now);
         sessions.remove(playerId);
+        // Данные выхода удерживаем в памяти до подтверждённого сохранения: если запись не
+        // удалась, сессия остаётся в pendingLogouts и попадёт в базу на следующем persistAll().
+        pendingLogouts.put(playerId, session);
+        saveLogout(session, now);
+    }
+
+    private void saveLogout(Session session, long now) {
         String week = WeekId.current();
         try {
             database.inTransaction(connection -> {
@@ -273,10 +309,19 @@ public final class ActivityService {
                 return null;
             });
         } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка сохранения активности при выходе {}", playerId, e);
+            VEconomyMod.LOGGER.error("Ошибка сохранения активности при выходе {}: данные "
+                    + "удержаны до следующего сохранения", session.playerId, e);
+            return;
         }
+        pendingLogouts.remove(session.playerId);
+        session.lastSample = now;
+        session.daySeconds.clear();
+        session.onlineSeconds = 0;
+        session.activeSeconds = 0;
+        session.afkSeconds = 0;
     }
 
+    /** Записать счётчики сессии в базу внутри транзакции (без очистки памяти). */
     private void persist(Connection connection, Session session, String week, long now) {
         PlayerActivityRow existing = repository.find(connection, session.playerId).orElse(null);
         long firstSeen = existing == null ? now : existing.firstSeenAt();
@@ -304,12 +349,7 @@ public final class ActivityService {
                             dayWeek, dayKey, entry.getValue());
                 }
             }
-            session.daySeconds.clear();
         }
-        session.onlineSeconds = 0;
-        session.activeSeconds = 0;
-        session.afkSeconds = 0;
-        session.lastSample = now;
     }
 
     private static void markActive(Session session) {

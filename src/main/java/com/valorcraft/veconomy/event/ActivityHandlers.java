@@ -165,8 +165,12 @@ public final class ActivityHandlers {
         // завершённой неделе: ротация читает снимок days-таблицы, поэтому без persist
         // последние минуты старой недели (воскресные часы онлайн-игроков) потерялись бы.
         // Начало новой недели при этом попадает в дни текущей недели и не влияет на план.
-        EconomyCore.activity().persistAll();
-        distributeWeeklyFund(settings);
+        // Ротация запускается только после подтверждённого сохранения: при ошибке базы
+        // активность удерживается в памяти и не потеряется, а план недели останется
+        // открытым до следующего успешного persist.
+        if (EconomyCore.activity().persistAll()) {
+            distributeWeeklyFund(settings);
+        }
         checkMilestones(settings);
     }
 

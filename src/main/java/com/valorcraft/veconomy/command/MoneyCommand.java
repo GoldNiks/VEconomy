@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.activity.ActivityService.ActivityInfo;
+import com.valorcraft.veconomy.activity.WeeklyFundService.NotEligibleReason;
 import com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyPlayerInfo;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
@@ -272,8 +273,10 @@ public final class MoneyCommand {
                 source.sendSuccess(() -> Component.translatable("cmd.weekly.untilEnd",
                         localizedDuration(untilEnd)), false);
             } else {
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.notEligible")
-                        .withStyle(ChatFormatting.RED), false);
+                if (info.reason() != NotEligibleReason.FORECAST_UNAVAILABLE) {
+                    source.sendSuccess(() -> Component.translatable("cmd.weekly.notEligible")
+                            .withStyle(ChatFormatting.RED), false);
+                }
                 source.sendSuccess(() -> reasonLine(info), false);
             }
             if (info.lastWeekAccrued() > 0) {
