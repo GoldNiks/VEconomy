@@ -199,6 +199,40 @@ class WeeklyFundServiceTest {
         }
     }
 
+    /**
+     * Блокер: первая полная неделя после установки мода должна выплатиться автоматически.
+     * Первый запуск помечает распределённой предыдущую неделю (а не текущую), поэтому снимок
+     * текущей (первой полной) недели попадает в очередь и платится при переходе на следующую.
+     */
+    @Test
+    void firstFullWeekIsPaidAutomaticallyAfterRollover() {
+        java.time.LocalDate monday = java.time.LocalDate.of(2026, 8, 3); // 2026-W32
+        WeekId.useDate(() -> monday);
+        try {
+            try (TestDb db = TestDb.create(fund(100))) {
+                // первый запуск на неделе W32: инициализация без выплаты, распределена W31
+                assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+
+                // накопление активности в первую полную неделю W32
+                UUID alice = java.util.UUID.randomUUID();
+                seedWeekly(db, alice, 100);
+
+                // переход на следующую неделю W33
+                WeekId.useDate(() -> monday.plusDays(7));
+                Map<UUID, Long> payments = db.weeklyFundService.maybeDistribute();
+                assertEquals(1, payments.size(), "первая полная неделя должна выплатиться автоматически");
+                assertEquals(100L, payments.get(alice));
+                assertEquals(100, db.accountService.getBalance(alice));
+
+                // неделя W32 распределена, больше платить нечего
+                assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+                assertEquals(100, db.accountService.getBalance(alice));
+            }
+        } finally {
+            WeekId.resetDate();
+        }
+    }
+
     @Test
     void respectsMinimumActiveSeconds() {
         try (TestDb db = TestDb.create(fund(100, 100, 0, 0, List.of()))) {

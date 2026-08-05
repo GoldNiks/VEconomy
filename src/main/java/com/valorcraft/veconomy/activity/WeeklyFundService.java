@@ -52,23 +52,25 @@ import java.util.UUID;
 public final class WeeklyFundService {
 
     private static final String DISTRIBUTED_WEEK_KEY = "weekly_fund.distributed_week";
-    private static final String TREASURY_PENDING_PREFIX = "weekly_fund.treasury_pending:";
     /** Защита от бесконечных циклов при переборе недель в очереди. */
     private static final int SCAN_LIMIT = 4000;
 
     private final DatabaseManager database;
     private final PlayerActivityRepository activityRepository;
     private final WeeklyPeriodRepository periods;
+    private final WeeklyTreasuryRepository treasury;
     private final WeeklyPayoutRepository payouts;
     private final AccountService accounts;
     private volatile EconomySettings settings;
 
     public WeeklyFundService(DatabaseManager database, PlayerActivityRepository activityRepository,
-                             WeeklyPeriodRepository periods, WeeklyPayoutRepository payouts,
+                             WeeklyPeriodRepository periods, WeeklyTreasuryRepository treasury,
+                             WeeklyPayoutRepository payouts,
                              AccountService accounts, EconomySettings settings) {
         this.database = database;
         this.activityRepository = activityRepository;
         this.periods = periods;
+        this.treasury = treasury;
         this.payouts = payouts;
         this.accounts = accounts;
         this.settings = settings;
@@ -132,10 +134,16 @@ public final class WeeklyFundService {
         }
         if (distributed == null) {
             // Первый запуск мода: без накопленной истории «предыдущая неделя» не определена,
-            // поэтому выплату не производим — лишь фиксируем текущую неделю.
-            markDistributedWeek(currentWeek);
-            VEconomyMod.LOGGER.info("Недельный фонд: первичная инициализация без выплаты (неделя {})",
-                    currentWeek);
+            // поэтому выплату не производим. Чтобы первая полная неделя не потерялась, помечаем
+            // распределённой НЕ текущую, а предыдущую неделю: тогда снимок текущей (первой
+            // полной) недели попадёт в очередь и будет автоматически выплачен при переходе.
+            String prev = WeekId.previous(currentWeek);
+            boolean ok = markFirstWeek(prev);
+            VEconomyMod.LOGGER.info("Недельный фонд: первичная инициализация без выплаты (распределена неделя {})",
+                    prev);
+            if (!ok) {
+                return Map.of();
+            }
             return Map.of();
         }
 
@@ -168,6 +176,27 @@ public final class WeeklyFundService {
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка отметки распределённой недели {}", weekId, e);
+        }
+    }
+
+    /**
+     * Первичная инициализация: помечаем распределённой предыдущую неделю и создаём её закрытый
+     * пустой снимок. Текущая неделя (первая полная) остаётся накапливаться без ротации и будет
+     * автоматически выплачена при переходе на следующую. Возвращает успешность записи.
+     */
+    private boolean markFirstWeek(String prevWeek) {
+        try {
+            long now = System.currentTimeMillis();
+            database.inTransaction(connection -> {
+                periods.insertEmpty(connection, database.dialect(), prevWeek, now);
+                MetaRepository.set(connection, database.dialect(), DISTRIBUTED_WEEK_KEY, prevWeek);
+                return null;
+            });
+            return true;
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка первичной инициализации недельного фонда (неделя {})",
+                    prevWeek, e);
+            return false;
         }
     }
 
@@ -204,6 +233,14 @@ public final class WeeklyFundService {
         List<Allocation> eligible = new ArrayList<>();
         for (PlayerActivityRow row : rows) {
             if (row.excludedFromRewards()) {
+                continue;
+            }
+            // Ротация закрывает неделю paidWeek: учитываем только активность, помеченную этой
+            // неделей или новее. После простоя сервера на несколько недель старая активность
+            // могла остаться со старым current_week_id (< paidWeek) и не подходит под
+            // непосредственно предыдущую неделю — иначе история периодов была бы неверной.
+            String weekId = row.currentWeekId();
+            if (weekId != null && weekId.compareTo(paidWeek) < 0) {
                 continue;
             }
             long counted = row.weeklyActiveSeconds();
@@ -315,7 +352,16 @@ public final class WeeklyFundService {
                 VEconomyMod.LOGGER.error("Ошибка проверки закрытой недели {}", w, e);
                 return cursor;
             }
-            boolean treasuryPending = isTreasuryPending(w);
+            // Ошибка чтения задолженности казне приравнивается к открытому периоду:
+            // при сбое очередь не продвигается мимо недели.
+            boolean treasuryPending;
+            try {
+                String week = w;
+                treasuryPending = database.inTransaction(connection -> treasury.hasPending(connection, week));
+            } catch (DatabaseException e) {
+                VEconomyMod.LOGGER.error("Ошибка проверки остатка недели {}", w, e);
+                return cursor;
+            }
             if (!has || !all || treasuryPending) {
                 break;
             }
@@ -335,7 +381,17 @@ public final class WeeklyFundService {
             if (++guard > SCAN_LIMIT) {
                 return null;
             }
-            if (isTreasuryPending(w)) {
+            // Ошибка чтения задолженности казне приравнивается к открытому периоду: очередь
+            // не продвигается дальше, чтобы долг остатка не был потерян из-за сбоя чтения.
+            boolean treasuryPending;
+            try {
+                String week = w;
+                treasuryPending = database.inTransaction(connection -> treasury.hasPending(connection, week));
+            } catch (DatabaseException e) {
+                VEconomyMod.LOGGER.error("Ошибка проверки остатка недели {}", w, e);
+                return null;
+            }
+            if (treasuryPending) {
                 return w;
             }
             boolean has;
@@ -546,7 +602,6 @@ public final class WeeklyFundService {
             if (remainder > 0) {
                 ok = creditTreasury(paidWeek, remainder);
                 if (!ok) {
-                    setTreasuryPending(paidWeek);
                     VEconomyMod.LOGGER.error("Недельный фонд: не удалось начислить остаток {} в казну "
                             + "за неделю {}; период оставлен открытым", remainder, paidWeek);
                 }
@@ -566,53 +621,50 @@ public final class WeeklyFundService {
      * недели не «проглатывает» более старый незакрытый период: он останется в очереди.
      */
     private void closeAndAdvance(String paidWeek, String currentWeek) {
-        clearTreasuryPending(paidWeek);
         advanceClosed(readDistributedWeekQuiet(), currentWeek);
     }
 
-    /** Зачислить остаток в казну. Возвращает успех (идемпотентный повтор тоже считается успехом). */
+    /**
+     * Зачислить остаток в казну. Сначала статус фиксируется как {@code PENDING} (до перевода), затем
+     * выполняется перевод и при успехе помечается {@code PAID}. Если запись статуса или сам перевод
+     * не пройдут, долг остаётся {@code PENDING}, и очередь не продвинется — повтор на следующем
+     * запуске продолжит с неполученного остатка. Возвращает успех (идемпотентный повтор тоже успех).
+     */
     private boolean creditTreasury(String weekId, long amount) {
+        long now = System.currentTimeMillis();
+        try {
+            database.inTransaction(connection -> {
+                treasury.upsertPending(connection, database.dialect(), weekId, amount, now);
+                return null;
+            });
+        } catch (DatabaseException e) {
+            // Не удалось зафиксировать долг — без него остаток может потеряться, поэтому
+            // прерываем выплату и оставляем период открытым.
+            VEconomyMod.LOGGER.error("Недельный фонд: не удалось зафиксировать остаток недели {}",
+                    weekId, e);
+            return false;
+        }
         TransactionResult result = accounts.deposit(TreasuryService.TREASURY_UUID, amount,
                 TransactionContext.of(TransactionType.WEEKLY_REWARD, null,
                         "weekly-fund:remainder:" + weekId, "weekly:treasury:" + weekId));
-        return result.status() == TransactionResult.Status.SUCCESS
+        boolean success = result.status() == TransactionResult.Status.SUCCESS
                 || result.status() == TransactionResult.Status.DUPLICATE_OPERATION;
-    }
-
-    private boolean isTreasuryPending(String weekId) {
-        try {
-            String value = database.inTransaction(connection ->
-                    MetaRepository.get(connection, database.dialect(), treasuryKey(weekId)));
-            return "1".equals(value);
-        } catch (DatabaseException e) {
-            return false;
+        if (success) {
+            try {
+                String txId = result.transactionId();
+                long paidNow = System.currentTimeMillis();
+                database.inTransaction(connection -> {
+                    treasury.markPaid(connection, weekId, txId, paidNow);
+                    return null;
+                });
+            } catch (DatabaseException e) {
+                VEconomyMod.LOGGER.error("Недельный фонд: перевод остатка выполнен, но отметка выплаты "
+                        + "казне за неделю {} не записана; период останется для повторной проверки",
+                        weekId, e);
+                return false;
+            }
         }
-    }
-
-    private void setTreasuryPending(String weekId) {
-        try {
-            database.inTransaction(connection -> {
-                MetaRepository.set(connection, database.dialect(), treasuryKey(weekId), "1");
-                return null;
-            });
-        } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка отметки неполученного остатка недели {}", weekId, e);
-        }
-    }
-
-    private void clearTreasuryPending(String weekId) {
-        try {
-            database.inTransaction(connection -> {
-                MetaRepository.set(connection, database.dialect(), treasuryKey(weekId), "");
-                return null;
-            });
-        } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка снятия отметки остатка недели {}", weekId, e);
-        }
-    }
-
-    private static String treasuryKey(String weekId) {
-        return TREASURY_PENDING_PREFIX + weekId;
+        return success;
     }
 
     private void markPaid(String weekId, UUID playerId, long paidAt, String txId) {

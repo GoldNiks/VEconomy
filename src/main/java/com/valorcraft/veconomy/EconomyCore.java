@@ -13,6 +13,7 @@ import com.valorcraft.veconomy.activity.PlayerActivityRepository;
 import com.valorcraft.veconomy.activity.WeeklyFundService;
 import com.valorcraft.veconomy.activity.WeeklyPeriodRepository;
 import com.valorcraft.veconomy.activity.WeeklyPayoutRepository;
+import com.valorcraft.veconomy.activity.WeeklyTreasuryRepository;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.AccountService;
@@ -77,10 +78,11 @@ public final class EconomyCore {
         MilestoneRepository milestoneRepository = new MilestoneRepository();
         WeeklyPayoutRepository payoutRepository = new WeeklyPayoutRepository();
         WeeklyPeriodRepository periodRepository = new WeeklyPeriodRepository();
+        WeeklyTreasuryRepository treasuryRepository = new WeeklyTreasuryRepository();
         activity = new ActivityService(database, activityRepository, initialSettings);
         milestones = new MilestoneService(database, milestoneRepository, accountService, activity, initialSettings);
-        weeklyFund = new WeeklyFundService(database, activityRepository, periodRepository, payoutRepository,
-                accountService, initialSettings);
+        weeklyFund = new WeeklyFundService(database, activityRepository, periodRepository, treasuryRepository,
+                payoutRepository, accountService, initialSettings);
 
         api = new EconomyApi() {
             @Override

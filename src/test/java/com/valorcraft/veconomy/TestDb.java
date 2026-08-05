@@ -7,6 +7,7 @@ import com.valorcraft.veconomy.activity.PlayerActivityRepository;
 import com.valorcraft.veconomy.activity.WeeklyFundService;
 import com.valorcraft.veconomy.activity.WeeklyPeriodRepository;
 import com.valorcraft.veconomy.activity.WeeklyPayoutRepository;
+import com.valorcraft.veconomy.activity.WeeklyTreasuryRepository;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.AccountService;
 import com.valorcraft.veconomy.economy.EscrowService;
@@ -60,11 +61,12 @@ public final class TestDb implements AutoCloseable {
             MilestoneRepository milestoneRepository = new MilestoneRepository();
             WeeklyPayoutRepository payoutRepository = new WeeklyPayoutRepository();
             WeeklyPeriodRepository periodRepository = new WeeklyPeriodRepository();
+            WeeklyTreasuryRepository treasuryRepository = new WeeklyTreasuryRepository();
             ActivityService activityService = new ActivityService(database, activityRepository, settings);
             MilestoneService milestoneService = new MilestoneService(database, milestoneRepository,
                     accountService, activityService, settings);
             WeeklyFundService weeklyFundService = new WeeklyFundService(database, activityRepository,
-                    periodRepository, payoutRepository, accountService, settings);
+                    periodRepository, treasuryRepository, payoutRepository, accountService, settings);
 
             return new TestDb(database, accounts, transactions, escrow, ledger,
                     accountService, transferService, escrowService,

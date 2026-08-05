@@ -125,6 +125,18 @@ public final class MigrationManager {
                 transaction_id TEXT,
                 PRIMARY KEY (week_id, player_uuid)
             );
+            """,
+            // v3 — долговечный остаток недельного фонда: сумма и статус перевода в казну.
+            // Записывается в статусе PENDING ДО попытки перевода, чтобы остаток не пропал,
+            // даже если сам перевод или отметка PAID позже не пройдут.
+            """
+            CREATE TABLE IF NOT EXISTS weekly_fund_treasury (
+                week_id TEXT PRIMARY KEY,
+                remainder_amount INTEGER NOT NULL,
+                treasury_status TEXT NOT NULL DEFAULT 'PENDING',
+                transaction_id TEXT,
+                updated_at INTEGER NOT NULL
+            );
             """
     };
 
@@ -223,6 +235,17 @@ public final class MigrationManager {
                 paid_at BIGINT,
                 transaction_id VARCHAR(36),
                 PRIMARY KEY (week_id, player_uuid)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            // v3 — долговечный остаток недельного фонда (см. комментарий к SQLite-скрипту).
+            """
+            CREATE TABLE IF NOT EXISTS weekly_fund_treasury (
+                week_id VARCHAR(20) NOT NULL,
+                remainder_amount BIGINT NOT NULL,
+                treasury_status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+                transaction_id VARCHAR(36),
+                updated_at BIGINT NOT NULL,
+                PRIMARY KEY (week_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
     };

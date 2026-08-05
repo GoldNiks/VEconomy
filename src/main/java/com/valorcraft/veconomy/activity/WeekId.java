@@ -15,11 +15,24 @@ public final class WeekId {
     private static final WeekFields ISO = WeekFields.ISO;
     private static final Pattern WEEK = Pattern.compile("(\\d{4})-W(\\d{2})");
 
+    private static volatile java.util.function.Supplier<java.time.LocalDate> currentDate =
+            () -> java.time.LocalDate.now(ZoneOffset.UTC);
+
     private WeekId() {}
 
     /** Текущая неделя в UTC. */
     public static String current() {
-        return forDate(LocalDate.now(ZoneOffset.UTC));
+        return forDate(currentDate.get());
+    }
+
+    /** Сменить источник текущей даты (для тестов). */
+    public static void useDate(java.util.function.Supplier<java.time.LocalDate> supplier) {
+        currentDate = supplier;
+    }
+
+    /** Вернуть источник текущей даты к реальному времени (для тестов). */
+    public static void resetDate() {
+        currentDate = () -> java.time.LocalDate.now(ZoneOffset.UTC);
     }
 
     public static String forDate(LocalDate date) {
