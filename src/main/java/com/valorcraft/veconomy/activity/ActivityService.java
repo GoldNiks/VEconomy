@@ -188,6 +188,22 @@ public final class ActivityService {
         }
     }
 
+    /**
+     * Исключён ли игрок из наград (weekly, автоматические milestones). Флаг хранится
+     * в {@code player_activity.excluded_from_rewards}; false при отсутствии записи
+     * или ошибке базы.
+     */
+    public boolean excludedFromRewards(UUID playerId) {
+        try {
+            return database.inTransaction(connection ->
+                    repository.find(connection, playerId)
+                            .map(PlayerActivityRow::excludedFromRewards).orElse(false));
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка чтения флага исключения {}", playerId, e);
+            return false;
+        }
+    }
+
     public Optional<ActivityInfo> info(UUID playerId) {
         try {
             return database.inTransaction(connection -> {

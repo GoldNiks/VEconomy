@@ -1,6 +1,7 @@
 package com.valorcraft.veconomy;
 
 import com.valorcraft.veconomy.activity.ActivityService;
+import com.valorcraft.veconomy.activity.DimensionVisitRepository;
 import com.valorcraft.veconomy.activity.MilestoneRepository;
 import com.valorcraft.veconomy.activity.MilestoneService;
 import com.valorcraft.veconomy.activity.PlayerActivityRepository;
@@ -36,6 +37,7 @@ public final class TestDb implements AutoCloseable {
     public final EscrowService escrowService;
     public final PlayerActivityRepository activityRepository;
     public final ActivityService activityService;
+    public final DimensionVisitRepository visitRepository;
     public final MilestoneService milestoneService;
     public final WeeklyFundService weeklyFundService;
     public final WeeklyActivityDayRepository dayRepository;
@@ -63,6 +65,7 @@ public final class TestDb implements AutoCloseable {
 
             PlayerActivityRepository activityRepository = new PlayerActivityRepository();
             MilestoneRepository milestoneRepository = new MilestoneRepository();
+            DimensionVisitRepository visitRepository = new DimensionVisitRepository();
             WeeklyPayoutRepository payoutRepository = new WeeklyPayoutRepository();
             WeeklyPeriodRepository periodRepository = new WeeklyPeriodRepository();
             WeeklyTreasuryRepository treasuryRepository = new WeeklyTreasuryRepository();
@@ -71,14 +74,14 @@ public final class TestDb implements AutoCloseable {
             ActivityService activityService = new ActivityService(database, activityRepository,
                     dayRepository, settings);
             MilestoneService milestoneService = new MilestoneService(database, milestoneRepository,
-                    accountService, activityService, settings);
+                    accountService, activityService, visitRepository, settings);
             WeeklyFundService weeklyFundService = new WeeklyFundService(database, activityRepository,
                     dayRepository, periodRepository, treasuryRepository, payoutRepository, planRepository,
                     accounts, escrow, accountService, settings);
 
             return new TestDb(database, accounts, transactions, escrow, ledger,
                     accountService, transferService, escrowService,
-                    activityRepository, activityService, milestoneService, weeklyFundService,
+                    activityRepository, activityService, visitRepository, milestoneService, weeklyFundService,
                     dayRepository, planRepository, settings);
         } catch (Exception e) {
             throw new RuntimeException("Не удалось создать тестовую базу", e);
@@ -89,7 +92,8 @@ public final class TestDb implements AutoCloseable {
                    EscrowRepository escrow, LedgerService ledger, AccountService accountService,
                    TransferService transferService, EscrowService escrowService,
                    PlayerActivityRepository activityRepository, ActivityService activityService,
-                   MilestoneService milestoneService, WeeklyFundService weeklyFundService,
+                   DimensionVisitRepository visitRepository, MilestoneService milestoneService,
+                   WeeklyFundService weeklyFundService,
                    WeeklyActivityDayRepository dayRepository, WeeklyFundPlanRepository planRepository,
                    EconomySettings settings) {
         this.database = database;
@@ -102,6 +106,7 @@ public final class TestDb implements AutoCloseable {
         this.escrowService = escrowService;
         this.activityRepository = activityRepository;
         this.activityService = activityService;
+        this.visitRepository = visitRepository;
         this.milestoneService = milestoneService;
         this.weeklyFundService = weeklyFundService;
         this.dayRepository = dayRepository;

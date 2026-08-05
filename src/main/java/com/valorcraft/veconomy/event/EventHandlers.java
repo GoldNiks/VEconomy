@@ -3,6 +3,7 @@ package com.valorcraft.veconomy.event;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.command.EconomyAdminCommand;
+import com.valorcraft.veconomy.command.InternalCommand;
 import com.valorcraft.veconomy.command.MoneyCommand;
 import com.valorcraft.veconomy.command.PayCommand;
 import com.valorcraft.veconomy.config.EconomyConfig;
@@ -29,6 +30,7 @@ public final class EventHandlers {
         MoneyCommand.register(event.getDispatcher());
         PayCommand.register(event.getDispatcher());
         EconomyAdminCommand.register(event.getDispatcher());
+        InternalCommand.register(event.getDispatcher());
         VEconomyMod.LOGGER.info("Команды экономики зарегистрированы");
     }
 

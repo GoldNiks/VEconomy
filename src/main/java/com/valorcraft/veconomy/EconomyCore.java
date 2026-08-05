@@ -7,6 +7,7 @@ import com.valorcraft.veconomy.api.EscrowResult;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.activity.ActivityService;
+import com.valorcraft.veconomy.activity.DimensionVisitRepository;
 import com.valorcraft.veconomy.activity.MilestoneRepository;
 import com.valorcraft.veconomy.activity.MilestoneService;
 import com.valorcraft.veconomy.activity.PlayerActivityRepository;
@@ -18,6 +19,7 @@ import com.valorcraft.veconomy.activity.WeeklyPayoutRepository;
 import com.valorcraft.veconomy.activity.WeeklyTreasuryRepository;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.config.EconomySettings;
+import com.valorcraft.veconomy.config.MilestoneConfig;
 import com.valorcraft.veconomy.economy.AccountService;
 import com.valorcraft.veconomy.economy.CurrencyFormatter;
 import com.valorcraft.veconomy.economy.EscrowService;
@@ -59,6 +61,8 @@ public final class EconomyCore {
             throw new IllegalStateException("Экономика уже запущена");
         }
         settings = initialSettings;
+        MilestoneConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get(),
+                initialSettings.maximumBalance);
         database = new DatabaseManager();
         database.open(databasePath, initialSettings);
 
@@ -78,13 +82,15 @@ public final class EconomyCore {
 
         PlayerActivityRepository activityRepository = new PlayerActivityRepository();
         MilestoneRepository milestoneRepository = new MilestoneRepository();
+        DimensionVisitRepository visitRepository = new DimensionVisitRepository();
         WeeklyPayoutRepository payoutRepository = new WeeklyPayoutRepository();
         WeeklyPeriodRepository periodRepository = new WeeklyPeriodRepository();
         WeeklyTreasuryRepository treasuryRepository = new WeeklyTreasuryRepository();
         WeeklyActivityDayRepository dayRepository = new WeeklyActivityDayRepository();
         WeeklyFundPlanRepository planRepository = new WeeklyFundPlanRepository();
         activity = new ActivityService(database, activityRepository, dayRepository, initialSettings);
-        milestones = new MilestoneService(database, milestoneRepository, accountService, activity, initialSettings);
+        milestones = new MilestoneService(database, milestoneRepository, accountService, activity,
+                visitRepository, initialSettings);
         weeklyFund = new WeeklyFundService(database, activityRepository, dayRepository, periodRepository,
                 treasuryRepository, payoutRepository, planRepository, accountRepository, escrowRepository,
                 accountService, initialSettings);
@@ -144,6 +150,8 @@ public final class EconomyCore {
     /** Применить новые (перезагруженные) настройки к сервисам. */
     public static synchronized void applySettings(EconomySettings newSettings) {
         settings = newSettings;
+        MilestoneConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get(),
+                newSettings.maximumBalance);
         if (accountService != null) {
             accountService.applySettings(newSettings);
         }

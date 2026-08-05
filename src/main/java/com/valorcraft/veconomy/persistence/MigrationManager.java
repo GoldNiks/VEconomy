@@ -172,6 +172,18 @@ public final class MigrationManager {
             ALTER TABLE weekly_activity_periods ADD COLUMN time_points INTEGER NOT NULL DEFAULT 0;
             ALTER TABLE weekly_activity_periods ADD COLUMN day_points INTEGER NOT NULL DEFAULT 0;
             ALTER TABLE weekly_activity_periods ADD COLUMN share INTEGER NOT NULL DEFAULT 0;
+            """,
+            // v5 — личные посещения измерений для milestones DIMENSION_VISIT.
+            // Нормализованная таблица (одна строка на (игрок, измерение)) вместо
+            // истории строкой через запятую: повторный вход не плодит строки,
+            // а факт посещения проверяется одним индексным чтением.
+            """
+            CREATE TABLE IF NOT EXISTS dimension_visits (
+                player_uuid TEXT NOT NULL,
+                dimension TEXT NOT NULL,
+                first_visited_at INTEGER NOT NULL,
+                PRIMARY KEY (player_uuid, dimension)
+            );
             """
     };
 
@@ -316,6 +328,15 @@ public final class MigrationManager {
             ALTER TABLE weekly_activity_periods ADD COLUMN time_points INT NOT NULL DEFAULT 0;
             ALTER TABLE weekly_activity_periods ADD COLUMN day_points INT NOT NULL DEFAULT 0;
             ALTER TABLE weekly_activity_periods ADD COLUMN share BIGINT NOT NULL DEFAULT 0;
+            """,
+            // v5 — личные посещения измерений для milestones DIMENSION_VISIT (см. SQLite-скрипт).
+            """
+            CREATE TABLE IF NOT EXISTS dimension_visits (
+                player_uuid VARCHAR(36) NOT NULL,
+                dimension VARCHAR(64) NOT NULL,
+                first_visited_at BIGINT NOT NULL,
+                PRIMARY KEY (player_uuid, dimension)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
     };
 

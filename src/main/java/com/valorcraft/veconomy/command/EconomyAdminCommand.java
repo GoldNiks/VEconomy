@@ -64,6 +64,33 @@ public final class EconomyAdminCommand {
                                                                 .executes(EconomyAdminCommand::balanceSet))))))
                         .then(Commands.literal("stats")
                                 .executes(EconomyAdminCommand::stats))
+                        .then(Commands.literal("milestone")
+                                .then(Commands.literal("list")
+                                        .executes(EconomyAdminCommand::milestoneList)
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .executes(EconomyAdminCommand::milestoneListForPlayer)))
+                                .then(Commands.literal("check")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .then(Commands.argument("milestone", StringArgumentType.word())
+                                                        .suggests(EconomyAdminCommand::suggestMilestones)
+                                                        .executes(EconomyAdminCommand::milestoneCheck))))
+                                .then(Commands.literal("grant")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .then(Commands.argument("milestone", StringArgumentType.word())
+                                                        .suggests(EconomyAdminCommand::suggestMilestones)
+                                                        .executes(context -> milestoneGrant(context, null))
+                                                        .then(Commands.argument("reason", StringArgumentType.greedyString())
+                                                                .executes(context -> milestoneGrant(context,
+                                                                        StringArgumentType.getString(context, "reason")))))))
+                                .then(Commands.literal("revoke")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .then(Commands.argument("milestone", StringArgumentType.word())
+                                                        .suggests(EconomyAdminCommand::suggestMilestones)
+                                                        .executes(EconomyAdminCommand::milestoneRevoke)))))
                         .then(Commands.literal("reload")
                                 .executes(EconomyAdminCommand::reload))
                         .then(Commands.literal("weekly")
@@ -215,6 +242,164 @@ public final class EconomyAdminCommand {
                     Component.translatable("error.internal").withStyle(ChatFormatting.RED));
         }
         return 1;
+    }
+
+    // ---------------------------------------------------------------- milestone
+
+    private static java.util.concurrent.CompletableFuture<com.mojang.brigadier.suggestion.Suggestions>
+            suggestMilestones(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                              com.mojang.brigadier.suggestion.SuggestionsBuilder builder) {
+        String prefix = builder.getRemaining().toLowerCase(java.util.Locale.ROOT);
+        for (com.valorcraft.veconomy.activity.MilestoneDefinition def
+                : EconomyCore.milestones().definitions()) {
+            if (def.id().toLowerCase(java.util.Locale.ROOT).startsWith(prefix)) {
+                builder.suggest(def.id());
+            }
+        }
+        return builder.buildFuture();
+    }
+
+    private static int milestoneList(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        var definitions = EconomyCore.milestones().definitions();
+        source.sendSuccess(() -> Component.translatable("admin.milestone.list.title",
+                definitions.size()).withStyle(ChatFormatting.GOLD), false);
+        for (com.valorcraft.veconomy.activity.MilestoneDefinition def : definitions) {
+            String amount = EconomyCore.formatter().format(def.amountMinor());
+            source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
+                    .append(Component.literal(def.id()).withStyle(ChatFormatting.AQUA))
+                    .append(Component.translatable("admin.milestone.list.row",
+                            def.type().name().toLowerCase(java.util.Locale.ROOT), amount,
+                            def.enabled() ? "+" : "-")), false);
+        }
+        return 1;
+    }
+
+    private static int milestoneListForPlayer(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        var claims = EconomyCore.milestones().claims(target.uuid());
+        source.sendSuccess(() -> Component.translatable("admin.milestone.claims.title",
+                target.name(), claims.size()).withStyle(ChatFormatting.GOLD), false);
+        if (claims.isEmpty()) {
+            source.sendSuccess(() -> Component.translatable("admin.milestone.claims.empty")
+                    .withStyle(ChatFormatting.GRAY), false);
+            return 1;
+        }
+        for (com.valorcraft.veconomy.activity.MilestoneRow claim : claims) {
+            String when = java.time.Instant.ofEpochMilli(claim.claimedAt())
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
+                    .append(Component.literal(claim.milestoneId()).withStyle(ChatFormatting.AQUA))
+                    .append(Component.translatable("admin.milestone.claims.row",
+                            EconomyCore.formatter().format(claim.amountMinor()), when)), false);
+        }
+        return 1;
+    }
+
+    private static int milestoneCheck(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        String milestoneId = StringArgumentType.getString(context, "milestone");
+        var def = EconomyCore.milestones().definition(milestoneId);
+        if (def.isEmpty()) {
+            source.sendFailure(Component.translatable("admin.milestone.notfound", milestoneId)
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        com.valorcraft.veconomy.activity.MilestoneCheckContext ctx =
+                EconomyCore.milestones().contextFor(target.uuid(), source.getServer());
+        com.valorcraft.veconomy.activity.MilestoneCheckResult result =
+                EconomyCore.milestones().checkMilestone(target.uuid(), def.get(), ctx);
+        switch (result.status()) {
+            case MET -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.met",
+                    milestoneId, target.name()).withStyle(ChatFormatting.GREEN), false);
+            case NOT_MET -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.notmet",
+                    milestoneId, target.name()).withStyle(ChatFormatting.YELLOW), false);
+            default -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.unavailable",
+                    milestoneId, target.name(),
+                    result.reasonKey() == null ? "error.internal" : result.reasonKey())
+                    .withStyle(ChatFormatting.GRAY), false);
+        }
+        return 1;
+    }
+
+    private static int milestoneGrant(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                      String reason) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        String milestoneId = StringArgumentType.getString(context, "milestone");
+        var def = EconomyCore.milestones().definition(milestoneId);
+        if (def.isEmpty()) {
+            source.sendFailure(Component.translatable("admin.milestone.notfound", milestoneId)
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
+                ? p.getUUID() : null;
+        String finalReason = reason == null || reason.isBlank()
+                ? "admin:milestone:" + milestoneId : reason;
+        com.valorcraft.veconomy.activity.MilestoneService.MilestoneGrantResult result =
+                EconomyCore.milestones().grant(target.uuid(), def.get(), actor, finalReason,
+                        "milestone:" + milestoneId + ":" + target.uuid());
+        sendGrantResult(source, milestoneId, target.name(), result);
+        return 1;
+    }
+
+    private static int milestoneRevoke(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        String milestoneId = StringArgumentType.getString(context, "milestone");
+        if (EconomyCore.milestones().revoke(target.uuid(), milestoneId)) {
+            source.sendSuccess(() -> Component.translatable("admin.milestone.revoked",
+                    milestoneId, target.name()).withStyle(ChatFormatting.GREEN), true);
+        } else {
+            source.sendFailure(Component.translatable("admin.milestone.revoke.missing",
+                    milestoneId, target.name()).withStyle(ChatFormatting.RED));
+        }
+        return 1;
+    }
+
+    private static void sendGrantResult(CommandSourceStack source, String milestoneId, String playerName,
+                                        com.valorcraft.veconomy.activity.MilestoneService.MilestoneGrantResult result) {
+        String key;
+        switch (result.status()) {
+            case GRANTED -> {
+                String amount = EconomyCore.formatter().format(result.amountMinor());
+                source.sendSuccess(() -> Component.translatable("admin.milestone.granted",
+                        milestoneId, playerName, amount).withStyle(ChatFormatting.GREEN), true);
+                return;
+            }
+            case ALREADY_CLAIMED -> key = "admin.milestone.already";
+            case DISABLED -> key = "admin.milestone.disabled";
+            case MILESTONES_DISABLED -> key = "admin.milestone.milestones.disabled";
+            case EXCLUDED -> key = "admin.milestone.excluded";
+            case ACCOUNT_FROZEN -> key = "error.frozen";
+            case LIMIT_EXCEEDED -> key = "error.limit";
+            case DUPLICATE_OPERATION -> key = "admin.milestone.duplicate";
+            case DATABASE_ERROR, FAILED -> key = "error.internal";
+            default -> key = "error.internal";
+        }
+        String finalKey = key;
+        source.sendFailure(Component.translatable(finalKey, milestoneId, playerName)
+                .withStyle(ChatFormatting.RED));
     }
 
     private static int stats(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {

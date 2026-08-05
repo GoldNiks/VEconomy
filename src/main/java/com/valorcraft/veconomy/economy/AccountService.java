@@ -158,38 +158,44 @@ public final class AccountService {
             return validation;
         }
         try {
-            return database.inTransaction(connection -> {
-                TransactionResult duplicate = checkIdempotency(connection, context);
-                if (duplicate != null) {
-                    return duplicate;
-                }
-                AccountRow account = createIfMissing(connection, playerId, null);
-                TransactionResult disabled = checkDisabled(account);
-                if (disabled != null) {
-                    return disabled;
-                }
-                long newBalance;
-                try {
-                    newBalance = Math.addExact(account.balanceMinor(), amount);
-                } catch (ArithmeticException e) {
-                    return failed(TransactionResult.Status.OVERFLOW);
-                }
-                if (newBalance > settings.maximumBalance) {
-                    return failed(TransactionResult.Status.LIMIT_EXCEEDED);
-                }
-                if (!accounts.updateBalance(connection, playerId, newBalance, account.version(), System.currentTimeMillis())) {
-                    return failed(TransactionResult.Status.DATABASE_ERROR);
-                }
-                String txId = ledger.record(connection, new TransactionRow(
-                        null, context.type(), null, playerId, amount, System.currentTimeMillis(),
-                        context.actorId(), context.reason(), context.idempotencyKey(),
-                        context.metadata(), null, newBalance));
-                return success(txId, -1L, newBalance);
-            });
+            return database.inTransaction(connection -> depositIn(connection, playerId, amount, context));
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка начисления {} для {}", amount, playerId, e);
             return failed(TransactionResult.Status.DATABASE_ERROR);
         }
+    }
+
+    /**
+     * Начисление в рамках уже открытой транзакции (для составных операций: деньги +
+     * ledger + сопутствующая запись в одном коммите). Не вызывает {@code inTransaction}.
+     */
+    public TransactionResult depositIn(Connection connection, UUID playerId, long amount, TransactionContext context) {
+        TransactionResult duplicate = checkIdempotency(connection, context);
+        if (duplicate != null) {
+            return duplicate;
+        }
+        AccountRow account = createIfMissing(connection, playerId, null);
+        TransactionResult disabled = checkDisabled(account);
+        if (disabled != null) {
+            return disabled;
+        }
+        long newBalance;
+        try {
+            newBalance = Math.addExact(account.balanceMinor(), amount);
+        } catch (ArithmeticException e) {
+            return failed(TransactionResult.Status.OVERFLOW);
+        }
+        if (newBalance > settings.maximumBalance) {
+            return failed(TransactionResult.Status.LIMIT_EXCEEDED);
+        }
+        if (!accounts.updateBalance(connection, playerId, newBalance, account.version(), System.currentTimeMillis())) {
+            return failed(TransactionResult.Status.DATABASE_ERROR);
+        }
+        String txId = ledger.record(connection, new TransactionRow(
+                null, context.type(), null, playerId, amount, System.currentTimeMillis(),
+                context.actorId(), context.reason(), context.idempotencyKey(),
+                context.metadata(), null, newBalance));
+        return success(txId, -1L, newBalance);
     }
 
     public TransactionResult withdraw(UUID playerId, long amount, TransactionContext context) {

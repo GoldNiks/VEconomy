@@ -163,6 +163,30 @@ public final class VEconomyBindings {
         return status != null && status.equals("SUCCESS");
     }
 
+    /**
+     * Выдать EXTERNAL-милстоун из доверенного скрипта. Идемпотентность обеспечивается
+     * ключом: повторный вызов с тем же ключом вернёт {@code DUPLICATE_OPERATION}.
+     * Деньги начисляются только если милстоун имеет тип EXTERNAL.
+     */
+    public static String milestoneGrant(Object player, String milestoneId, String idempotencyKey) {
+        UUID id = resolve(player);
+        if (id == null || !EconomyCore.isStarted()) {
+            return "PLAYER_NOT_FOUND";
+        }
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return "INVALID_KEY";
+        }
+        return EconomyCore.milestones().grantExternal(id, milestoneId, idempotencyKey)
+                .status().name();
+    }
+
+    /** Выдан ли EXTERNAL-милстоун игроку. */
+    public static boolean milestoneClaimed(Object player, String milestoneId) {
+        UUID id = resolve(player);
+        return id != null && EconomyCore.isStarted()
+                && EconomyCore.milestones().isClaimed(id, milestoneId);
+    }
+
     private static EscrowApi escrow() {
         return EconomyCore.escrow();
     }

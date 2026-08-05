@@ -32,6 +32,75 @@ public final class MilestoneRepository {
         }
     }
 
+    /** Идентификаторы всех выданных этапов игроку (без фильтра источника). */
+    public Set<String> claimedIds(Connection connection, UUID playerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT milestone_id FROM claimed_milestones WHERE player_uuid = ?")) {
+            statement.setString(1, playerId.toString());
+            try (ResultSet rs = statement.executeQuery()) {
+                Set<String> ids = new HashSet<>();
+                while (rs.next()) {
+                    ids.add(rs.getString(1));
+                }
+                return ids;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения милстоунов " + playerId, e);
+        }
+    }
+
+    /** Одна выдача этапа игроку (пусто, если не выдавался). */
+    public java.util.Optional<MilestoneRow> find(Connection connection, UUID playerId, String milestoneId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT player_uuid, milestone_id, amount_minor, claimed_at, source, transaction_id "
+                        + "FROM claimed_milestones WHERE player_uuid = ? AND milestone_id = ?")) {
+            statement.setString(1, playerId.toString());
+            statement.setString(2, milestoneId);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (rs.next()) {
+                    return java.util.Optional.of(new MilestoneRow(
+                            UUID.fromString(rs.getString(1)), rs.getString(2),
+                            rs.getLong(3), rs.getLong(4), rs.getString(5), rs.getString(6)));
+                }
+                return java.util.Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения милстоуна " + playerId, e);
+        }
+    }
+
+    /** Все выдачи этапов игроку (для команды {@code list <игрок>}). */
+    public java.util.List<MilestoneRow> claims(Connection connection, UUID playerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT player_uuid, milestone_id, amount_minor, claimed_at, source, transaction_id "
+                        + "FROM claimed_milestones WHERE player_uuid = ? ORDER BY claimed_at")) {
+            statement.setString(1, playerId.toString());
+            try (ResultSet rs = statement.executeQuery()) {
+                java.util.List<MilestoneRow> rows = new java.util.ArrayList<>();
+                while (rs.next()) {
+                    rows.add(new MilestoneRow(
+                            UUID.fromString(rs.getString(1)), rs.getString(2),
+                            rs.getLong(3), rs.getLong(4), rs.getString(5), rs.getString(6)));
+                }
+                return rows;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения милстоунов " + playerId, e);
+        }
+    }
+
+    /** Снять отметку о выдаче (revoke). Не удаляет ledger-запись и не трогает баланс. */
+    public void revoke(Connection connection, UUID playerId, String milestoneId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM claimed_milestones WHERE player_uuid = ? AND milestone_id = ?")) {
+            statement.setString(1, playerId.toString());
+            statement.setString(2, milestoneId);
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка отзыва милстоуна " + playerId, e);
+        }
+    }
+
     /** Отметить этап выданным. Идемпотентно по первичному ключу (player_uuid, milestone_id). */
     public void claim(Connection connection, DatabaseManager.Dialect dialect, MilestoneRow row) {
         String sql = dialect == DatabaseManager.Dialect.MYSQL
