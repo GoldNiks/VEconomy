@@ -150,7 +150,17 @@ class SuspicionScannerTest {
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             assertEquals(1, summary.roundTripSignals());
             assertEquals(1, summary.total());
-            assertTrue(hasSignal(db, AuditEventType.SIGNAL_ROUNDTRIP, alice));
+            // Сигнал пишется на один из участников пары (детерминированно по сортированному ключу
+            // пары); у кого именно — зависит от порядка пары, поэтому проверяем пару в деталях.
+            List<AuditEventRow> roundTrips = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_ROUNDTRIP.equals(s.eventType()))
+                    .toList();
+            assertEquals(1, roundTrips.size());
+            AuditEventRow signal = roundTrips.get(0);
+            assertTrue(alice.equals(signal.playerId()) || bob.equals(signal.playerId()));
+            String partner = alice.equals(signal.playerId()) ? bob.toString() : alice.toString();
+            assertTrue(signal.details().contains(partner),
+                    "детали должны содержать второго участника пары: " + signal.details());
         }
     }
 

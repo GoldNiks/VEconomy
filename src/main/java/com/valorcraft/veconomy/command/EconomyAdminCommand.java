@@ -4,6 +4,8 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.valorcraft.veconomy.EconomyCore;
+import com.valorcraft.veconomy.activity.AccountFlagUpdateResult;
+import com.valorcraft.veconomy.activity.RewardExclusionStatus;
 import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
@@ -311,8 +313,8 @@ public final class EconomyAdminCommand {
             return notFound(source, playerInput);
         }
         Optional<BalanceSnapshot> account = EconomyCore.accounts().getAccount(target.uuid());
-        boolean excluded = EconomyCore.activity().excludedFromRewards(target.uuid());
-        if (account.isEmpty() && !excluded) {
+        RewardExclusionStatus exclusion = EconomyCore.activity().excludedFromRewards(target.uuid());
+        if (account.isEmpty() && exclusion != RewardExclusionStatus.EXCLUDED) {
             source.sendFailure(Component.translatable("admin.balance.none", target.name())
                     .withStyle(ChatFormatting.RED));
             return 1;
@@ -324,7 +326,11 @@ public final class EconomyAdminCommand {
         String balance = account.isPresent()
                 ? EconomyCore.formatter().format(account.get().balanceMinor()) : "—";
         String status = account.isPresent() ? account.get().status().name() : "NO_ACCOUNT";
-        String excludedText = excluded ? "admin.yes" : "admin.no";
+        String excludedText = switch (exclusion) {
+            case EXCLUDED -> "admin.yes";
+            case NOT_EXCLUDED -> "admin.no";
+            case UNKNOWN -> "admin.account.info.excluded.unknown";
+        };
         String frozen = account.isPresent() && account.get().status() == AccountStatus.FROZEN
                 ? "admin.yes" : "admin.no";
         source.sendSuccess(() -> Component.translatable("admin.account.info.balance", balance)
@@ -402,7 +408,13 @@ public final class EconomyAdminCommand {
         if (!target.exists()) {
             return notFound(source, playerInput);
         }
-        EconomyCore.activity().setExcludedFromRewards(target.uuid(), excluded);
+        AccountFlagUpdateResult update = EconomyCore.activity().setExcludedFromRewards(
+                target.uuid(), excluded);
+        if (update.status() != AccountFlagUpdateResult.Status.OK) {
+            source.sendFailure(Component.translatable("admin.account.exclude.failed", target.name())
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
         String verb = excluded ? "admin.account.excluded" : "admin.account.included";
         source.sendSuccess(() -> Component.translatable(verb, target.name())
                 .withStyle(ChatFormatting.GREEN), true);
@@ -604,6 +616,10 @@ public final class EconomyAdminCommand {
                     milestoneId, target.name()).withStyle(ChatFormatting.GREEN), false);
             case NOT_MET -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.notmet",
                     milestoneId, target.name()).withStyle(ChatFormatting.YELLOW), false);
+            case BAD_CONFIG -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.badconfig",
+                    milestoneId, target.name(),
+                    result.reasonKey() == null ? "admin.milestone.reason.badConfig" : result.reasonKey())
+                    .withStyle(ChatFormatting.RED), false);
             default -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.unavailable",
                     milestoneId, target.name(),
                     result.reasonKey() == null ? "error.internal" : result.reasonKey())
@@ -670,6 +686,7 @@ public final class EconomyAdminCommand {
             case DISABLED -> key = "admin.milestone.disabled";
             case MILESTONES_DISABLED -> key = "admin.milestone.milestones.disabled";
             case EXCLUDED -> key = "admin.milestone.excluded";
+            case BAD_CONFIG -> key = "admin.milestone.badconfig";
             case ACCOUNT_FROZEN -> key = "error.frozen";
             case LIMIT_EXCEEDED -> key = "error.limit";
             case DUPLICATE_OPERATION -> key = "admin.milestone.duplicate";

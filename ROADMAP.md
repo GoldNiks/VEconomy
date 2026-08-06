@@ -58,12 +58,22 @@
 
 ## Аудит и сигналы
 
+> Этап 3 помечен **PARTIAL**: часть обязательных требований завершается отдельным
+> коммитом («complete audit signals and resolution workflow») — полный набор сигналов,
+> работа с подозрительными событиями (resolution), actor attribution, обработка сбоев
+> записи аудита и валидация `veconomy-audit.json`.
+
 | Область | Статус | Примечание |
 |---------|--------|------------|
-| Таблица audit-событий | DONE | `audit_events` (миграция v6), `AuditRepository`, `AuditService` |
-| События сервисов | DONE | freeze/unfreeze, exclude-rewards, milestone grant/revoke, weekly payout |
-| Suspicion signals | DONE | спам/рондатрип/оверсайз/новые аккаунты, `veconomy-audit.json`, дедупликация в окне |
-| Команды `/economy admin audit list/player/signals/scan` | DONE | Этап 3 |
+| Таблица audit-событий | PARTIAL | `audit_events` (миграция v6), `AuditRepository`, `AuditService` |
+| События сервисов | PARTIAL | freeze/unfreeze, exclude-rewards, milestone grant/revoke, weekly payout |
+| Suspicion signals | PARTIAL | спам/рондатрип/оверсайз/новые аккаунты, `veconomy-audit.json`, дедупликация в окне |
+| Команды `/economy admin audit list/player/signals/scan` | PARTIAL | Этап 3 |
+| Полный набор сигналов | NOT IMPLEMENTED | быстрая пересылка, петли, высокая частота пар, концентрация новых аккаунтов, общий получатель |
+| Resolution подозрительных событий | NOT IMPLEMENTED | жизненный цикл OPEN/RESOLVED/DISMISSED, `audit transaction/suspicious/resolve/dismiss` |
+| Actor attribution | PARTIAL | для админ-команд; для weekly — NOT_INITIATED |
+| Сбои записи аудита | NOT IMPLEMENTED | видимые ошибки, retry, идемпотентность |
+| Валидация `veconomy-audit.json` | NOT IMPLEMENTED | при загрузке и перезагрузке |
 | `/economy admin stats` | PARTIAL | supply/игроки/казна/escrow/эмиссия/медиана/переводы есть; нет замороженных/исключённых/сигналов/аггрегата по типам |
 | `/economy admin diagnostics` | NOT IMPLEMENTED | Этап 4 |
 

@@ -195,26 +195,30 @@ public final class ActivityService {
 
     /**
      * Исключён ли игрок из наград (weekly, автоматические milestones). Флаг хранится
-     * в {@code player_activity.excluded_from_rewards}; false при отсутствии записи
-     * или ошибке базы.
+     * в {@code player_activity.excluded_from_rewards}; {@link RewardExclusionStatus#NOT_EXCLUDED}
+     * при отсутствии записи. Ошибка базы возвращает {@link RewardExclusionStatus#UNKNOWN} —
+     * вызывающий обязан удержать награду (fail-closed), а не трактовать ошибку как «не исключён».
      */
-    public boolean excludedFromRewards(UUID playerId) {
+    public RewardExclusionStatus excludedFromRewards(UUID playerId) {
         try {
-            return database.inTransaction(connection ->
+            boolean excluded = database.inTransaction(connection ->
                     repository.find(connection, playerId)
                             .map(PlayerActivityRow::excludedFromRewards).orElse(false));
+            return excluded ? RewardExclusionStatus.EXCLUDED : RewardExclusionStatus.NOT_EXCLUDED;
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка чтения флага исключения {}", playerId, e);
-            return false;
+            return RewardExclusionStatus.UNKNOWN;
         }
     }
 
     /**
      * Установить флаг исключения из наград (админ-команда {@code exclude-rewards}/
      * {@code include-rewards}). Работает и для игроков без записи активности:
-     * создаётся минимальная запись. Возвращает новое значение флага.
+     * создаётся минимальная запись. Успех возвращается явным результатом: при ошибке
+     * базы изменение не применено и {@link AccountFlagUpdateResult.Status#DATABASE_ERROR}
+     * не должен отображаться как успех.
      */
-    public boolean setExcludedFromRewards(UUID playerId, boolean excluded) {
+    public AccountFlagUpdateResult setExcludedFromRewards(UUID playerId, boolean excluded) {
         try {
             database.inTransaction(connection -> {
                 PlayerActivityRow existing = repository.find(connection, playerId).orElse(null);
@@ -235,10 +239,11 @@ public final class ActivityService {
                 audit.record(AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO, playerId, null,
                         "excluded=" + excluded);
             }
-            return excluded;
+            return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.OK, excluded, null);
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка установки флага исключения {}", playerId, e);
-            return false;
+            return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.DATABASE_ERROR,
+                    false, "db_error");
         }
     }
 

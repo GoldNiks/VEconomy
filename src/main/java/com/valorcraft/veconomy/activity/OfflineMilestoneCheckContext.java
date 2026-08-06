@@ -37,4 +37,9 @@ public final class OfflineMilestoneCheckContext implements MilestoneCheckContext
     public Optional<Boolean> advancementDone(ResourceLocation advancementId) {
         return Optional.empty();
     }
+
+    @Override
+    public Optional<Boolean> advancementRegistered(ResourceLocation advancementId) {
+        return Optional.empty();
+    }
 }

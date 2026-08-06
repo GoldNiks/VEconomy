@@ -116,14 +116,40 @@ class AuditServiceTest {
     void exclusionChangeWritesAuditEvent() {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
-            assertTrue(db.activityService.setExcludedFromRewards(player, true));
-            assertFalse(db.activityService.setExcludedFromRewards(player, false));
+            assertTrue(db.activityService.setExcludedFromRewards(player, true).isSuccess());
+            assertTrue(db.activityService.setExcludedFromRewards(player, false).isSuccess());
 
             List<AuditEventRow> rows = db.auditService.byPlayer(player, 10);
             assertEquals(2, rows.size());
             assertEquals(AuditEventType.EXCLUSION_CHANGED, rows.get(0).eventType());
             assertTrue(rows.get(0).details().contains("excluded=false"));
             assertTrue(rows.get(1).details().contains("excluded=true"));
+        }
+    }
+
+    @Test
+    void failedExclusionChangeWritesNoAudit() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.database.close();
+
+            var result = db.activityService.setExcludedFromRewards(player, true);
+            assertEquals(com.valorcraft.veconomy.activity.AccountFlagUpdateResult.Status.DATABASE_ERROR,
+                    result.status());
+            db.database.open(db.database.path(), db.settings);
+            assertTrue(db.auditService.byPlayer(player, 10).isEmpty(),
+                    "событие аудита не должно писаться без подтверждённого изменения флага");
+        }
+    }
+
+    @Test
+    void activityInfoExclusionUnknownDoesNotFailOpen() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.database.close();
+
+            assertEquals(com.valorcraft.veconomy.activity.RewardExclusionStatus.UNKNOWN,
+                    db.activityService.excludedFromRewards(player));
         }
     }
 

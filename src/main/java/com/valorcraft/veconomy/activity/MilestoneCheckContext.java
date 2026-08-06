@@ -26,4 +26,12 @@ public interface MilestoneCheckContext {
      * если advancement с таким id не зарегистрирован на сервере.
      */
     Optional<Boolean> advancementDone(ResourceLocation advancementId);
+
+    /**
+     * Зарегистрирован ли advancement с данным id на сервере: {@code true}/{@code false},
+     * когда ответ известен; пусто, если реестр недоступен (игрок офлайн). Отличает
+     * «условие не выполнено» от «милстоун ссылается на несуществующий advancement» —
+     * последнее является ошибкой конфигурации (BAD_CONFIG), а не невыполненным условием.
+     */
+    Optional<Boolean> advancementRegistered(ResourceLocation advancementId);
 }

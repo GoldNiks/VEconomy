@@ -55,11 +55,35 @@ class ActivityServiceTest {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
 
-            assertFalse(db.activityService.excludedFromRewards(player));
-            assertTrue(db.activityService.setExcludedFromRewards(player, true));
-            assertTrue(db.activityService.excludedFromRewards(player));
-            assertFalse(db.activityService.setExcludedFromRewards(player, false));
-            assertFalse(db.activityService.excludedFromRewards(player));
+            assertEquals(RewardExclusionStatus.NOT_EXCLUDED,
+                    db.activityService.excludedFromRewards(player));
+            AccountFlagUpdateResult set = db.activityService.setExcludedFromRewards(player, true);
+            assertEquals(AccountFlagUpdateResult.Status.OK, set.status());
+            assertTrue(set.resultingValue());
+            assertEquals(RewardExclusionStatus.EXCLUDED,
+                    db.activityService.excludedFromRewards(player));
+            AccountFlagUpdateResult clear = db.activityService.setExcludedFromRewards(player, false);
+            assertEquals(AccountFlagUpdateResult.Status.OK, clear.status());
+            assertFalse(clear.resultingValue());
+            assertEquals(RewardExclusionStatus.NOT_EXCLUDED,
+                    db.activityService.excludedFromRewards(player));
+        }
+    }
+
+    @Test
+    void exclusionCheckFailureIsFailClosed() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.database.close();
+
+            // Ошибка базы при чтении флага: UNKNOWN, а не «не исключён» (fail-closed).
+            assertEquals(RewardExclusionStatus.UNKNOWN,
+                    db.activityService.excludedFromRewards(player));
+            // Ошибка базы при установке: изменение не применено, результат не выглядит успехом.
+            AccountFlagUpdateResult result =
+                    db.activityService.setExcludedFromRewards(player, true);
+            assertEquals(AccountFlagUpdateResult.Status.DATABASE_ERROR, result.status());
+            assertFalse(result.isSuccess());
         }
     }
 
@@ -72,7 +96,8 @@ class ActivityServiceTest {
             db.activityService.setExcludedFromRewards(player, true);
             db.activityService.persistAll();
 
-            assertTrue(db.activityService.excludedFromRewards(player));
+            assertEquals(RewardExclusionStatus.EXCLUDED,
+                    db.activityService.excludedFromRewards(player));
         }
     }
 
@@ -82,8 +107,9 @@ class ActivityServiceTest {
             UUID player = UUID.randomUUID();
 
             // Игрок без записи активности: флаг создаёт минимальную запись.
-            assertTrue(db.activityService.setExcludedFromRewards(player, true));
-            assertTrue(db.activityService.excludedFromRewards(player));
+            assertTrue(db.activityService.setExcludedFromRewards(player, true).isSuccess());
+            assertEquals(RewardExclusionStatus.EXCLUDED,
+                    db.activityService.excludedFromRewards(player));
         }
     }
 

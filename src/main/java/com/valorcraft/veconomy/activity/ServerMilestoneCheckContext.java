@@ -37,4 +37,9 @@ public final class ServerMilestoneCheckContext implements MilestoneCheckContext 
         }
         return Optional.of(player.getAdvancements().getOrStartProgress(advancement).isDone());
     }
+
+    @Override
+    public Optional<Boolean> advancementRegistered(ResourceLocation advancementId) {
+        return Optional.of(player.getServer().getAdvancements().getAdvancement(advancementId) != null);
+    }
 }

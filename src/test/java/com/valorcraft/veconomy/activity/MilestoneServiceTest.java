@@ -14,9 +14,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -91,13 +93,24 @@ class MilestoneServiceTest {
     private static final class FakeContext implements MilestoneCheckContext {
         private final UUID playerId;
         private final Map<ResourceLocation, Boolean> advancements = new HashMap<>();
+        private final Set<ResourceLocation> registered = new HashSet<>();
+        private final Set<ResourceLocation> unregistered = new HashSet<>();
 
         FakeContext(UUID playerId) {
             this.playerId = playerId;
         }
 
+        /** Зарегистрировать advancement на «сервере» и задать прогресс игрока. */
         FakeContext withAdvancement(ResourceLocation id, boolean done) {
             advancements.put(id, done);
+            registered.add(id);
+            return this;
+        }
+
+        /** Смоделировать advancement, не зарегистрированный на сервере. */
+        FakeContext withUnregistered(ResourceLocation id) {
+            registered.remove(id);
+            unregistered.add(id);
             return this;
         }
 
@@ -114,6 +127,17 @@ class MilestoneServiceTest {
         @Override
         public Optional<Boolean> advancementDone(ResourceLocation advancementId) {
             return Optional.ofNullable(advancements.get(advancementId));
+        }
+
+        @Override
+        public Optional<Boolean> advancementRegistered(ResourceLocation advancementId) {
+            if (registered.contains(advancementId)) {
+                return Optional.of(true);
+            }
+            if (unregistered.contains(advancementId)) {
+                return Optional.of(false);
+            }
+            return Optional.empty();
         }
     }
 
@@ -220,6 +244,55 @@ class MilestoneServiceTest {
             assertEquals(MilestoneService.MilestoneGrantResult.Status.CONDITION_NOT_MET,
                     result.get(0).status());
             assertEquals(0, db.accountService.getBalance(player));
+        }
+    }
+
+    @Test
+    void advancementUnregisteredIsConfigError() throws IOException {
+        try (TestDb db = TestDb.create(milestonesEnabled())) {
+            loadMilestones(db, json(ADVANCEMENT_DEF));
+            UUID player = UUID.randomUUID();
+            // Advancement «выполнен», но не зарегистрирован на сервере: это ошибка
+            // конфигурации (BAD_CONFIG), а не невыполненное условие.
+            FakeContext context = new FakeContext(player)
+                    .withAdvancement(ResourceLocation.tryParse("minecraft:story/enter_the_nether"), true)
+                    .withUnregistered(ResourceLocation.tryParse("minecraft:story/enter_the_nether"));
+
+            var result = db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT, context);
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.BAD_CONFIG,
+                    result.get(0).status());
+            assertEquals(0, db.accountService.getBalance(player));
+            assertFalse(db.milestoneService.isClaimed(player, "enter_nether"));
+        }
+    }
+
+    @Test
+    void advancementUnregisteredCheckReportsReason() throws IOException {
+        try (TestDb db = TestDb.create(milestonesEnabled())) {
+            loadMilestones(db, json(ADVANCEMENT_DEF));
+            UUID player = UUID.randomUUID();
+            FakeContext context = new FakeContext(player)
+                    .withUnregistered(ResourceLocation.tryParse("minecraft:story/enter_the_nether"));
+
+            var def = db.milestoneService.definition("enter_nether").orElseThrow();
+            MilestoneCheckResult check = db.milestoneService.checkMilestone(player, def, context);
+            assertEquals(MilestoneCheckResult.Status.BAD_CONFIG, check.status());
+            assertEquals("admin.milestone.reason.unregistered", check.reasonKey());
+        }
+    }
+
+    @Test
+    void malformedAdvancementKeepsLastKnownGoodDefinitions() throws IOException {
+        try (TestDb db = TestDb.create(milestonesEnabled())) {
+            loadMilestones(db, json(ADVANCEMENT_DEF));
+            assertTrue(db.milestoneService.definition("enter_nether").isPresent());
+
+            // Повреждённый конфиг (некорректный ResourceLocation) не применяется:
+            // остаётся последняя корректная версия, награда по ошибке не выдаётся.
+            loadMilestones(db, json(def("broken", "ADVANCEMENT", 500,
+                    "{\"advancement\":\"not a resource location\"}")));
+            assertTrue(db.milestoneService.definition("enter_nether").isPresent());
+            assertTrue(db.milestoneService.definition("broken").isEmpty());
         }
     }
 
@@ -472,6 +545,25 @@ class MilestoneServiceTest {
             var result = db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT, context);
             assertEquals(MilestoneService.MilestoneGrantResult.Status.EXCLUDED, result.get(0).status());
             assertEquals(0, db.accountService.getBalance(player));
+        }
+    }
+
+    @Test
+    void exclusionCheckErrorFailsClosedWithoutGrant() throws IOException {
+        // Ошибка базы при чтении флага исключения не должна трактоваться как «не исключён»:
+        // награда удерживается (fail-closed), денег и claim не появляется.
+        try (TestDb db = TestDb.create(milestonesEnabled())) {
+            loadMilestones(db, json(ADVANCEMENT_DEF));
+            UUID player = UUID.randomUUID();
+            FakeContext context = new FakeContext(player).withAdvancement(
+                    ResourceLocation.tryParse("minecraft:story/enter_the_nether"), true);
+
+            db.database.close();
+            var result = db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT, context);
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.DATABASE_ERROR,
+                    result.get(0).status());
+            assertEquals(0, db.accountService.getBalance(player));
+            assertFalse(db.milestoneService.isClaimed(player, "enter_nether"));
         }
     }
 

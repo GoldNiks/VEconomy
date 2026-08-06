@@ -13,7 +13,9 @@ import net.minecraftforge.fml.common.Mod;
 /**
  * Игровые события, закрывающие милстоуны ADVANCEMENT и DIMENSION_VISIT.
  * ADVANCEMENT обрабатывается на серверной стороне (AdvancementEarnEvent отдаёт
- * живой прогресс игрока); DIMENSION_VISIT записывает факт входа в измерение.
+ * живой прогресс игрока); DIMENSION_VISIT записывает факт входа в измерение
+ * и при входе в игру, и при смене измерения — запись идемпотентна, повторный
+ * вход награду не дублирует.
  */
 @Mod.EventBusSubscriber(modid = VEconomyMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class MilestoneHandlers {
@@ -34,11 +36,26 @@ public final class MilestoneHandlers {
     }
 
     @SubscribeEvent
-    public static void onChangeDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
-        if (!EconomyCore.isStarted() || event.getEntity() == null) {
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!EconomyCore.isStarted() || !(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
-        EconomyCore.milestones().recordDimensionVisit(event.getEntity().getUUID(),
-                event.getTo().location().toString());
+        // Вход — тоже посещение: измерение, в котором игрок появился, должно
+        // закрывать DIMENSION_VISIT-милстоуны без смены измерения.
+        recordAndGrantDimension(player, player.level().dimension().location().toString());
+    }
+
+    @SubscribeEvent
+    public static void onChangeDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+        if (!EconomyCore.isStarted() || !(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        recordAndGrantDimension(player, event.getTo().location().toString());
+    }
+
+    private static void recordAndGrantDimension(ServerPlayer player, String dimension) {
+        EconomyCore.milestones().recordDimensionVisit(player.getUUID(), dimension);
+        EconomyCore.milestones().grantForEvent(player.getUUID(),
+                MilestoneType.DIMENSION_VISIT, ServerMilestoneCheckContext.of(player));
     }
 }

@@ -162,14 +162,20 @@ public final class MilestoneService {
         if (!def.enabled()) {
             return MilestoneGrantResult.failed(MilestoneGrantResult.Status.DISABLED);
         }
-        if (activity.excludedFromRewards(playerId)) {
+        RewardExclusionStatus exclusion = activity.excludedFromRewards(playerId);
+        if (exclusion == RewardExclusionStatus.EXCLUDED) {
             return MilestoneGrantResult.failed(MilestoneGrantResult.Status.EXCLUDED);
         }
-        MilestoneCheckResult check = conditions.condition(def.type()).check(context, def);
-        if (check.status() != MilestoneCheckResult.Status.MET) {
-            return MilestoneGrantResult.failed(MilestoneGrantResult.Status.CONDITION_NOT_MET);
+        if (exclusion == RewardExclusionStatus.UNKNOWN) {
+            // Флаг проверить не удалось (ошибка базы): награду удерживаем (fail-closed).
+            return MilestoneGrantResult.failed(MilestoneGrantResult.Status.DATABASE_ERROR);
         }
-        return grant(playerId, def, null, "milestone:" + def.id(), null);
+        MilestoneCheckResult check = conditions.condition(def.type()).check(context, def);
+        return switch (check.status()) {
+            case MET -> grant(playerId, def, null, "milestone:" + def.id(), null);
+            case BAD_CONFIG -> MilestoneGrantResult.failed(MilestoneGrantResult.Status.BAD_CONFIG);
+            default -> MilestoneGrantResult.failed(MilestoneGrantResult.Status.CONDITION_NOT_MET);
+        };
     }
 
     /** Проверить только условие (админ-команда {@code check}); деньги не выдаются. */
@@ -361,6 +367,8 @@ public final class MilestoneService {
             ALREADY_CLAIMED,
             /** Условие автоматической проверки не выполнено. */
             CONDITION_NOT_MET,
+            /** Конфигурация milestone некорректна (неверный ресурс, незарегистрированный advancement). */
+            BAD_CONFIG,
             /** Игрок исключён из наград. */
             EXCLUDED,
             /** Milestone отключён. */
