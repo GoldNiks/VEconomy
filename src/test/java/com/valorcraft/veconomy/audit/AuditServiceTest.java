@@ -392,6 +392,34 @@ class AuditServiceTest {
     }
 
     @Test
+    void shutdownOneShotFlushOnDeadDatabaseReportsQueueInHealth() {
+        // Сценарий EconomyCore.shutdown(): база уже недоступна, вызывается ОДНА
+        // ограниченная попытка flushPending(). Она не виснет, очередь не теряется,
+        // а health сохраняет pendingRetries и lastError — так остановая экономика
+        // сможет залогировать «N событий не записано» вместо тихого успеха.
+        TestDb db = TestDb.create();
+        try {
+            UUID player = UUID.randomUUID();
+            db.database.close();
+
+            assertFalse(db.auditService.record(
+                    AuditEventType.ACCOUNT_FROZEN, AuditSeverity.INFO, player, null, null, "x").written());
+            assertEquals(1, db.auditService.health().pendingRetries());
+
+            // Одна попытка «выключения»: база закрыта — flush ничего не запишет.
+            int flushedOnShutdown = db.auditService.flushPending();
+            assertEquals(0, flushedOnShutdown, "закрытая база: flush не обещает записи");
+
+            AuditService.AuditHealth after = db.auditService.health();
+            assertEquals(1, after.pendingRetries(), "несброшенное событие видно в health");
+            assertNotNull(after.lastError(), "последняя ошибка доступна для диагностики");
+        } finally {
+            db.database.open(db.database.path(), db.settings);
+            db.close();
+        }
+    }
+
+    @Test
     void adminBalanceChangeRecordsAddRemoveSet() {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();

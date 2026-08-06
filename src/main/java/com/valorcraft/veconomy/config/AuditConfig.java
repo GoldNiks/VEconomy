@@ -19,6 +19,17 @@ public final class AuditConfig {
 
     public static final String FILE_NAME = "veconomy-audit.json";
 
+    /**
+     * Верхний предел числа проанализированных переводов за скан. Значение из конфига
+     * читается как {@code long}, но допустимый диапазон 1..{@value #MAX_TRANSFERS_PER_SCAN}
+     * гарантированно укладывается в {@code int}: LIMIT в SQL и обрезка списка не
+     * переполняются и никогда не получают отрицательное значение.
+     */
+    public static final int MAX_TRANSFERS_PER_SCAN = 1_000_000;
+
+    /** Безопасное значение при некорректной настройке (по умолчанию). */
+    public static final long DEFAULT_MAX_TRANSFERS_PER_SCAN = 200_000L;
+
     private static volatile Settings current = Settings.defaults();
 
     private AuditConfig() {}
@@ -81,8 +92,7 @@ public final class AuditConfig {
                 Settings.defaults().newAccountConcentrationSources());
         int repeatedDestinationTransfers = intRange(signals, "repeatedDestinationTransfers", 1, 100_000,
                 Settings.defaults().repeatedDestinationTransfers());
-        long maxTransfersPerScan = longRange(signals, "maxTransfersPerScan", 1, Long.MAX_VALUE,
-                Settings.defaults().maxTransfersPerScan());
+        long maxTransfersPerScan = scanLimit(signals);
         int retentionDays = intRange(signals, "retentionDays", 1, 3650,
                 Settings.defaults().retentionDays());
         return new Settings(enabled, windowMinutes, transferSpamCount, roundTripExchanges,
@@ -101,6 +111,34 @@ public final class AuditConfig {
             return value.getAsBoolean();
         }
         throw new IllegalArgumentException("поле \"" + field + "\" должно быть true/false");
+    }
+
+    /**
+     * Лимит числа транзакций за скан: читается как {@code long}, но бережно
+     * ограничивается диапазоном 1..{@value #MAX_TRANSFERS_PER_SCAN} — чтобы SQL
+     * {@code LIMIT} и обрезка списка никогда не получали отрицательное значение или
+     * переполнение {@code int}. Некорректное значение (не число, вне диапазона)
+     * НЕ прерывает загрузку конфига: используется безопасное
+     * {@value #DEFAULT_MAX_TRANSFERS_PER_SCAN} с предупреждением в лог.
+     */
+    private static long scanLimit(JsonObject signals) {
+        long fallback = Settings.defaults().maxTransfersPerScan();
+        if (!signals.has("maxTransfersPerScan")) {
+            return fallback;
+        }
+        JsonElement value = signals.get("maxTransfersPerScan");
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            VEconomyMod.LOGGER.warn("maxTransfersPerScan не число ({}), используется безопасное {}",
+                    value, fallback);
+            return fallback;
+        }
+        long parsed = value.getAsLong();
+        if (parsed < 1 || parsed > MAX_TRANSFERS_PER_SCAN) {
+            VEconomyMod.LOGGER.warn("maxTransfersPerScan={} вне диапазона [1, {}]; используется "
+                            + "безопасное {}", parsed, MAX_TRANSFERS_PER_SCAN, fallback);
+            return fallback;
+        }
+        return parsed;
     }
 
     private static int intRange(JsonObject object, String field, int min, int max, int fallback) {
@@ -162,9 +200,11 @@ public final class AuditConfig {
             int repeatedDestinationTransfers,
             /**
              * Верхний предел числа проанализированных переводов за один прогон скана
-             * (защита полного сканирования на очень больших журналах). При достижении
-             * предел в сводке явно помечается («ограничено») — неполный анализ не
-             * выдаётся за полный.
+             * (защита полного сканирования на очень больших журналах). Читается как
+             * {@code long}, но берётся из диапазона 1..{@value MAX_TRANSFERS_PER_SCAN};
+             * некорректное значение заменяется безопасным дефолтом с warning. При
+             * достижении предел в сводке явно помечается («ограничено») — неполный
+             * анализ не выдаётся за полный.
              */
             long maxTransfersPerScan,
 
@@ -173,7 +213,7 @@ public final class AuditConfig {
 
         public static Settings defaults() {
             return new Settings(true, 30, 12, 4, 500_000L, 7, 100_000L,
-                    100_000L, 5, 3, 10, 5, 10, 200_000L, 90);
+                    100_000L, 5, 3, 10, 5, 10, DEFAULT_MAX_TRANSFERS_PER_SCAN, 90);
         }
     }
 

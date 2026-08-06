@@ -197,6 +197,38 @@ public final class TransactionRepository {
     }
 
     /**
+     * Переводы одного игрока с окна {@code sinceMillis} с жёстким лимитом ПРЯМО В SQL:
+     * в память читается не больше {@code limit} строк (дополнительные для определения
+     * «ограничено» не выгружаются). Порядок стабильный и совпадает с полным вариантом:
+     * {@code created_at DESC}, затем {@code transaction_id DESC} — между прогонами окна
+     * результат воспроизводим, а {@code scanPlayer} не выгружает всю историю игрока.
+     */
+    public List<TransactionRow> transfersSinceForPlayerLimited(Connection connection, UUID playerId,
+                                                               long sinceMillis, int limit) {
+        List<TransactionRow> result = new ArrayList<>();
+        try (var statement = connection.prepareStatement(
+                "SELECT * FROM transactions WHERE transaction_type = ? AND created_at >= ? "
+                        + "AND (source_uuid = ? OR target_uuid = ?) "
+                        + "ORDER BY created_at DESC, transaction_id DESC LIMIT ?")) {
+            String uuid = playerId.toString();
+            statement.setString(1, TransactionType.PLAYER_TRANSFER.name());
+            statement.setLong(2, sinceMillis);
+            statement.setString(3, uuid);
+            statement.setString(4, uuid);
+            statement.setInt(5, limit);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    result.add(map(rs));
+                }
+            }
+            return result;
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения ограниченных переводов игрока "
+                    + playerId, e);
+        }
+    }
+
+    /**
      * Переводы, обе стороны которых входят в {@code participants} — ограниченный граф
      * вокруг игрока для {@code scanPlayer}: loop-эвристика получает дополнительные
      * рёбра (A→B→C→A виден при сканировании B), но НЕ весь журнал аудита. Отправители

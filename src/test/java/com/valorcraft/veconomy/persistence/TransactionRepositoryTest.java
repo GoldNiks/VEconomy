@@ -70,6 +70,48 @@ class TransactionRepositoryTest {
     }
 
     @Test
+    void transfersSinceForPlayerLimitedReadsOnlyLimitRows() {
+        try (TestDb db = TestDb.create()) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            long base = System.currentTimeMillis();
+            for (int i = 0; i < 7; i++) {
+                insertTransfer(db, alice, bob, 100, base + i);
+            }
+            // История одного игрока с лимитом прямо в SQL: даже при 7 строках в базе
+            // читается ровно лимит строк, а не весь журнал окна.
+            List<TransactionRow> limited = db.database.inTransaction(connection ->
+                    db.transactions.transfersSinceForPlayerLimited(connection, alice, base - 1, 3));
+            assertEquals(3, limited.size(), "персональный запрос тоже лимитируется в SQL");
+
+            // Остальные переводы остались в базе, и другие игроки не затронуты.
+            List<TransactionRow> all = db.database.inTransaction(connection ->
+                    db.transactions.transfersSinceForPlayer(connection, alice, base - 1));
+            assertEquals(7, all.size(), "журнал для игрока не тронут, полный набор читается");
+        }
+    }
+
+    @Test
+    void transfersSinceForPlayerLimitedOrderIsStableByTimeThenTransactionId() {
+        try (TestDb db = TestDb.create()) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            long base = System.currentTimeMillis();
+            insertTransfer(db, alice, bob, 100, base, "p-tx-1");
+            insertTransfer(db, alice, bob, 100, base, "p-tx-2");
+            insertTransfer(db, alice, bob, 100, base, "p-tx-3");
+            // Перевод между чужими игроками не попадает в выборку alice.
+            insertTransfer(db, UUID.randomUUID(), UUID.randomUUID(), 100, base, "other-1");
+
+            List<TransactionRow> rows = db.database.inTransaction(connection ->
+                    db.transactions.transfersSinceForPlayerLimited(connection, alice, base - 1, 5));
+            assertEquals(List.of("p-tx-3", "p-tx-2", "p-tx-1"), rows.stream()
+                            .map(TransactionRow::transactionId).toList(),
+                    "персональный порядок: created_at DESC, затем transaction_id DESC; чужие не включены");
+        }
+    }
+
+    @Test
     void transfersBetweenFindsEdgesAcrossParameterSlices() {
         try (TestDb db = TestDb.create()) {
             // > 2×200 участников: перевод между UUID из ПЕРВОГО и ВТОРОГО слайса

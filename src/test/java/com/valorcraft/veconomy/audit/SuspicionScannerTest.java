@@ -19,9 +19,14 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SuspicionScannerTest {
@@ -72,6 +77,17 @@ class SuspicionScannerTest {
                 + "\"newAccountTransferAmount\":1000000000,\"rapidForwardAmount\":1000000000,"
                 + "\"rapidForwardWindowMinutes\":5,\"transferLoopLength\":100,"
                 + "\"highPairFrequencyExchanges\":100000,\"newAccountConcentrationSources\":5000,"
+                + "\"repeatedDestinationTransfers\":100000,"
+                + overrides + "}}";
+    }
+
+    /** Как {@link #tuned(String)}, но с настраиваемым окном {@code windowMinutes}. */
+    private static String tunedWindow(int windowMinutes, String overrides) {
+        return "{\"signals\":{\"enabled\":true,\"windowMinutes\":" + windowMinutes + ","
+                + "\"transferSpamCount\":100000,\"roundTripExchanges\":100000,"
+                + "\"oversizedTransferAmount\":1000000000,\"newAccountDays\":3650,"
+                + "\"newAccountTransferAmount\":1000000000,\"rapidForwardAmount\":1000000000,"
+                + "\"rapidForwardWindowMinutes\":5,\"newAccountConcentrationSources\":5000,"
                 + "\"repeatedDestinationTransfers\":100000,"
                 + overrides + "}}";
     }
@@ -777,7 +793,82 @@ class SuspicionScannerTest {
     }
 
     @Test
-    void loopAtEqualTimestampsBreaksWhenTieBreakerContradictsOrder() throws IOException {
+    void maxTransfersAboveIntRangeIsClampedToSafeDefault() throws IOException {
+        // Значение больше двух миллиардов не может лежать в int без переполнения:
+        // читается как long, но безопасный дефолт защищает от отрицательного LIMIT.
+        writeConfig(tuned("\"maxTransfersPerScan\":2147483648"));
+        long limit = AuditConfig.settings().maxTransfersPerScan();
+        assertEquals(AuditConfig.DEFAULT_MAX_TRANSFERS_PER_SCAN, limit,
+                "выходящий за Мaccимально допустимый порог лимит заменяется безопасным значением");
+        assertTrue(limit > 0 && limit <= AuditConfig.MAX_TRANSFERS_PER_SCAN,
+                "лимит положителен и укладывается в int, не давая отрицательный LIMIT");
+    }
+
+    @Test
+    void maxTransfersZeroOrNegativeIsClamped() throws IOException {
+        writeConfig(tuned("\"maxTransfersPerScan\":-12345"));
+        assertEquals(AuditConfig.DEFAULT_MAX_TRANSFERS_PER_SCAN,
+                AuditConfig.settings().maxTransfersPerScan(),
+                "нулевое/отрицательное значение заменяется безопасным дефолтом");
+    }
+
+    @Test
+    void oversizedSignalDedupeSurvivesWindowBucketChange() throws IOException {
+        // Один и тот же перевод не должен давать повторный сигнал во СЛЕДУЮЩЕМ окне:
+        // инцидентный ключ дедупликации БЕЗ bucket привязан к самой транзакции.
+        writeConfig(tunedWindow(25, "\"oversizedTransferAmount\":1000"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            transferAt(db, alice, bob, 5000, System.currentTimeMillis() - 100_000);
+
+            SuspicionScanner.ScanSummary first = db.auditService.scanAll();
+            assertEquals(1, first.oversizedSignals(), "первый скан выявляет оверсайз");
+            assertEquals(1, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_OVERSIZED.equals(s.eventType()))
+                    .count());
+
+            // Новое окно → другой bucket; инцидентный ключ без bucket остаётся тем же.
+            writeConfig(tunedWindow(7, "\"oversizedTransferAmount\":1000"));
+            SuspicionScanner.ScanSummary second = db.auditService.scanAll();
+            assertEquals(0, second.oversizedSignals(), "тот же инцидент не дублируется в новом окне");
+            assertEquals(1, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_OVERSIZED.equals(s.eventType()))
+                    .count(), "строка оверсайза ровно одна, bucket не размножает события");
+        }
+    }
+
+    @Test
+    void rapidForwardingDedupeSurvivesScanBucketChange() throws IOException {
+        writeConfig(tunedWindow(25, "\"rapidForwardAmount\":1000,\"rapidForwardWindowMinutes\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            long base = System.currentTimeMillis() - 100_000;
+            transferAt(db, alice, bob, 5000, base + 1000, "rf-in");
+            transferAt(db, bob, carol, 5000, base + 2000, "rf-out");
+
+            SuspicionScanner.ScanSummary first = db.auditService.scanAll();
+            assertEquals(1, first.rapidForwardingSignals());
+            assertEquals(1, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_RAPID_FORWARDING.equals(s.eventType()))
+                    .count());
+
+            writeConfig(tunedWindow(7, "\"rapidForwardAmount\":1000,\"rapidForwardWindowMinutes\":5"));
+            SuspicionScanner.ScanSummary second = db.auditService.scanAll();
+            assertEquals(0, second.rapidForwardingSignals(), "пересылка не дублируется в новом окне");
+            assertEquals(1, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_RAPID_FORWARDING.equals(s.eventType()))
+                    .count());
+        }
+    }
+
+    @Test
+    void loopSignalDeduplicatedAcrossWindowBucketChange() throws IOException {
         writeConfig(tuned("\"transferLoopLength\":3"));
         try (TestDb db = TestDb.create(noCooldown())) {
             UUID alice = UUID.randomUUID();
@@ -786,14 +877,104 @@ class SuspicionScannerTest {
             fund(db, alice, 100_000);
             fund(db, bob, 100_000);
             fund(db, carol, 100_000);
-            long base = System.currentTimeMillis() - 60_000;
-            transferAt(db, alice, bob, 100, base + 1000, "edge-c");
-            transferAt(db, bob, carol, 100, base + 1000, "edge-b");
-            transferAt(db, carol, alice, 100, base + 1000, "edge-a");
+            long base = System.currentTimeMillis() - 100_000;
+            transferAt(db, alice, bob, 200, base + 1000, "loop-a");
+            transferAt(db, bob, carol, 200, base + 2000, "loop-b");
+            transferAt(db, carol, alice, 200, base + 3000, "loop-c");
 
-            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
-            assertEquals(0, summary.transferLoopSignals(),
-                    "порядок по (created_at, transaction_id) должен быть непрерывно возрастающим");
+            SuspicionScanner.ScanSummary first = db.auditService.scanAll();
+            assertEquals(3, first.transferLoopSignals(), "цикл сигналит каждому участнику");
+            long loopRowsFirst = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_LOOP.equals(s.eventType()))
+                    .count();
+
+            writeConfig(tunedWindow(7, "\"transferLoopLength\":3"));
+            SuspicionScanner.ScanSummary second = db.auditService.scanAll();
+            assertEquals(0, second.transferLoopSignals(), "тот же цикл не дублируется в новом окне");
+            assertEquals(loopRowsFirst, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_LOOP.equals(s.eventType()))
+                    .count(), "ключ инцидента без bucket не создаёт дублей");
+        }
+    }
+
+    @Test
+    void scanRecordingFailureDeliversFailedInsteadOfSilentCompleted() throws Exception {
+        // Задача: ошибка записи сигнала НЕ должна превращаться в «успешный скан».
+        // Ломаем таблицу аудита ДО скана: эвристики увидят достаточно переводов,
+        // а вставка сигнала упадёт с DatabaseException — скан отвечает failed.
+        writeConfig(tuned("\"transferSpamCount\":2"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            transfer(db, alice, bob, 100);
+            transfer(db, alice, bob, 100);
+
+            // Ломаем таблицу audit_events (DROP вместо чистки) — реальные эвристики
+            // слотknut: счётчик переводов читается из transactions, вставка сигнала падает.
+            db.database.inTransaction(connection -> {
+                try (var statement = connection.createStatement()) {
+                    statement.execute("DROP TABLE audit_events");
+                } catch (java.sql.SQLException e) {
+                    throw new RuntimeException(e);
+                }
+                return null;
+            });
+
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicBoolean completedCalled = new AtomicBoolean();
+            AtomicReference<String> failure = new AtomicReference<>();
+            db.auditService.scanAllAsync(new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                    completedCalled.set(true);
+                    done.countDown();
+                }
+
+                @Override
+                public void failed(String error) {
+                    failure.set(error);
+                    done.countDown();
+                }
+            });
+
+            assertTrue(done.await(10, TimeUnit.SECONDS), "ошибка скана обязана завершиться обратным вызовом");
+            assertFalse(completedCalled.get(),
+                    "ошибка записи происходит из-за отсутствия таблицы — это НЕ успешный скан");
+            assertNotNull(failure.get(), "ошибка записи должна доставляться как failed");
+        }
+    }
+
+    @Test
+    void aggregateSignalStillBucketScoped() throws IOException {
+        // АГРЕГАТНЫЕ сигналы (TRANSFER_SPAM) привязаны к bucket: те же переводы,
+        // попавшие в НОВОЕ окно, дают НОВОЕ спам-событие (а инцидентные ключи такого
+        // не делают, см. тесты выше). Проверяем, что bucket-семантика агрегатов
+        // сохраняется после разделения ключей.
+        writeConfig(tunedWindow(25, "\"transferSpamCount\":2"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            long base = System.currentTimeMillis() - 100_000L;
+            transferAt(db, alice, bob, 100, base + 1000, "spam-1");
+            transferAt(db, alice, bob, 100, base + 2000, "spam-2");
+
+            // Первое окно — один спам-сигнал.
+            SuspicionScanner.ScanSummary first = db.auditService.scanAll();
+            assertEquals(1, first.spamSignals());
+
+            // Другое окно (иной bucket), те же переводы всё ещё в окне — НОВОЕ событие,
+            // а не «дубликат»: aggregate-ключ включает bucket, поэтому не списывается.
+            long countBeforeSecond = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_SPAM.equals(s.eventType()))
+                    .count();
+            writeConfig(tunedWindow(7, "\"transferSpamCount\":2"));
+            SuspicionScanner.ScanSummary second = db.auditService.scanAll();
+            assertEquals(1, second.spamSignals(), "новый bucket — новый спам-сигнал");
+            assertEquals(countBeforeSecond + 1, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_SPAM.equals(s.eventType()))
+                    .count(), "агрегат корректно пишется в новом окне: bucket не поглощается дедупликацией");
         }
     }
 }

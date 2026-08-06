@@ -108,9 +108,20 @@ public final class SuspicionScanner {
         List<AccountRow> accountsFor;
         boolean limited = false;
         if (onlyPlayer != null) {
+            // Персональная выгрузка тоже ограничена ПРЯМО В SQL (LIMIT max+1): история
+            // одного игрока не читается целиком, лишние строки для определения «ограничено»
+            // в память не попадают. Граф участников по-прежнему ограничен MAX_GRAPH_PARTICIPANTS.
+            int limit = scanLimit(cfg.maxTransfersPerScan());
             transfers = database.inTransaction(connection -> {
-                List<TransactionRow> local =
-                        transactions.transfersSinceForPlayer(connection, onlyPlayer, windowStart);
+                List<TransactionRow> local = transactions.transfersSinceForPlayerLimited(
+                        connection, onlyPlayer, windowStart, limit + 1);
+                boolean playerLimited = local.size() > limit;
+                if (playerLimited) {
+                    local = local.subList(0, limit);
+                    VEconomyMod.LOGGER.warn("Персональный скан игрока {} ограничен: анализируются "
+                                    + "{} переводов окна (maxTransfersPerScan={})",
+                            onlyPlayer, local.size(), cfg.maxTransfersPerScan());
+                }
                 Set<UUID> participants = participantsOf(local);
                 participants.add(onlyPlayer);
                 // Ограниченный граф: рёбра, обе стороны которых входят в круг
@@ -135,7 +146,7 @@ public final class SuspicionScanner {
             // Лимит применяется ПРЯМО В SQL (LIMIT max+1): в память из базы читается
             // не больше max+1 переводов, а не вся история окна. Дополнительная строка
             // определяет признак «ограничено»; в анализ передаётся не больше max строк.
-            int limit = (int) cfg.maxTransfersPerScan();
+            int limit = scanLimit(cfg.maxTransfersPerScan());
             transfers = database.inTransaction(connection ->
                     transactions.transfersSinceLimited(connection, windowStart, limit + 1));
             limited = transfers.size() > limit;
@@ -328,7 +339,7 @@ public final class SuspicionScanner {
             if (writeSignal(AuditEventType.SIGNAL_OVERSIZED, sender, row.targetUuid(),
                     row.amountMinor(),
                     "tx=" + txId + ";amount=" + row.amountMinor() + ";to=" + row.targetUuid(),
-                    incidentDedupeKey("oversized", sender, bucket, txId))) {
+                    incidentDedupeKey("oversized", sender, txId))) {
                 written++;
             }
         }
@@ -432,7 +443,7 @@ public final class SuspicionScanner {
                                 + next.amountMinor() + ";deltaMillis=" + deltaMillis
                                 + ";windowMinutes=" + cfg.rapidForwardWindowMinutes()
                                 + ";to=" + next.targetUuid(),
-                        incidentDedupeKey("rapid", forwarder, bucket,
+                        incidentDedupeKey("rapid", forwarder,
                                 row.transactionId(), next.transactionId()))) {
                     written++;
                 }
@@ -490,13 +501,13 @@ public final class SuspicionScanner {
             if (onlyPlayer != null) {
                 if (incident.participants().contains(onlyPlayer)
                         && writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, onlyPlayer, null, null,
-                        details, incidentDedupeKey("loop", onlyPlayer, bucket, incidentKey))) {
+                        details, incidentDedupeKey("loop", onlyPlayer, incidentKey))) {
                     written++;
                 }
             } else {
                 for (UUID player : incident.participants()) {
                     if (writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, player, null, null,
-                            details, incidentDedupeKey("loop", player, bucket, incidentKey))) {
+                            details, incidentDedupeKey("loop", player, incidentKey))) {
                         written++;
                     }
                 }
@@ -707,20 +718,33 @@ private void findChronologicalCycles(UUID root, UUID current, OpStamp lastOp,
         return a.compareTo(b) < 0 ? a + "|" + b : b + "|" + a;
     }
 
-    /** Стабильный ключ окна для сигнала: (тип, игрок, окно) — дубликат окна игнорируется. */
+    /** Стабильный ключ окна для АГРЕГАТНОГО сигнала: (тип, игрок, окно) — дубликат окна игнорируется. */
     private static String dedupeKey(String prefix, UUID player, long bucket) {
         return prefix + "|" + player + "|" + bucket;
     }
 
     /**
-     * Инцидент-ключ ФИКСИРОВАННОЙ длины для дедупликации: каноническое описание
-     * (тип + субъект + окно + параметры, отличающие независимые инциденты вроде
-     * набора txId) хешируется SHA-256 и помещается в {@code dedupe_key} в формате
-     * {@code <kind>:<hex>}. Сырые списки UUID в столбец не кладутся — ключ гарантированно
-     * помещается в VARCHAR(256). Человекочитаемое описание остаётся в {@code details}.
+     * Ключ инцидента с привязкой к окну (bucket): используется агрегатными сигналами
+     * (ROUNDTRIP, HIGH_PAIR_FREQUENCY, REPEATED_DESTINATION), где сигнал описывает
+     * активность ПАРЫ ИМЕННО за текущее окно и новое окно должно дать новый ключ.
      */
     private static String incidentDedupeKey(String kind, UUID player, long bucket, String... parts) {
         StringBuilder canonical = new StringBuilder(kind).append('|').append(player).append('|').append(bucket);
+        for (String part : parts) {
+            canonical.append('|').append(part);
+        }
+        return kind + ':' + sha256Hex(canonical.toString());
+    }
+
+    /**
+     * Ключ КОНКРЕТНОГО инцидента БЕЗ bucket: (тип, игрок, идентификаторы транзакций).
+     * Для сигналов, привязанных к самим переводам (OVERSIZED, RAPID_FORWARDING,
+     * TRANSFER_LOOP), канонический состав txId уникален сам по себе — привязка к
+     * окну не нужна и опасна: этот же перевод, попадая в следующее окно, НЕ должен
+     * порождать повторный сигнал. SHA-256 даёт фиксированную длину (VARCHAR(256)).
+     */
+    private static String incidentDedupeKey(String kind, UUID player, String... parts) {
+        StringBuilder canonical = new StringBuilder(kind).append('|').append(player);
         for (String part : parts) {
             canonical.append('|').append(part);
         }
@@ -789,21 +813,33 @@ private void findChronologicalCycles(UUID root, UUID current, OpStamp lastOp,
     }
 
     /**
+     * Безопасный предел числа переводов за скан: конфиг уже ограничивает диапазон,
+     * но защитно кламапим и здесь, чтобы SQL {@code LIMIT} и {@code subList} никогда
+     * не получили отрицательное/нулевое значение или переполнение {@code int}.
+     */
+    private static int scanLimit(long configured) {
+        if (configured < 1) {
+            return 1;
+        }
+        return (int) Math.min(configured, com.valorcraft.veconomy.config.AuditConfig.MAX_TRANSFERS_PER_SCAN);
+    }
+
+    /**
      * Записать сигнал; уникальный частичный индекс {@code dedupe_key} отклоняет
-     * повторное событие того же окна (возвращает false, в сводку не попадает).
+     * повторное событие (возвращает false, в сводку не попадает). Дубль ключа —
+     * НЕ ошибка: события не создаётся, но сканирование продолжается честно.
+     * Настоящая ошибка БД (DatabaseException) НЕ проглатывается — она уходит
+     * вверх по стеку в {@code AuditService}, где фоновый скан завершается
+     * {@code failed}-колбэком, а не выдаёт «успешную» сводку с недозаписанными
+     * сигналами.
      */
     private boolean writeSignal(String type, UUID playerId, UUID counterparty, Long amount,
                                 String details, String dedupeKey) {
-        try {
-            return database.inTransaction(connection -> {
-                AuditRepository.InsertResult result = audit.insert(connection, database.dialect(),
-                        AuditEventRow.signal(type, playerId, counterparty, amount, details, dedupeKey));
-                return result.status() == AuditRepository.InsertResult.Status.INSERTED;
-            });
-        } catch (DatabaseException e) {
-            VEconomyMod.LOGGER.error("Ошибка записи аудит-сигнала {} для {}", type, playerId, e);
-            return false;
-        }
+        return database.inTransaction(connection -> {
+            AuditRepository.InsertResult result = audit.insert(connection, database.dialect(),
+                    AuditEventRow.signal(type, playerId, counterparty, amount, details, dedupeKey));
+            return result.status() == AuditRepository.InsertResult.Status.INSERTED;
+        });
     }
 
     /**
