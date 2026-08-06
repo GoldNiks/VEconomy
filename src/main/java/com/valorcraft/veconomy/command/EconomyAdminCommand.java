@@ -62,6 +62,31 @@ public final class EconomyAdminCommand {
                                                 .then(Commands.argument("amount", StringArgumentType.string())
                                                         .then(Commands.argument("reason", StringArgumentType.greedyString())
                                                                 .executes(EconomyAdminCommand::balanceSet))))))
+                        .then(Commands.literal("account")
+                                .then(Commands.literal("info")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .executes(EconomyAdminCommand::accountInfo)))
+                                .then(Commands.literal("freeze")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .then(Commands.argument("reason", StringArgumentType.greedyString())
+                                                        .executes(context -> accountSetStatus(
+                                                                context, AccountStatus.FROZEN)))))
+                                .then(Commands.literal("unfreeze")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .then(Commands.argument("reason", StringArgumentType.greedyString())
+                                                        .executes(context -> accountSetStatus(
+                                                                context, AccountStatus.ACTIVE)))))
+                                .then(Commands.literal("exclude-rewards")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .executes(context -> accountSetExcluded(context, true))))
+                                .then(Commands.literal("include-rewards")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .executes(context -> accountSetExcluded(context, false)))))
                         .then(Commands.literal("stats")
                                 .executes(EconomyAdminCommand::stats))
                         .then(Commands.literal("milestone")
@@ -240,6 +265,120 @@ public final class EconomyAdminCommand {
                     Component.translatable("error.limit").withStyle(ChatFormatting.RED));
             default -> source.sendFailure(
                     Component.translatable("error.internal").withStyle(ChatFormatting.RED));
+        }
+        return 1;
+    }
+
+    // ---------------------------------------------------------------- account
+
+    private static int accountInfo(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        Optional<BalanceSnapshot> account = EconomyCore.accounts().getAccount(target.uuid());
+        boolean excluded = EconomyCore.activity().excludedFromRewards(target.uuid());
+        if (account.isEmpty() && !excluded) {
+            source.sendFailure(Component.translatable("admin.balance.none", target.name())
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        source.sendSuccess(() -> Component.translatable("admin.account.info.title", target.name())
+                .withStyle(ChatFormatting.GOLD), false);
+        source.sendSuccess(() -> Component.translatable("admin.account.info.uuid",
+                target.uuid()).withStyle(ChatFormatting.YELLOW), false);
+        String balance = account.isPresent()
+                ? EconomyCore.formatter().format(account.get().balanceMinor()) : "—";
+        String status = account.isPresent() ? account.get().status().name() : "NO_ACCOUNT";
+        String excludedText = excluded ? "admin.yes" : "admin.no";
+        String frozen = account.isPresent() && account.get().status() == AccountStatus.FROZEN
+                ? "admin.yes" : "admin.no";
+        source.sendSuccess(() -> Component.translatable("admin.account.info.balance", balance)
+                .withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> Component.translatable("admin.account.info.status", status)
+                .withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> Component.translatable("admin.account.info.frozen",
+                Component.translatable(frozen)).withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> Component.translatable("admin.account.info.excluded",
+                Component.translatable(excludedText)).withStyle(ChatFormatting.YELLOW), false);
+        if (account.isPresent()) {
+            source.sendSuccess(() -> Component.translatable("admin.account.info.created",
+                    formatTimestamp(account.get().createdAt())).withStyle(ChatFormatting.GRAY), false);
+            source.sendSuccess(() -> Component.translatable("admin.account.info.updated",
+                    formatTimestamp(account.get().updatedAt())).withStyle(ChatFormatting.GRAY), false);
+        }
+        EconomyCore.activity().info(target.uuid()).ifPresent(activityInfo -> {
+            source.sendSuccess(() -> Component.translatable("admin.account.info.online",
+                    formatDuration(activityInfo.totalOnlineSeconds())).withStyle(ChatFormatting.GRAY), false);
+            source.sendSuccess(() -> Component.translatable("admin.account.info.active",
+                    formatDuration(activityInfo.totalActiveSeconds())).withStyle(ChatFormatting.GRAY), false);
+            if (activityInfo.lastDimension() != null) {
+                source.sendSuccess(() -> Component.translatable("admin.account.info.dimension",
+                        activityInfo.lastDimension()).withStyle(ChatFormatting.GRAY), false);
+            }
+        });
+        return 1;
+    }
+
+    private static int accountSetStatus(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                        AccountStatus status) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        String reason = StringArgumentType.getString(context, "reason");
+        if (reason.isBlank()) {
+            return invalidReason(source);
+        }
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        if (target.uuid().equals(TreasuryService.TREASURY_UUID)) {
+            source.sendFailure(Component.translatable("admin.balance.treasury").withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
+                ? p.getUUID() : null;
+        TransactionResult result = status == AccountStatus.FROZEN
+                ? EconomyCore.accounts().freeze(target.uuid(), reason)
+                : EconomyCore.accounts().unfreeze(target.uuid(), reason);
+        if (result.isSuccess()) {
+            String verb = status == AccountStatus.FROZEN ? "admin.account.frozen" : "admin.account.unfrozen";
+            source.sendSuccess(() -> Component.translatable(verb, target.name())
+                    .withStyle(ChatFormatting.GREEN), true);
+            if (EconomyCore.settings().broadcastAdminChanges
+                    && source.getServer() != null && source.getServer().getPlayerList() != null) {
+                source.getServer().getPlayerList().broadcastSystemMessage(
+                        Component.translatable(status == AccountStatus.FROZEN
+                                ? "notify.admin.frozen" : "notify.admin.unfrozen", target.name())
+                                .withStyle(ChatFormatting.GOLD), false);
+            }
+        } else if (result.status() == TransactionResult.Status.ACCOUNT_NOT_FOUND) {
+            return notFound(source, playerInput);
+        } else {
+            source.sendFailure(Component.translatable("error.internal").withStyle(ChatFormatting.RED));
+        }
+        return 1;
+    }
+
+    private static int accountSetExcluded(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                          boolean excluded) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        EconomyCore.activity().setExcludedFromRewards(target.uuid(), excluded);
+        String verb = excluded ? "admin.account.excluded" : "admin.account.included";
+        source.sendSuccess(() -> Component.translatable(verb, target.name())
+                .withStyle(ChatFormatting.GREEN), true);
+        if (EconomyCore.settings().broadcastAdminChanges
+                && source.getServer() != null && source.getServer().getPlayerList() != null) {
+            source.getServer().getPlayerList().broadcastSystemMessage(
+                    Component.translatable(excluded ? "notify.admin.excluded" : "notify.admin.included",
+                            target.name()).withStyle(ChatFormatting.GOLD), false);
         }
         return 1;
     }

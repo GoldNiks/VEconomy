@@ -204,6 +204,33 @@ public final class ActivityService {
         }
     }
 
+    /**
+     * Установить флаг исключения из наград (админ-команда {@code exclude-rewards}/
+     * {@code include-rewards}). Работает и для игроков без записи активности:
+     * создаётся минимальная запись. Возвращает новое значение флага.
+     */
+    public boolean setExcludedFromRewards(UUID playerId, boolean excluded) {
+        try {
+            return database.inTransaction(connection -> {
+                PlayerActivityRow existing = repository.find(connection, playerId).orElse(null);
+                long now = System.currentTimeMillis();
+                PlayerActivityRow row = existing != null
+                        ? new PlayerActivityRow(existing.playerId(), existing.firstSeenAt(),
+                                existing.lastSeenAt(), existing.totalOnlineSeconds(),
+                                existing.totalActiveSeconds(), existing.totalAfkSeconds(),
+                                existing.currentWeekId(), existing.lastActivityAt(),
+                                existing.lastDimension(), excluded)
+                        : new PlayerActivityRow(playerId, now, now, 0L, 0L, 0L,
+                                WeekId.current(), now, "minecraft:overworld", excluded);
+                repository.upsert(connection, database.dialect(), row);
+                return excluded;
+            });
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка установки флага исключения {}", playerId, e);
+            return false;
+        }
+    }
+
     public Optional<ActivityInfo> info(UUID playerId) {
         try {
             return database.inTransaction(connection -> {

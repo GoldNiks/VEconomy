@@ -476,6 +476,21 @@ class MilestoneServiceTest {
     }
 
     @Test
+    void frozenAccountRejectsMilestoneGrant() throws IOException {
+        try (TestDb db = TestDb.create(milestonesEnabled())) {
+            loadMilestones(db, json(EXTERNAL_DEF));
+            UUID player = UUID.randomUUID();
+            db.accountService.createOrTouch(player, "Frozen");
+            db.accountService.freeze(player, "модерация");
+
+            var result = db.milestoneService.grantExternal(player, "event_bonus", "key-1");
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.ACCOUNT_FROZEN, result.status());
+            assertEquals(0, db.accountService.getBalance(player));
+            assertFalse(db.milestoneService.isClaimed(player, "event_bonus"));
+        }
+    }
+
+    @Test
     void databaseErrorLeavesNoMoneyAndNoClaim() throws IOException {
         try (TestDb db = TestDb.create(milestonesEnabled())) {
             loadMilestones(db, json(EXTERNAL_DEF));

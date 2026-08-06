@@ -99,6 +99,13 @@ class AccountServiceTest {
     }
 
     @Test
+    void freezeMissingAccountReturnsNotFound() {
+        UUID player = UUID.randomUUID();
+        assertEquals(TransactionResult.Status.ACCOUNT_NOT_FOUND,
+                db.accountService.freeze(player, "модерация").status());
+    }
+
+    @Test
     void duplicateIdempotencyKeyDoesNotDoubleCredit() {
         UUID player = UUID.randomUUID();
         TransactionContext first = TransactionContext.of(TransactionType.MILESTONE_REWARD, null, "этап", "milestone:welcome");

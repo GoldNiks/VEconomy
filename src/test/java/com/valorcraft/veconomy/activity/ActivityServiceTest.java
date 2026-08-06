@@ -51,6 +51,43 @@ class ActivityServiceTest {
     }
 
     @Test
+    void exclusionFlagSetAndCleared() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+
+            assertFalse(db.activityService.excludedFromRewards(player));
+            assertTrue(db.activityService.setExcludedFromRewards(player, true));
+            assertTrue(db.activityService.excludedFromRewards(player));
+            assertFalse(db.activityService.setExcludedFromRewards(player, false));
+            assertFalse(db.activityService.excludedFromRewards(player));
+        }
+    }
+
+    @Test
+    void exclusionFlagPersistsAcrossPersist() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, 1_000_000L);
+            db.activityService.sampleAt(1_001_000L);
+            db.activityService.setExcludedFromRewards(player, true);
+            db.activityService.persistAll();
+
+            assertTrue(db.activityService.excludedFromRewards(player));
+        }
+    }
+
+    @Test
+    void exclusionFlagWorksWithoutActivityRow() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+
+            // Игрок без записи активности: флаг создаёт минимальную запись.
+            assertTrue(db.activityService.setExcludedFromRewards(player, true));
+            assertTrue(db.activityService.excludedFromRewards(player));
+        }
+    }
+
+    @Test
     void sessionAcrossLocalMidnightSplitsIntoTwoDayRows() {
         // понедельник 23:30 → вторник 00:30 (Берлин, UTC+2): час сессии делится поровну
         try (TestDb db = TestDb.create()) {

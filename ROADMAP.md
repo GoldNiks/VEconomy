@@ -33,14 +33,14 @@
 |---------|--------|------------|
 | Учёт онлайна/активного/AFK времени | DONE | `ActivityService`, анти-AFK по перемещению |
 | Безопасное сохранение активности | DONE | сброс счётчиков только после commit, pending при ошибке, слитие несохранённых выходов |
-| PLAYTIME milestones | PARTIAL | работают пороги по активному времени; нет других типов и админ-команд |
-| ADVANCEMENT milestones | NOT IMPLEMENTED | — |
-| DIMENSION_VISIT milestones | NOT IMPLEMENTED | нет таблицы посещённых измерений |
-| EXTERNAL milestones | NOT IMPLEMENTED | нет trusted API/команды |
-| Реестр условий milestone | NOT IMPLEMENTED | есть только связка `checkPlayer` → пороги |
+| PLAYTIME milestones | DONE | пороги по активному времени из TOML, id `playtime:<секунды>` |
+| ADVANCEMENT milestones | DONE | событие `AdvancementEarnEvent`, живой прогресс игрока |
+| DIMENSION_VISIT milestones | DONE | `dimension_visits`, факт входа в измерение |
+| EXTERNAL milestones | DONE | trusted-выдача через `grantExternal` (KubeJS/команда) |
+| Реестр условий milestone | DONE | `MilestoneConditionRegistry`, без switch по типам |
 | FTB Quests награды | DONE | custom reward + автоначисление по главам, идемпотентно |
 | Компенсация за прошлые квесты | DONE | `compensatePastQuests`, разовый флаг |
-| KubeJS биндинг | PARTIAL | деньги/эскроу/компенсация есть; milestone bridge нет |
+| KubeJS биндинг | DONE | деньги/эскроу/компенсация + `milestoneGrant`/`milestoneClaimed` |
 | Недельная награда | DONE | авторазмер фонда, очки, дни, замороженные планы, retry, остаток в казну |
 | `/money weekly` | DONE | конкретные причины, плановая выплата |
 | FTB Teams не владеет балансом | DONE | награды делятся по участникам, баланс личный |
@@ -50,11 +50,11 @@
 | Область | Статус | Примечание |
 |---------|--------|------------|
 | `AccountStatus` (ACTIVE/FROZEN/SYSTEM) | DONE | колонка `status` в `accounts` |
-| `freeze`/`unfreeze` методы | DONE | `AccountService.changeStatus`; команд нет |
-| `excluded_from_rewards` | PARTIAL | есть колонка в `player_activity`, читается фондом; нет setter/команд |
-| Админ-команды `account info/freeze/unfreeze/exclude-rewards` | NOT IMPLEMENTED | Этап 2 |
+| `freeze`/`unfreeze` методы | DONE | `AccountService.changeStatus`; команды `account freeze/unfreeze` |
+| `excluded_from_rewards` | DONE | setter в `ActivityService`, команды `exclude-rewards`/`include-rewards` |
+| Админ-команды `account info/freeze/unfreeze/exclude-rewards` | DONE | Этап 2 |
 | Заморозка блокирует `/pay`/списания | DONE | `checkDisabled` в `AccountService` |
-| Заморозка исключает из weekly/автоматических наград | PARTIAL | из weekly — да, из milestones — нет (Этап 1) |
+| Заморозка исключает из weekly/автоматических наград | DONE | из weekly — да, из milestones — да (ACCOUNT_FROZEN) |
 
 ## Аудит и сигналы
 
