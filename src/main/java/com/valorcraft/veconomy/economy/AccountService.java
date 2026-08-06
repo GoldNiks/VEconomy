@@ -163,18 +163,23 @@ public final class AccountService {
                 }
                 long now = System.currentTimeMillis();
                 accounts.setStatus(connection, playerId, status, now);
+                // Аудит — в той же транзакции, что и смена статуса: событие не
+                // переживёт откат статуса и не появится после сбоя («статус сменился,
+                // а в журнале пусто» исключено).
+                if (audit != null) {
+                    audit.recordIn(connection,
+                            status == AccountStatus.FROZEN
+                                    ? AuditEventType.ACCOUNT_FROZEN : AuditEventType.ACCOUNT_UNFROZEN,
+                            AuditSeverity.INFO, playerId, actorId, AuditActorType.of(actorId),
+                            null, "reason=" + (reason == null ? "" : reason), null);
+                }
                 return success(null, account.get().balanceMinor(), -1L);
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка смены статуса аккаунта {}", playerId, e);
             return failed(TransactionResult.Status.DATABASE_ERROR);
         }
-        if (result.isSuccess() && audit != null) {
-            // Запись аудита — отдельная транзакция после подтверждённой смены статуса.
-            audit.record(status == AccountStatus.FROZEN
-                            ? AuditEventType.ACCOUNT_FROZEN : AuditEventType.ACCOUNT_UNFROZEN,
-                    AuditSeverity.INFO, playerId, actorId, AuditActorType.of(actorId),
-                    null, "reason=" + (reason == null ? "" : reason));
+        if (result.isSuccess()) {
             VEconomyMod.LOGGER.info("Аккаунт {} {} (причина: {})", playerId, status, reason);
         }
         return result;
@@ -285,6 +290,12 @@ public final class AccountService {
         }
         try {
             return database.inTransaction(connection -> {
+                // Прямая установка баланса тоже идемпотентна: повторный вызов с тем же
+                // ключом не создаёт второй ledger-записи и второго аудит-события.
+                TransactionResult duplicate = checkIdempotency(connection, context);
+                if (duplicate != null) {
+                    return duplicate;
+                }
                 AccountRow account = accounts.find(connection, playerId)
                         .orElse(null);
                 if (account == null) {

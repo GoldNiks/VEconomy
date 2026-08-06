@@ -5,12 +5,18 @@ import com.valorcraft.veconomy.persistence.AccountRepository;
 import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
 import com.valorcraft.veconomy.persistence.TransactionRepository;
+import com.valorcraft.veconomy.util.ServerHolder;
+import net.minecraft.server.MinecraftServer;
 
 import java.sql.Connection;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.function.Supplier;
 
 /**
  * События аудита: административные действия, автоматические начисления и сигналы
@@ -113,8 +119,10 @@ public final class AuditService {
 
     private boolean write(AuditEventRow row) {
         try {
-            database.inTransaction(connection -> audit.insert(connection, database.dialect(), row));
-            return true;
+            AuditRepository.InsertResult result = database.inTransaction(connection ->
+                    audit.insert(connection, database.dialect(), row));
+            return result.status() == AuditRepository.InsertResult.Status.INSERTED
+                    || result.status() == AuditRepository.InsertResult.Status.DUPLICATE;
         } catch (DatabaseException e) {
             failedWrites++;
             lastError = e.toString();
@@ -205,32 +213,131 @@ public final class AuditService {
 
     // ------------------------------------------------------------ scanning
 
-    private final Object scanLock = new Object();
-    private boolean scanInProgress = false;
+    /**
+     * Асинхронное сканирование не выполняется на потоке Minecraft: тяжелые запросы
+     * и эвристики крутятся на отдельном daemon-потоке, а результат доставляется
+     * обратно в поток сервера через {@link ServerHolder} (либо сразу на рабочем
+     * потоке вне живого сервера, например в тестах). Если скан уже идёт, повторный
+     * запрос не ставится в очередь и не ждёт — ему немедленно отвечают BUSY
+     * (запущенное сканирование продолжается; клиент может повторить позже).
+     */
+    private final Object scanGate = new Object();
+    private ScanPhase scanPhase = ScanPhase.IDLE;
+    private final ExecutorService scanExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "veconomy-audit-scan");
+        thread.setDaemon(true);
+        return thread;
+    });
 
-    /** Запустить эвристики по всем игрокам (single-flight: параллельный вызов пропускается). */
+    public enum ScanPhase {
+        IDLE, RUNNING
+    }
+
+    /** Текущая фаза сканирования (для диагностики/статуса). */
+    public ScanPhase scanPhase() {
+        synchronized (scanGate) {
+            return scanPhase;
+        }
+    }
+
+    /** Результат приёма асинхронного скана. */
+    public enum ScanAccept {
+        /** Запущен в фоне; результат придёт через {@link ScanOutcome}. */
+        ACCEPTED,
+        /** Уже идёт другое сканирование — запрос отклонён. */
+        BUSY
+    }
+
+    /** Доставка результата фонового сканирования. */
+    public interface ScanOutcome {
+        void completed(SuspicionScanner.ScanSummary summary);
+
+        void failed(String error);
+    }
+
+    /** Запустить эвристики по всем игрокам в фоне (не блокирует поток вызова). */
+    public ScanAccept scanAllAsync(ScanOutcome outcome) {
+        return submitScan(scanner::scanAll, outcome);
+    }
+
+    /** Запустить эвристики по одному игроку в фоне (не блокирует поток вызова). */
+    public ScanAccept scanPlayerAsync(UUID playerId, ScanOutcome outcome) {
+        return submitScan(() -> scanner.scanPlayer(playerId), outcome);
+    }
+
+    /** Пакетно-приватный вход для тестов с произвольной работой. */
+    ScanAccept submitScan(Supplier<SuspicionScanner.ScanSummary> work, ScanOutcome outcome) {
+        synchronized (scanGate) {
+            if (scanPhase == ScanPhase.RUNNING) {
+                return ScanAccept.BUSY;
+            }
+            scanPhase = ScanPhase.RUNNING;
+        }
+        try {
+            scanExecutor.execute(() -> runScan(work, outcome));
+        } catch (RejectedExecutionException e) {
+            synchronized (scanGate) {
+                scanPhase = ScanPhase.IDLE;
+            }
+            VEconomyMod.LOGGER.error("Поток сканирования аудита недоступен", e);
+            return ScanAccept.BUSY;
+        }
+        return ScanAccept.ACCEPTED;
+    }
+
+    private void runScan(Supplier<SuspicionScanner.ScanSummary> work, ScanOutcome outcome) {
+        SuspicionScanner.ScanSummary summary = SuspicionScanner.ScanSummary.zero();
+        String error = null;
+        try {
+            summary = work.get();
+        } catch (Throwable t) {
+            error = t.toString();
+            VEconomyMod.LOGGER.error("Ошибка фонового сканирования аудита", t);
+        } finally {
+            synchronized (scanGate) {
+                scanPhase = ScanPhase.IDLE;
+            }
+        }
+        final SuspicionScanner.ScanSummary result = summary;
+        final String failure = error;
+        Runnable delivery = () -> {
+            if (failure != null) {
+                outcome.failed(failure);
+            } else {
+                outcome.completed(result);
+            }
+        };
+        MinecraftServer server = ServerHolder.get();
+        if (server != null) {
+            server.execute(delivery);
+        } else {
+            delivery.run();
+        }
+    }
+
+    /** Запустить эвристики по всем игрокам (синхронно; single-flight: параллельный вызов пропускается). */
     public SuspicionScanner.ScanSummary scanAll() {
         return guardedScan(scanner::scanAll);
     }
 
-    /** Запустить эвристики по одному игроку (single-flight; данные — только этого игрока). */
+    /** Запустить эвристики по одному игроку (синхронно; single-flight). */
     public SuspicionScanner.ScanSummary scanPlayer(UUID playerId) {
         return guardedScan(() -> scanner.scanPlayer(playerId));
     }
 
     private SuspicionScanner.ScanSummary guardedScan(
-            java.util.function.Supplier<SuspicionScanner.ScanSummary> work) {
-        synchronized (scanLock) {
-            if (scanInProgress) {
+            Supplier<SuspicionScanner.ScanSummary> work) {
+        synchronized (scanGate) {
+            if (scanPhase == ScanPhase.RUNNING) {
                 return SuspicionScanner.ScanSummary.zero();
             }
-            scanInProgress = true;
+            scanPhase = ScanPhase.RUNNING;
         }
         try {
             return work.get();
         } finally {
-            synchronized (scanLock) {
-                scanInProgress = false;
+            synchronized (scanGate) {
+                scanPhase = ScanPhase.IDLE;
             }
         }
     }

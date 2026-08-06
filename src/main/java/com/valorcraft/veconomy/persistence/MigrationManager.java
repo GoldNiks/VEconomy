@@ -4,6 +4,7 @@ import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.economy.TreasuryService;
 
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -13,6 +14,12 @@ import java.util.List;
  * Миграции схемы базы данных. Версия хранится в {@code PRAGMA user_version} (SQLite)
  * либо в таблице {@code meta} (MySQL). Каждая миграция идемпотентна (CREATE IF NOT EXISTS,
  * INSERT IGNORE), поэтому безопасно перезапускать после частичного выполнения.
+ * <p>
+ * {@code ALTER TABLE} выполняются по частям с проверкой существования столбца/индекса
+ * через JDBC-metadata (портируется на оба диалекта): если сбой прервал миграцию на
+ * полпути (в MySQL DDL нетранзакционен и часть изменений могла сохраниться), повторный
+ * запуск не спотыкается о «Duplicate column/index name», а доводит схему до целевой
+ * версии, не трогая уже применённые объекты и не теряя данные.
  */
 public final class MigrationManager {
 
@@ -422,11 +429,10 @@ public final class MigrationManager {
             int target = i + 1;
             if (dialect == DatabaseManager.Dialect.MYSQL) {
                 // DDL в MySQL не транзакционно (implicit commit), поэтому операторы
-                // выполняем по одному; все они идемпотентны, повторный запуск безопасен.
-                try (Statement statement = connection.createStatement()) {
-                    for (String sql : splitStatements(migrations[i])) {
-                        statement.execute(sql);
-                    }
+                // выполняем по одному; ALTER-части проверяются на уже существующие
+                // объекты, повторный запуск безопасен даже после частичного сбоя.
+                try {
+                    executeScript(connection, migrations[i]);
                     seed(connection, target, dialect);
                     writeVersion(connection, target, dialect);
                 } catch (SQLException e) {
@@ -435,11 +441,7 @@ public final class MigrationManager {
             } else {
                 try {
                     connection.setAutoCommit(false);
-                    try (Statement statement = connection.createStatement()) {
-                        for (String sql : splitStatements(migrations[i])) {
-                            statement.execute(sql);
-                        }
-                    }
+                    executeScript(connection, migrations[i]);
                     seed(connection, target, dialect);
                     writeVersion(connection, target, dialect);
                     connection.commit();
@@ -458,6 +460,101 @@ public final class MigrationManager {
                 }
             }
         }
+    }
+
+    /**
+     * Выполнить скрипт миграции. Не-ALTER операторы идемпотентны (CREATE IF NOT EXISTS)
+     * и выполняются как есть; ALTER TABLE разбивается на частицы, каждая из которых
+     * применяется только если целевого столбца/индекса ещё нет.
+     */
+    private static void executeScript(Connection connection, String script) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            for (String sql : splitStatements(script)) {
+                if (sql.regionMatches(true, 0, "ALTER TABLE", 0, 11)) {
+                    for (String guarded : splitAlterStatements(connection, sql)) {
+                        statement.execute(guarded);
+                    }
+                } else {
+                    statement.execute(sql);
+                }
+            }
+        }
+    }
+
+    /**
+     * Разбить один {@code ALTER TABLE ... ADD COLUMN a, ADD KEY b, ...} на отдельные
+     * операторы и исключить те, чей объект уже существует (частично применённая
+     * миграция после сбоя). Неизвестные (не ADD COLUMN/ADD KEY/ADD INDEX) части
+     * выполняются как есть.
+     */
+    private static List<String> splitAlterStatements(Connection connection, String statement)
+            throws SQLException {
+        String rest = statement.substring("ALTER TABLE".length()).trim();
+        int boundary = rest.indexOf(' ');
+        if (boundary < 0) {
+            throw new SQLException("Некорректный ALTER TABLE: " + statement);
+        }
+        String table = rest.substring(0, boundary).trim();
+        String actions = rest.substring(boundary).trim();
+        List<String> result = new ArrayList<>();
+        for (String raw : actions.split(",")) {
+            String action = raw.trim();
+            if (action.isEmpty()) {
+                continue;
+            }
+            if (action.regionMatches(true, 0, "ADD COLUMN ", 0, 11)) {
+                String columnName = firstToken(action.substring(11).trim());
+                if (columnExists(connection, table, columnName)) {
+                    continue;
+                }
+            } else if (isAddIndex(action)) {
+                String indexName = firstToken(action.substring(action.indexOf(' ') + 1).trim());
+                if (indexExists(connection, table, indexName)) {
+                    continue;
+                }
+            }
+            result.add("ALTER TABLE " + table + " " + action);
+        }
+        return result;
+    }
+
+    private static boolean isAddIndex(String action) {
+        String a = action.toLowerCase(java.util.Locale.ROOT);
+        return a.startsWith("add key ") || a.startsWith("add index ")
+                || a.startsWith("add unique key ") || a.startsWith("add unique index ");
+    }
+
+    private static String firstToken(String text) {
+        int space = text.indexOf(' ');
+        int end = space < 0 ? text.length() : space;
+        return text.substring(0, end).trim();
+    }
+
+    /** Существует ли столбец {@code column} в таблице {@code table} (любой диалект). */
+    private static boolean columnExists(Connection connection, String table, String column)
+            throws SQLException {
+        try (ResultSet rs = connection.getMetaData().getColumns(null, null, table, null)) {
+            while (rs.next()) {
+                if (column.equalsIgnoreCase(rs.getString("COLUMN_NAME"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Существует ли индекс с именем {@code index} у таблицы {@code table}. */
+    private static boolean indexExists(Connection connection, String table, String index)
+            throws SQLException {
+        try (ResultSet rs = connection.getMetaData().getIndexInfo(null, null, table, false, false)) {
+            while (rs.next()) {
+                String name = rs.getString("INDEX_NAME");
+                if (name != null && index.equalsIgnoreCase(name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** Текущая версия схемы. */

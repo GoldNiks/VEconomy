@@ -10,9 +10,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -236,9 +240,18 @@ class AuditServiceTest {
             assertTrue(db.auditService.openSignals(10).isEmpty());
             assertEquals(1, db.auditService.countByStatus(ResolutionStatus.RESOLVED));
 
-            assertTrue(db.auditService.resolve(signal.id(), ResolutionStatus.DISMISSED,
+            assertFalse(db.auditService.resolve(signal.id(), ResolutionStatus.DISMISSED,
+                            "admin", "ложное срабатывание"),
+                    "уже обработанный сигнал нельзя изменить повторно (только OPEN)");
+
+            db.auditService.record(AuditEventType.SIGNAL_ROUNDTRIP, AuditSeverity.SUSPICIOUS,
+                    player, null, null, "круг");
+            AuditEventRow second = db.auditService.signals(10).stream()
+                    .filter(AuditEventRow::open)
+                    .findFirst().orElseThrow();
+            assertTrue(db.auditService.resolve(second.id(), ResolutionStatus.DISMISSED,
                     "admin", "ложное срабатывание"));
-            AuditEventRow dismissed = db.auditService.event(signal.id()).orElseThrow();
+            AuditEventRow dismissed = db.auditService.event(second.id()).orElseThrow();
             assertEquals(ResolutionStatus.DISMISSED.name(), dismissed.status());
             assertEquals(1, db.auditService.countByStatus(ResolutionStatus.DISMISSED));
 
@@ -258,10 +271,14 @@ class AuditServiceTest {
                 repository.insert(connection, db.database.dialect(), row);
                 return null;
             });
-            long secondInsert = db.database.inTransaction(connection ->
-                    repository.insert(connection, db.database.dialect(), row));
+            long secondInsertId = db.database.inTransaction(connection ->
+                    repository.insert(connection, db.database.dialect(), row).id());
 
-            assertEquals(-1L, secondInsert, "повторная вставка с тем же ключом должна игнорироваться");
+            assertEquals(-1L, secondInsertId, "повторная вставка с тем же ключом не создаёт строки");
+            assertEquals(AuditRepository.InsertResult.Status.DUPLICATE,
+                    db.database.inTransaction(connection ->
+                            repository.insert(connection, db.database.dialect(), row).status()),
+                    "повторная вставка должна быть распознана как дубликат");
             assertEquals(1, db.auditService.count());
         }
     }
@@ -439,11 +456,102 @@ class AuditServiceTest {
                 repository.insert(connection, db.database.dialect(), signal);
                 return null;
             });
-            long second = db.database.inTransaction(connection ->
+            AuditRepository.InsertResult second = db.database.inTransaction(connection ->
                     repository.insert(connection, db.database.dialect(), signal));
 
-            assertEquals(-1L, second, "повторная вставка того же окна игнорируется");
+            assertEquals(AuditRepository.InsertResult.Status.DUPLICATE, second.status(),
+                    "повторная вставка того же окна распознаётся как дубликат");
             assertEquals(1, db.auditService.count());
+        }
+    }
+
+    @Test
+    void asynchronousScanCompletesAndDeliversOutcome() throws InterruptedException {
+        try (TestDb db = TestDb.create()) {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<SuspicionScanner.ScanSummary> received = new AtomicReference<>();
+            AuditService.ScanAccept accept = db.auditService.scanAllAsync(new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                    received.set(summary);
+                    done.countDown();
+                }
+
+                @Override
+                public void failed(String error) {
+                    done.countDown();
+                }
+            });
+            assertEquals(AuditService.ScanAccept.ACCEPTED, accept);
+            assertTrue(done.await(10, TimeUnit.SECONDS), "фоновый скан должен завершиться");
+            assertNotNull(received.get(), "успешный скан доставляет сводку");
+        }
+    }
+
+    @Test
+    void asynchronousScanWhileRunningReportsBusy() throws InterruptedException {
+        try (TestDb db = TestDb.create()) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AuditService.ScanOutcome noop = new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                }
+
+                @Override
+                public void failed(String error) {
+                }
+            };
+            assertEquals(AuditService.ScanAccept.ACCEPTED,
+                    db.auditService.submitScan(() -> {
+                        started.countDown();
+                        try {
+                            release.await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return SuspicionScanner.ScanSummary.zero();
+                    }, noop));
+            assertTrue(started.await(10, TimeUnit.SECONDS), "первый скан должен стартовать");
+            assertEquals(AuditService.ScanAccept.BUSY,
+                    db.auditService.scanAllAsync(noop),
+                    "пока идёт скан, повторный запрос отвечает BUSY, а не блокирует и не дублирует");
+            release.countDown();
+            awaitTerminal(db.auditService);
+        }
+    }
+
+    @Test
+    void asynchronousScanPopUpErrorDelivered() throws InterruptedException {
+        try (TestDb db = TestDb.create()) {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<String> failure = new AtomicReference<>();
+            db.auditService.submitScan(() -> {
+                throw new RuntimeException("boom");
+            }, new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                    done.countDown();
+                }
+
+                @Override
+                public void failed(String error) {
+                    failure.set(error);
+                    done.countDown();
+                }
+            });
+            assertTrue(done.await(10, TimeUnit.SECONDS), "сбойный скан должен завершиться");
+            assertNotNull(failure.get(), "сбой доставляется как ошибка");
+        }
+    }
+
+    private static void awaitTerminal(AuditService service) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (service.scanPhase() != AuditService.ScanPhase.IDLE) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("скан не вернулся в IDLE");
+            }
+            Thread.sleep(20);
         }
     }
 }

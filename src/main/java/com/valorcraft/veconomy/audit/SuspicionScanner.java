@@ -12,6 +12,7 @@ import com.valorcraft.veconomy.persistence.TransactionRow;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -188,12 +189,16 @@ public final class SuspicionScanner {
         return written;
     }
 
-    /** Исходящие переводы выше порога; событие пишется ОТПРАВИТЕЛЮ (субъект — sender). */
+    /**
+     * Исходящие переводы выше порога: событие пишется ОТПРАВИТЕЛЮ по КАЖДОЙ
+     * транзакции отдельно (txId в деталях и в dedupe-ключе окна). Агрегированное
+     * «максимум по игроку» теряло бы все большие переводы после первого: с пере-сигналом
+     * по каждой транзакции видны сумма и получатель каждого оверсайза, а повторный скан
+     * того же окна не создаёт дублей.
+     */
     private int scanOversized(List<TransactionRow> transfers, AuditConfig.Settings cfg,
                               long bucket, UUID onlyPlayer) {
-        Map<UUID, Long> largest = new HashMap<>();
-        Map<UUID, Integer> counts = new HashMap<>();
-        Map<UUID, UUID> recipients = new HashMap<>();
+        int written = 0;
         for (TransactionRow row : transfers) {
             if (row.amountMinor() < cfg.oversizedTransferAmount() || row.sourceUuid() == null) {
                 continue;
@@ -202,21 +207,14 @@ public final class SuspicionScanner {
             if (isSystem(sender) || isSystem(row.targetUuid())) {
                 continue;
             }
-            largest.merge(sender, row.amountMinor(), Math::max);
-            counts.merge(sender, 1, Integer::sum);
-            recipients.put(sender, row.targetUuid());
-        }
-        Set<UUID> players = onlyPlayer == null ? largest.keySet() : Set.of(onlyPlayer);
-        int written = 0;
-        for (UUID player : players) {
-            if (!counts.containsKey(player)) {
+            if (onlyPlayer != null && !sender.equals(onlyPlayer)) {
                 continue;
             }
-            if (writeSignal(AuditEventType.SIGNAL_OVERSIZED, player, recipients.get(player),
-                    largest.get(player),
-                    "transfers=" + counts.get(player) + ";amount=" + largest.get(player)
-                            + ";to=" + recipients.get(player),
-                    dedupeKey("oversized", player, bucket))) {
+            String txId = row.transactionId() == null ? "-" : row.transactionId();
+            if (writeSignal(AuditEventType.SIGNAL_OVERSIZED, sender, row.targetUuid(),
+                    row.amountMinor(),
+                    "tx=" + txId + ";amount=" + row.amountMinor() + ";to=" + row.targetUuid(),
+                    dedupeKey("oversized", sender, bucket) + "|" + txId)) {
                 written++;
             }
         }
@@ -306,7 +304,8 @@ public final class SuspicionScanner {
                         forwarder, next.targetUuid(), row.amountMinor(),
                         "amount=" + row.amountMinor() + ";windowMinutes="
                                 + cfg.rapidForwardWindowMinutes() + ";to=" + next.targetUuid(),
-                        dedupeKey("rapid", forwarder, bucket))) {
+                        dedupeKey("rapid", forwarder, bucket) + "|"
+                                + pairKey(forwarder, next.targetUuid()))) {
                     written++;
                 }
                 break;
@@ -315,11 +314,15 @@ public final class SuspicionScanner {
         return written;
     }
 
-    /** Цикл переводов из 3+ участников (A→B→C→A и длиннее, до {@value MAX_LOOP_DEPTH}). */
+    /**
+     * Цикл переводов из 3+ участников (A→B→C→A и длиннее, до {@value MAX_LOOP_DEPTH}).
+     * Учитывается ТОЛЬКО хронология: каждое ребро цикла обязано быть строго позже
+     * предыдущего (перевод не может «двигаться назад во времени»); ребра одной
+     * пары без упорядоченности цикла не образуют.
+     */
     private int scanTransferLoops(List<TransactionRow> transfers, AuditConfig.Settings cfg,
                                   long bucket, UUID onlyPlayer) {
-        Map<UUID, Set<UUID>> adjacency = new HashMap<>();
-        Set<UUID> nodes = new HashSet<>();
+        Map<UUID, List<ChronoEdge>> adjacency = new HashMap<>();
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null) {
                 continue;
@@ -327,23 +330,27 @@ public final class SuspicionScanner {
             if (isSystem(row.sourceUuid()) || isSystem(row.targetUuid())) {
                 continue;
             }
-            adjacency.computeIfAbsent(row.sourceUuid(), k -> new HashSet<>()).add(row.targetUuid());
-            nodes.add(row.sourceUuid());
-            nodes.add(row.targetUuid());
+            adjacency.computeIfAbsent(row.sourceUuid(), k -> new ArrayList<>())
+                    .add(new ChronoEdge(row.targetUuid(), row.createdAt()));
         }
-        if (nodes.size() < cfg.transferLoopLength()) {
-            return 0;
+        for (List<ChronoEdge> edges : adjacency.values()) {
+            edges.sort(Comparator.comparingLong(ChronoEdge::createdAt));
         }
         Set<UUID> inCycle = new HashSet<>();
-        for (UUID start : nodes) {
+        for (UUID start : adjacency.keySet()) {
             if (onlyPlayer != null && !start.equals(onlyPlayer)) {
                 continue;
             }
-            findCycles(start, start, new ArrayDeque<>(), new HashSet<>(), adjacency,
-                    cfg.transferLoopLength(), inCycle);
+            Set<UUID> visited = new HashSet<>();
+            visited.add(start);
+            findChronologicalCycles(start, start, Long.MIN_VALUE, new ArrayDeque<>(), visited,
+                    adjacency, cfg.transferLoopLength(), MAX_LOOP_DEPTH, inCycle);
         }
         int written = 0;
         for (UUID player : inCycle) {
+            if (onlyPlayer != null && !player.equals(onlyPlayer)) {
+                continue;
+            }
             if (writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, player, null, null,
                     "minLength=" + cfg.transferLoopLength(),
                     dedupeKey("loop", player, bucket))) {
@@ -353,32 +360,49 @@ public final class SuspicionScanner {
         return written;
     }
 
-    private void findCycles(UUID root, UUID current, Deque<UUID> path, Set<UUID> visited,
-                            Map<UUID, Set<UUID>> adjacency, int minLength, Set<UUID> inCycle) {
-        if (path.size() >= MAX_LOOP_DEPTH) {
+    /**
+     * DFS по рёбрам, упорядоченным по времени: ребро допускается только если оно
+     * строго позже ребра, которым узел был достигнут ({@code entryTime}). Возврат
+     * в корень при размере пути ≥ minLength фиксирует участников цикла.
+     */
+    private void findChronologicalCycles(UUID root, UUID current, long entryTime,
+                                         Deque<UUID> path, Set<UUID> visited,
+                                         Map<UUID, List<ChronoEdge>> adjacency,
+                                         int minLength, int maxDepth, Set<UUID> inCycle) {
+        if (path.size() >= maxDepth) {
             return;
         }
-        Set<UUID> next = adjacency.getOrDefault(current, Set.of());
-        for (UUID target : next) {
-            if (target.equals(root)) {
+        for (ChronoEdge edge : adjacency.getOrDefault(current, List.of())) {
+            // Ребро не может быть строго раньше ребра, которым узел был достигнут.
+            // Равные времена (одна и та же миллисекунда) допустимы — так же, как в
+            // цепочке пересылок rapidForwarding; это не «перевод назад во времени».
+            if (edge.createdAt() < entryTime) {
+                continue;
+            }
+            if (edge.target().equals(root)) {
                 if (path.size() + 1 >= minLength) {
-                    inCycle.addAll(path);
                     inCycle.add(root);
+                    inCycle.addAll(path);
                 }
                 continue;
             }
-            if (visited.contains(target)) {
+            if (visited.contains(edge.target())) {
                 continue;
             }
-            visited.add(target);
-            path.addLast(target);
-            findCycles(root, target, path, visited, adjacency, minLength, inCycle);
+            visited.add(edge.target());
+            path.addLast(edge.target());
+            findChronologicalCycles(root, edge.target(), edge.createdAt(), path, visited,
+                    adjacency, minLength, maxDepth, inCycle);
             path.removeLast();
-            visited.remove(target);
+            visited.remove(edge.target());
         }
     }
 
-    /** Очень высокая частота обменов между одной парой (событие — участнику пары). */
+    /**
+     * Очень высокая частота обменов между одной парой: событие пишется КАЖДОМУ
+     * участнику пары (вариант A), с общим incident-id в деталях обоих событий —
+     * чтобы обе стороны (и их владельцы) видели проблему пары независимо.
+     */
     private int scanHighPairFrequency(List<TransactionRow> transfers, AuditConfig.Settings cfg,
                                       long bucket, UUID onlyPlayer) {
         Map<String, Integer> pairs = new HashMap<>();
@@ -396,17 +420,22 @@ public final class SuspicionScanner {
             if (entry.getValue() < cfg.highPairFrequencyExchanges()) {
                 continue;
             }
-            UUID a = UUID.fromString(entry.getKey().split("\\|")[0]);
-            UUID b = UUID.fromString(entry.getKey().split("\\|")[1]);
-            UUID subject = onlyPlayer == null || onlyPlayer.equals(a) ? a : b;
-            if (onlyPlayer != null && !a.equals(onlyPlayer) && !b.equals(onlyPlayer)) {
-                continue;
-            }
-            UUID partner = subject.equals(a) ? b : a;
-            if (writeSignal(AuditEventType.SIGNAL_HIGH_PAIR_FREQUENCY, subject, partner, null,
-                    "pair=" + partner + ";exchanges=" + entry.getValue(),
-                    dedupeKey("highpair", subject, bucket) + "|" + entry.getKey())) {
-                written++;
+            String[] sides = entry.getKey().split("\\|");
+            UUID a = UUID.fromString(sides[0]);
+            UUID b = UUID.fromString(sides[1]);
+            String incident = "HPF|" + entry.getKey() + "|" + bucket;
+            for (UUID participant : new UUID[]{a, b}) {
+                if (onlyPlayer != null && !participant.equals(onlyPlayer)) {
+                    continue;
+                }
+                UUID partner = participant.equals(a) ? b : a;
+                if (writeSignal(AuditEventType.SIGNAL_HIGH_PAIR_FREQUENCY, participant, partner,
+                        null,
+                        "pair=" + partner + ";exchanges=" + entry.getValue()
+                                + ";incident=" + incident,
+                        dedupeKey("highpair", participant, bucket) + "|" + entry.getKey())) {
+                    written++;
+                }
             }
         }
         return written;
@@ -479,6 +508,10 @@ public final class SuspicionScanner {
 
     // ------------------------------------------------------------ helpers
 
+    /** Ребро графа переводов с временем перевода для хронологического поиска циклов. */
+    private record ChronoEdge(UUID target, long createdAt) {
+    }
+
     private static String pairKey(UUID a, UUID b) {
         return a.compareTo(b) < 0 ? a + "|" + b : b + "|" + a;
     }
@@ -517,9 +550,9 @@ public final class SuspicionScanner {
                                 String details, String dedupeKey) {
         try {
             return database.inTransaction(connection -> {
-                long id = audit.insert(connection, database.dialect(),
+                AuditRepository.InsertResult result = audit.insert(connection, database.dialect(),
                         AuditEventRow.signal(type, playerId, counterparty, amount, details, dedupeKey));
-                return id >= 0;
+                return result.status() == AuditRepository.InsertResult.Status.INSERTED;
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка записи аудит-сигнала {} для {}", type, playerId, e);

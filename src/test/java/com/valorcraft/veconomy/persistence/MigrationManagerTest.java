@@ -4,6 +4,9 @@ import com.valorcraft.veconomy.TestDb;
 import com.valorcraft.veconomy.economy.TreasuryService;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -69,6 +72,51 @@ class MigrationManagerTest {
                 return null;
             });
             assertEquals(7, db.database.schemaVersion());
+        }
+    }
+
+    @Test
+    void partiallyAppliedV7IsCompletedWithoutDataLoss() throws IOException, SQLException {
+        // База, «упавшая» в середине v7: часть столбцов уже добавлена, часть объектов нет,
+        // версия схемы — 6. Повторный запуск обязан довести схему до v7, не споткнувшись
+        // о существующие столбцы (Duplicate column name в MySQL) и не потеряв данные.
+        Path dir = Files.createTempDirectory("veconomy-mig-partial");
+        Path dbFile = dir.resolve("partial.db");
+        try (Connection connection = java.sql.DriverManager.getConnection(
+                "jdbc:sqlite:" + dbFile.toAbsolutePath())) {
+            MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
+            insertAuditIgnored(connection, "t1", "window-key");
+            assertEquals(7, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE));
+
+            // «Сбой»: версия откачена на 6, удалены некоторые объекты v7 (столбец dedupe_key
+            // с его индексом и индекс severity), остальные v7-столбцы на месте.
+            try (var statement = connection.createStatement()) {
+                statement.execute("PRAGMA user_version = 6");
+                statement.execute("DROP INDEX idx_audit_dedupe");
+                statement.execute("DROP INDEX idx_audit_severity");
+                statement.execute("ALTER TABLE audit_events DROP COLUMN dedupe_key");
+            }
+            assertEquals(6, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE));
+
+            MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
+
+            assertEquals(7, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE),
+                    "миграция должна довести схему до v7");
+            Set<String> columns = new HashSet<>();
+            try (ResultSet rs = connection.getMetaData().getColumns(null, null, "audit_events", null)) {
+                while (rs.next()) {
+                    columns.add(rs.getString("COLUMN_NAME"));
+                }
+            }
+            assertTrue(columns.contains("actor_type"), "существующий столбец сохранён");
+            assertTrue(columns.contains("status"), "существующий столбец сохранён");
+            assertTrue(columns.contains("counterparty_uuid"), "существующий столбец сохранён");
+            assertTrue(columns.contains("dedupe_key"), "недостающий столбец добавлен повторно");
+            assertTrue(insertAuditIgnored(connection, "t2", null) >= 0
+                    && countAudit(connection) >= 1, "данные не должны теряться при повторной миграции");
+        } finally {
+            Files.deleteIfExists(dbFile);
+            Files.deleteIfExists(dir);
         }
     }
 

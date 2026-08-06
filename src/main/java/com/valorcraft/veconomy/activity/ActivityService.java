@@ -224,7 +224,8 @@ public final class ActivityService {
      * флаг уже равен запрошенному значению (без записи и без аудита),
      * {@link AccountFlagUpdateResult.Status#PLAYER_NOT_FOUND} если не задан идентификатор,
      * {@link AccountFlagUpdateResult.Status#DATABASE_ERROR} если изменение не применено.
-     * Аудит пишется только при реальном изменении. {@code actorId} — кто менял флаг
+     * Аудит пишется только при реальном изменении и в той же транзакции, что и флаг:
+     * событие не переживёт откат upsert-а. {@code actorId} — кто менял флаг
      * (null = консоль).
      */
     public AccountFlagUpdateResult setExcludedFromRewards(UUID playerId, boolean excluded,
@@ -234,13 +235,12 @@ public final class ActivityService {
                     excluded, "player_not_found");
         }
         try {
-            PlayerActivityRow existing = database.inTransaction(connection ->
-                    repository.find(connection, playerId).orElse(null));
-            if (existing != null && existing.excludedFromRewards() == excluded) {
-                return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.NO_CHANGES,
-                        excluded, null);
-            }
-            database.inTransaction(connection -> {
+            return database.inTransaction(connection -> {
+                PlayerActivityRow existing = repository.find(connection, playerId).orElse(null);
+                if (existing != null && existing.excludedFromRewards() == excluded) {
+                    return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.NO_CHANGES,
+                            excluded, null);
+                }
                 long now = System.currentTimeMillis();
                 PlayerActivityRow row = existing != null
                         ? new PlayerActivityRow(existing.playerId(), existing.firstSeenAt(),
@@ -251,15 +251,14 @@ public final class ActivityService {
                         : new PlayerActivityRow(playerId, now, now, 0L, 0L, 0L,
                                 WeekId.current(), now, "minecraft:overworld", excluded);
                 repository.upsert(connection, database.dialect(), row);
-                return null;
+                if (audit != null) {
+                    audit.recordIn(connection, AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO,
+                            playerId, actorId, AuditActorType.of(actorId), null,
+                            "excluded=" + excluded, null);
+                }
+                return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.SUCCESS,
+                        excluded, null);
             });
-            if (audit != null) {
-                // Запись аудита — отдельная транзакция после подтверждённого изменения
-                // (по NO_CHANGES ветка не выполняется: без изменения аудита нет).
-                audit.record(AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO, playerId,
-                        actorId, AuditActorType.of(actorId), null, "excluded=" + excluded);
-            }
-            return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.SUCCESS, excluded, null);
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка установки флага исключения {}", playerId, e);
             return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.DATABASE_ERROR,

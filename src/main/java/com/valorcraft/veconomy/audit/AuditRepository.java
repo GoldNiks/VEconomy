@@ -21,15 +21,14 @@ public final class AuditRepository {
             + "resolution_note, idempotency_key, counterparty_uuid, dedupe_key";
 
     /**
-     * Вставить событие и вернуть его id. Идемпотентно по {@code idempotency_key} и
-     * {@code dedupe_key}: повторная вставка того же ключа (повтор после сбоя записи
-     * либо повторное событие того же окна) игнорируется и возвращает -1 — дубликат
-     * не создаётся.
+     * Вставить событие и вернуть id. Обычный {@code INSERT} без IGNORE: нарушение
+     * уникального ключа ({@code idempotency_key}/{@code dedupe_key}) распознаётся по
+     * ошибке драйвера и возвращается как {@link InsertResult.Status#DUPLICATE}, а настоящие
+     * ошибки базы (другие SQL-исключения) пробрасываются как {@link DatabaseException} —
+     * INSERT IGNORE молча глотал их как «пусто», маскируя реальные сбои записи.
      */
-    public long insert(Connection connection, DatabaseManager.Dialect dialect, AuditEventRow row) {
-        String sql = dialect == DatabaseManager.Dialect.MYSQL
-                ? "INSERT IGNORE INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                : "INSERT OR IGNORE INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    public InsertResult insert(Connection connection, DatabaseManager.Dialect dialect, AuditEventRow row) {
+        String sql = "INSERT INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement statement = connection.prepareStatement(sql,
                 Statement.RETURN_GENERATED_KEYS)) {
             statement.setString(1, row.eventType());
@@ -55,18 +54,49 @@ public final class AuditRepository {
             statement.setString(13, row.idempotencyKey());
             statement.setString(14, row.counterpartyUuid() != null ? row.counterpartyUuid().toString() : null);
             statement.setString(15, row.dedupeKey());
-            int updated = statement.executeUpdate();
-            if (updated == 0) {
-                // INSERT OR IGNORE / INSERT IGNORE отклонил повтор (тот же idempotency_key
-                // или dedupe_key): строк не прибавилось, and getGeneratedKeys вернёт ключ
-                // предыдущей вставки. Возвращаем -1 — события не создано.
-                return -1;
-            }
+            statement.executeUpdate();
             try (ResultSet keys = statement.getGeneratedKeys()) {
-                return keys.next() ? keys.getLong(1) : -1;
+                return InsertResult.inserted(keys.next() ? keys.getLong(1) : -1);
             }
         } catch (SQLException e) {
+            if (isDuplicateKey(dialect, e)) {
+                // Повтор (тот же idempotency_key или dedupe_key): строка уже есть — события
+                // не создано. Исключение суржимается, вызывающий трактует это как ок.
+                return InsertResult.duplicated();
+            }
             throw new DatabaseException("Ошибка записи аудит-события", e);
+        }
+    }
+
+    /**
+     * Дупликат ключа vs настоящая ошибка: MySQL — код 1062, SQLite — нарушение
+     * ограничения: базовый код 19 либо extended 2067 (UNIQUE) / 1555 (PRIMARY KEY).
+     * Единственные ограничения audit_events, которые может нарушить корректный
+     * INSERT, — уникальные индексы idempotency/dedupe; любые другие коды
+     * (busy, ioerror и т.п.) остаются ошибкой базы.
+     */
+    private static boolean isDuplicateKey(DatabaseManager.Dialect dialect, SQLException e) {
+        if (dialect == DatabaseManager.Dialect.MYSQL) {
+            return e.getErrorCode() == 1062;
+        }
+        if (e instanceof org.sqlite.SQLiteException s) {
+            int code = s.getResultCode() == null ? -1 : s.getResultCode().code;
+            return code == 19 || code == 2067 || code == 1555;
+        }
+        return false;
+    }
+
+    /** Итог вставки: строка вставлена либо отклонена дубликатом ключа. */
+    public record InsertResult(Status status, long id) {
+
+        public enum Status { INSERTED, DUPLICATE }
+
+        public static InsertResult inserted(long id) {
+            return new InsertResult(Status.INSERTED, id);
+        }
+
+        public static InsertResult duplicated() {
+            return new InsertResult(Status.DUPLICATE, -1);
         }
     }
 
@@ -126,12 +156,20 @@ public final class AuditRepository {
         }
     }
 
-    /** Перевести событие в обработанное состояние; возвращает true, если событие существовало. */
+    /**
+     * Атомарно перевести событие в обработанное состояние. Работает ТОЛЬКО по
+     * открытым сигналам подозрительной активности: условие {@code severity = 'SUSPICIOUS'
+     * AND status = 'OPEN'} в самом UPDATE делает проверку и изменение одним
+     * оператором — нельзя обработать не-сигнал, повторно обработать уже обработанный
+     * сигнал или потерять состояние из-за гонки с другим обработчиком. Возвращает
+     * false, если событие не найдено либо не соответствует условию.
+     */
     public boolean resolve(Connection connection, long id, ResolutionStatus status,
                            String resolvedBy, String note, long now) {
         try (PreparedStatement statement = connection.prepareStatement(
                 "UPDATE audit_events SET status = ?, resolved_at = ?, resolved_by = ?, "
-                        + "resolution_note = ? WHERE id = ?")) {
+                        + "resolution_note = ? WHERE id = ? AND severity = 'SUSPICIOUS' "
+                        + "AND status = 'OPEN'")) {
             statement.setString(1, status.name());
             statement.setLong(2, now);
             statement.setString(3, resolvedBy);

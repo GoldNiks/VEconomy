@@ -445,7 +445,7 @@ class SuspicionScannerTest {
     }
 
     @Test
-    void highPairFrequencySignalsOneSide() throws IOException {
+    void highPairFrequencySignalsEachSide() throws IOException {
         writeConfig(tuned("\"highPairFrequencyExchanges\":10"));
         try (TestDb db = TestDb.create(noCooldown())) {
             UUID alice = UUID.randomUUID();
@@ -456,15 +456,37 @@ class SuspicionScannerTest {
             }
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
-            assertEquals(1, summary.highPairFrequencySignals());
-            assertEquals(1, summary.total());
+            // Вариант A: событие пишется каждому участнику пары, с общим incident-id.
+            assertEquals(2, summary.highPairFrequencySignals());
+            assertEquals(2, summary.total());
             List<AuditEventRow> pairSignals = signals(db).stream()
                     .filter(s -> AuditEventType.SIGNAL_HIGH_PAIR_FREQUENCY.equals(s.eventType()))
                     .toList();
-            assertEquals(1, pairSignals.size());
+            assertEquals(2, pairSignals.size());
             assertTrue(alice.equals(pairSignals.get(0).playerId())
                     || bob.equals(pairSignals.get(0).playerId()));
+            assertTrue(alice.equals(pairSignals.get(1).playerId())
+                    || bob.equals(pairSignals.get(1).playerId()));
+            assertTrue(pairSignals.stream().map(AuditEventRow::playerId).distinct().count() == 2,
+                    "оба участника пары получают отдельное событие");
+            String incidentA = incidentOf(pairSignals, alice);
+            String incidentB = incidentOf(pairSignals, bob);
+            assertEquals(incidentA, incidentB, "события сторон ссылаются на общий incident");
         }
+    }
+
+    /** Из деталей сигнала HIGH_PAIR извлекается incident=… */
+    private static String incidentOf(List<AuditEventRow> rows, UUID player) {
+        for (AuditEventRow row : rows) {
+            if (player.equals(row.playerId()) && row.details() != null) {
+                for (String token : row.details().split(";")) {
+                    if (token.startsWith("incident=")) {
+                        return token.substring("incident=".length());
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     @Test

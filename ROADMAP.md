@@ -67,8 +67,8 @@
 | Таблица audit-событий | DONE | `audit_events` (миграции v6–v7), `AuditRepository`, `AuditService` |
 | События сервисов | DONE | freeze/unfreeze, exclude-rewards, milestone grant/revoke, weekly payout, balance set |
 | Suspicion signals | DONE | 9 эвристик: спам/рондатрип/оверсайз/новые аккаунты/пересылка/петли/частые пары/концентрация/общий получатель |
-| Команды `/economy admin audit ...` | DONE | `list/player/signals/suspicious/transaction/scan/resolve/dismiss/status` |
-| Resolution подозрительных событий | DONE | жизненный цикл OPEN/RESOLVED/DISMISSED, `audit transaction/suspicious/resolve/dismiss` |
+| Команды `/economy admin audit ...` | DONE | `list/player/signals/suspicious/event/transaction/scan/resolve/dismiss/status` |
+| Resolution подозрительных событий | DONE | жизненный цикл OPEN/RESOLVED/DISMISSED, `audit event/transaction/suspicious/resolve/dismiss` |
 | Actor attribution | DONE | `actor_type` PLAYER/CONSOLE/SYSTEM/INTEGRATION для всех событий |
 | Сбои записи аудита | DONE | `AuditHealth`, retry-очередь с идемпотентными ключами, `audit status` |
 | Валидация `veconomy-audit.json` | DONE | диапазоны полей при загрузке/перезагрузке, откат к последней корректной |
