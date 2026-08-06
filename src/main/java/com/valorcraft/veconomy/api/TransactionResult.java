@@ -25,6 +25,8 @@ public record TransactionResult(
         LIMIT_EXCEEDED,
         /** Операция с таким idempotency key уже выполнена ранее. */
         DUPLICATE_OPERATION,
+        /** Состояние уже было целевым: ничего не изменено (например, повторная заморозка). */
+        NO_CHANGES,
         /** Получатель не найден (и создание офлайн-получателя запрещено). */
         RECIPIENT_NOT_FOUND,
         /** Попытка перевода самому себе. */

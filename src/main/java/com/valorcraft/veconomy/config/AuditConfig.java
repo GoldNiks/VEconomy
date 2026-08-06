@@ -81,13 +81,15 @@ public final class AuditConfig {
                 Settings.defaults().newAccountConcentrationSources());
         int repeatedDestinationTransfers = intRange(signals, "repeatedDestinationTransfers", 1, 100_000,
                 Settings.defaults().repeatedDestinationTransfers());
+        long maxTransfersPerScan = longRange(signals, "maxTransfersPerScan", 1, Long.MAX_VALUE,
+                Settings.defaults().maxTransfersPerScan());
         int retentionDays = intRange(signals, "retentionDays", 1, 3650,
                 Settings.defaults().retentionDays());
         return new Settings(enabled, windowMinutes, transferSpamCount, roundTripExchanges,
                 oversizedTransferAmount, newAccountDays, newAccountTransferAmount,
                 rapidForwardAmount, rapidForwardWindowMinutes, transferLoopLength,
                 highPairFrequencyExchanges, newAccountConcentrationSources,
-                repeatedDestinationTransfers, retentionDays);
+                repeatedDestinationTransfers, maxTransfersPerScan, retentionDays);
     }
 
     private static boolean bool(JsonObject object, String field, boolean fallback) {
@@ -158,13 +160,20 @@ public final class AuditConfig {
             int newAccountConcentrationSources,
             /** Минимум переводов одного игрока одному получателю для SHARED_DESTINATION. */
             int repeatedDestinationTransfers,
+            /**
+             * Верхний предел числа проанализированных переводов за один прогон скана
+             * (защита полного сканирования на очень больших журналах). При достижении
+             * предел в сводке явно помечается («ограничено») — неполный анализ не
+             * выдаётся за полный.
+             */
+            long maxTransfersPerScan,
 
             /** Сколько дней хранить события аудита (старше — очищаются при старте/периодически). */
             int retentionDays) {
 
         public static Settings defaults() {
             return new Settings(true, 30, 12, 4, 500_000L, 7, 100_000L,
-                    100_000L, 5, 3, 10, 5, 10, 90);
+                    100_000L, 5, 3, 10, 5, 10, 200_000L, 90);
         }
     }
 
@@ -188,6 +197,7 @@ public final class AuditConfig {
                     "highPairFrequencyExchanges": 10,
                     "newAccountConcentrationSources": 5,
                     "repeatedDestinationTransfers": 10,
+                    "maxTransfersPerScan": 200000,
                     "retentionDays": 90
                   }
                 }

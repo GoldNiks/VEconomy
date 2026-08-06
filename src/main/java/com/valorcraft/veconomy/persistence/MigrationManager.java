@@ -226,12 +226,90 @@ public final class MigrationManager {
             ALTER TABLE audit_events ADD COLUMN idempotency_key VARCHAR(64);
             ALTER TABLE audit_events ADD COLUMN counterparty_uuid VARCHAR(36);
             ALTER TABLE audit_events ADD COLUMN dedupe_key VARCHAR(256);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_idem ON audit_events(idempotency_key);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_dedupe ON audit_events(dedupe_key)
-                WHERE dedupe_key IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_idem
+                ON audit_events(idempotency_key) WHERE idempotency_key IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_dedupe
+                ON audit_events(dedupe_key) WHERE dedupe_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_events(severity, created_at);
             """
     };
+
+    /**
+     * Операции миграции v7 (MySQL): каждый столбец — отдельная структурированная
+     * операция. Имя столбца вынесено явно — guard по JDBC-metadata не зависит от
+     * парсинга SQL.
+     */
+    private record AuditV7Column(String name, String definition) {
+    }
+
+    /** Операции миграции v7 (MySQL): каждый индекс — отдельный оператор с явным именем. */
+    private record AuditV7Index(String name, String ddl) {
+    }
+
+    private static final AuditV7Column[] AUDIT_V7_COLUMNS = {
+            new AuditV7Column("actor_type", "actor_type VARCHAR(16)"),
+            new AuditV7Column("status", "status VARCHAR(16) NOT NULL DEFAULT 'OPEN'"),
+            new AuditV7Column("resolved_at", "resolved_at BIGINT"),
+            new AuditV7Column("resolved_by", "resolved_by VARCHAR(64)"),
+            new AuditV7Column("resolution_note", "resolution_note VARCHAR(1024)"),
+            new AuditV7Column("idempotency_key", "idempotency_key VARCHAR(64)"),
+            new AuditV7Column("counterparty_uuid", "counterparty_uuid VARCHAR(36)"),
+            new AuditV7Column("dedupe_key", "dedupe_key VARCHAR(256)"),
+    };
+
+    private static final AuditV7Index[] AUDIT_V7_INDEXES = {
+            new AuditV7Index("uk_audit_idem", "UNIQUE INDEX uk_audit_idem (idempotency_key)"),
+            new AuditV7Index("uk_audit_dedupe", "UNIQUE INDEX uk_audit_dedupe (dedupe_key)"),
+            new AuditV7Index("idx_audit_severity", "INDEX idx_audit_severity (severity, created_at)"),
+    };
+
+    /**
+     * План операций v7 для MySQL (пакетно-приватный вход для тестов): один оператор
+     * на один объект, без запятых между действиями, составные индексы не режутся.
+     */
+    static List<String> auditV7MySqlStatements() {
+        List<String> statements = new ArrayList<>();
+        for (AuditV7Column column : AUDIT_V7_COLUMNS) {
+            statements.add("ALTER TABLE audit_events ADD COLUMN " + column.definition());
+        }
+        for (AuditV7Index index : AUDIT_V7_INDEXES) {
+            statements.add("ALTER TABLE audit_events ADD " + index.ddl());
+        }
+        return statements;
+    }
+
+    /**
+     * Применить v7 к MySQL: для каждого столбца/индекса — проверить наличие через
+     * JDBC-metadata, выполнить отдельный ALTER, проверить результат. Только после
+     * подтверждения ВСЕХ элементов вызывающий записывает schema version 7 — повторный
+     * запуск докатывает прерванную миграцию без «Duplicate column/index name».
+     */
+    private static void applyAuditV7MySql(Connection connection) throws SQLException {
+        for (AuditV7Column column : AUDIT_V7_COLUMNS) {
+            if (!columnExists(connection, "audit_events", column.name())) {
+                executeAlter(connection, "ALTER TABLE audit_events ADD COLUMN " + column.definition());
+                if (!columnExists(connection, "audit_events", column.name())) {
+                    throw new SQLException("Миграция v7: столбец " + column.name()
+                            + " не появился после ALTER");
+                }
+            }
+        }
+        for (AuditV7Index index : AUDIT_V7_INDEXES) {
+            if (!indexExists(connection, "audit_events", index.name())) {
+                executeAlter(connection, "ALTER TABLE audit_events ADD " + index.ddl());
+                if (!indexExists(connection, "audit_events", index.name())) {
+                    throw new SQLException("Миграция v7: индекс " + index.name()
+                            + " не появился после ALTER");
+                }
+            }
+        }
+    }
+
+    private static void executeAlter(Connection connection, String sql) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
+    }
 
     /** v1 — начальная схема для MySQL (VARCHAR-ключи, BIGINT, utf8mb4, INSERT IGNORE). */
     private static final String[] MYSQL_MIGRATIONS = {
@@ -399,23 +477,14 @@ public final class MigrationManager {
                 KEY idx_audit_type (event_type, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """,
-            // v7 — полный набор сигналов, жизненный цикл и actor attribution (см. SQLite-скрипт).
-            // Дополнительно: counterparty_uuid, dedupe_key с unique-ключом (MySQL допускает
-            // несколько NULL — эквивалент частичного уникального индекса SQLite) и индекс
-            // severity+created_at для очистки по политике удержания.
+            // v7 — применяется через {@link #applyAuditV7MySql} как список
+            // структурированных операций (по столбцу/индексу) с guard через
+            // JDBC-metadata. Текстовый скрипт не используется: запятые внутри
+            // составных индексов нельзя надёжно разбить строковым split, а частичные
+            // применения MySQL требуют проверок. Этот элемент оставлен как позиция
+            // в массиве (версия 7).
             """
-            ALTER TABLE audit_events
-                ADD COLUMN actor_type VARCHAR(16),
-                ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
-                ADD COLUMN resolved_at BIGINT,
-                ADD COLUMN resolved_by VARCHAR(64),
-                ADD COLUMN resolution_note VARCHAR(1024),
-                ADD COLUMN idempotency_key VARCHAR(64),
-                ADD UNIQUE KEY uk_audit_idem (idempotency_key),
-                ADD COLUMN counterparty_uuid VARCHAR(36),
-                ADD COLUMN dedupe_key VARCHAR(256),
-                ADD UNIQUE KEY uk_audit_dedupe (dedupe_key),
-                ADD KEY idx_audit_severity (severity, created_at);
+            noop
             """
     };
 
@@ -432,7 +501,13 @@ public final class MigrationManager {
                 // выполняем по одному; ALTER-части проверяются на уже существующие
                 // объекты, повторный запуск безопасен даже после частичного сбоя.
                 try {
-                    executeScript(connection, migrations[i]);
+                    if (target == 7) {
+                        // v7 не разбивается по запятым (составные индексы): применяется
+                        // списком структурированных операций с guard и verify каждого.
+                        applyAuditV7MySql(connection);
+                    } else {
+                        executeScript(connection, migrations[i]);
+                    }
                     seed(connection, target, dialect);
                     writeVersion(connection, target, dialect);
                 } catch (SQLException e) {

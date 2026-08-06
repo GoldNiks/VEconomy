@@ -16,6 +16,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -90,27 +91,96 @@ public final class SuspicionScanner {
         long windowStart = System.currentTimeMillis() - windowMillis;
         long bucket = windowStart / windowMillis;
         try {
-            // Для scanPlayer не выгружаем весь журнал: только переводы этого игрока.
-            List<TransactionRow> transfers = database.inTransaction(connection ->
-                    onlyPlayer != null
-                            ? transactions.transfersSinceForPlayer(connection, onlyPlayer, windowStart)
-                            : transactions.transfersSince(connection, windowStart));
-            List<AccountRow> allAccounts = database.inTransaction(connection -> accounts.all(connection));
+            // Для scanPlayer не выгружаем весь журнал: берём переводы конкретного
+            // игрока, а цикловой анализ получает ОГРАНИЧЕННЫЙ граф дополнительных
+            // рёбер вокруг него (обе стороны в списке участников), а не всю историю.
+            // Для полного скана берём весь журнал окна. И в том, и в другом случае
+            // аккаунты подгружаются ТОЛЬКО по участникам анализируемых переводов
+            // (возраст/статус не нужен на всю базу), см. вариант A.
+            List<TransactionRow> transfers;
+            List<AccountRow> accountsFor;
+            boolean limited = false;
+            if (onlyPlayer != null) {
+                transfers = database.inTransaction(connection -> {
+                    List<TransactionRow> local =
+                            transactions.transfersSinceForPlayer(connection, onlyPlayer, windowStart);
+                    Set<UUID> participants = participantsOf(local);
+                    participants.add(onlyPlayer);
+                    // Ограниченный граф: рёбра, обе стороны которых входят в круг
+                    // участников игрока. Так цикл A→B→C→A виден при scanPlayer(B),
+                    // но полная история всех игроков не выгружается.
+                    List<TransactionRow> graph =
+                            transactions.transfersBetween(connection, participants, windowStart);
+                    return merge(local, graph);
+                });
+                // Только аккаунты участников проанализированного графа — не все подряд.
+                Set<UUID> graphPlayers = participantsOf(transfers);
+                accountsFor = database.inTransaction(connection ->
+                        accounts.findByIds(connection, graphPlayers));
+                limited = true; // персональный граф ограничен по построению
+            } else {
+                transfers = database.inTransaction(connection ->
+                        transactions.transfersSince(connection, windowStart));
+                // Предел объёма анализа: если переводов больше конфигурируемого
+                // максимума — анализируем новейшую часть и явно помечаем сводку
+                // «ограничено» (неполный анализ не выдаётся за полный).
+                if (transfers.size() > cfg.maxTransfersPerScan()) {
+                    transfers = transfers.subList(0, (int) cfg.maxTransfersPerScan());
+                    limited = true;
+                    VEconomyMod.LOGGER.warn("Полный скан ограничен: анализируются {} переводов "
+                                    + "окна (maxTransfersPerScan={})",
+                            transfers.size(), cfg.maxTransfersPerScan());
+                }
+                accountsFor = database.inTransaction(connection -> accounts.all(connection));
+            }
             int spam = scanSpam(cfg, windowStart, bucket, onlyPlayer);
             int roundTrips = scanRoundTrips(transfers, cfg, bucket, onlyPlayer);
             int oversized = scanOversized(transfers, cfg, bucket, onlyPlayer);
-            int newAccount = scanNewAccountTransfers(transfers, allAccounts, cfg, bucket, onlyPlayer);
+            int newAccount = scanNewAccountTransfers(transfers, accountsFor, cfg, bucket, onlyPlayer);
             int rapidForwarding = scanRapidForwarding(transfers, cfg, windowStart, bucket, onlyPlayer);
             int loops = scanTransferLoops(transfers, cfg, bucket, onlyPlayer);
             int highPair = scanHighPairFrequency(transfers, cfg, bucket, onlyPlayer);
-            int concentration = scanNewAccountConcentration(transfers, allAccounts, cfg, bucket, onlyPlayer);
-            int sharedDestination = scanRepeatedSharedDestination(transfers, cfg, bucket, onlyPlayer);
+            int concentration = scanNewAccountConcentration(transfers, accountsFor, cfg, bucket, onlyPlayer);
+            int repeatedDestination = scanRepeatedSharedDestination(transfers, cfg, bucket, onlyPlayer);
             return new ScanSummary(spam, roundTrips, oversized, newAccount,
-                    rapidForwarding, loops, highPair, concentration, sharedDestination);
+                    rapidForwarding, loops, highPair, concentration, repeatedDestination, limited);
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка сканирования сигналов подозрительной активности", e);
             return ScanSummary.zero();
         }
+    }
+
+/** Множество участников переданного набора переводов. */
+    private static Set<UUID> participantsOf(List<TransactionRow> rows) {
+        Set<UUID> participants = new HashSet<>();
+        for (TransactionRow row : rows) {
+            if (row.sourceUuid() != null) {
+                participants.add(row.sourceUuid());
+            }
+            if (row.targetUuid() != null) {
+                participants.add(row.targetUuid());
+            }
+        }
+        return participants;
+    }
+
+    /**
+     * Объединить персональные переводы и рёбра ограниченного графа без дубликатов
+     * по transactionId и в стабильном хронологическом порядке (порядок анализа
+     * воспроизводим между прогонами окна).
+     */
+    private List<TransactionRow> merge(List<TransactionRow> local, List<TransactionRow> graph) {
+        Map<String, TransactionRow> merged = new LinkedHashMap<>();
+        for (TransactionRow row : local) {
+            merged.put(row.transactionId(), row);
+        }
+        for (TransactionRow row : graph) {
+            merged.putIfAbsent(row.transactionId(), row);
+        }
+        return merged.values().stream()
+                .sorted(Comparator.comparingLong(TransactionRow::createdAt)
+                        .thenComparing(r -> r.transactionId() == null ? "" : r.transactionId()))
+                .toList();
     }
 
     // ------------------------------------------------------------ heuristics
@@ -268,7 +338,12 @@ public final class SuspicionScanner {
         return written;
     }
 
-    /** Крупный перевод пересылается дальше в течение короткого окна (промежуточный узел). */
+    /**
+     * Крупный перевод пересылается дальше в течение короткого окна (промежуточный узел).
+     * Инцидент — КОНКРЕТНАЯ пара переводов (inTx/outTx): исходящие упорядочены по
+     * времени с устойчивым tie-break по txId, первый подходящий и есть пересылка;
+     * дедупликация по обоим txId, разные пары не схлопываются.
+     */
     private int scanRapidForwarding(List<TransactionRow> transfers, AuditConfig.Settings cfg,
                                     long windowStart, long bucket, UUID onlyPlayer) {
         long forwardMillis = cfg.rapidForwardWindowMinutes() * 60_000L;
@@ -277,6 +352,10 @@ public final class SuspicionScanner {
             if (row.sourceUuid() != null && row.createdAt() >= windowStart) {
                 bySource.computeIfAbsent(row.sourceUuid(), k -> new ArrayList<>()).add(row);
             }
+        }
+        for (List<TransactionRow> outgoing : bySource.values()) {
+            outgoing.sort(Comparator.comparingLong(TransactionRow::createdAt)
+                    .thenComparing(TransactionRow::transactionId));
         }
         int written = 0;
         for (TransactionRow row : transfers) {
@@ -300,12 +379,16 @@ public final class SuspicionScanner {
                         || next.targetUuid() == null) {
                     continue;
                 }
+                long deltaMillis = next.createdAt() - row.createdAt();
                 if (writeSignal(AuditEventType.SIGNAL_RAPID_FORWARDING,
                         forwarder, next.targetUuid(), row.amountMinor(),
-                        "amount=" + row.amountMinor() + ";windowMinutes="
-                                + cfg.rapidForwardWindowMinutes() + ";to=" + next.targetUuid(),
+                        "inTx=" + row.transactionId() + ";outTx=" + next.transactionId()
+                                + ";inAmount=" + row.amountMinor() + ";outAmount="
+                                + next.amountMinor() + ";deltaMillis=" + deltaMillis
+                                + ";windowMinutes=" + cfg.rapidForwardWindowMinutes()
+                                + ";to=" + next.targetUuid(),
                         dedupeKey("rapid", forwarder, bucket) + "|"
-                                + pairKey(forwarder, next.targetUuid()))) {
+                                + row.transactionId() + "|" + next.transactionId())) {
                     written++;
                 }
                 break;
@@ -318,7 +401,9 @@ public final class SuspicionScanner {
      * Цикл переводов из 3+ участников (A→B→C→A и длиннее, до {@value MAX_LOOP_DEPTH}).
      * Учитывается ТОЛЬКО хронология: каждое ребро цикла обязано быть строго позже
      * предыдущего (перевод не может «двигаться назад во времени»); ребра одной
-     * пары без упорядоченности цикла не образуют.
+     * пары без упорядоченности цикла не образуют. Инцидент — КОНКРЕТНЫЙ цикл с
+     * упорядоченными txId/суммами/временами; ключ дедупликации — состав txId,
+     * поэтому разные циклы одного игрока НЕ схлопываются в один сигнал.
      */
     private int scanTransferLoops(List<TransactionRow> transfers, AuditConfig.Settings cfg,
                                   long bucket, UUID onlyPlayer) {
@@ -331,30 +416,45 @@ public final class SuspicionScanner {
                 continue;
             }
             adjacency.computeIfAbsent(row.sourceUuid(), k -> new ArrayList<>())
-                    .add(new ChronoEdge(row.targetUuid(), row.createdAt()));
+                    .add(new ChronoEdge(row));
         }
         for (List<ChronoEdge> edges : adjacency.values()) {
-            edges.sort(Comparator.comparingLong(ChronoEdge::createdAt));
+            edges.sort(Comparator.comparingLong(ChronoEdge::createdAt)
+                    .thenComparing(e -> e.row().transactionId()));
         }
-        Set<UUID> inCycle = new HashSet<>();
+        Set<String> seenIncidents = new HashSet<>();
+        List<LoopIncident> incidents = new ArrayList<>();
         for (UUID start : adjacency.keySet()) {
-            if (onlyPlayer != null && !start.equals(onlyPlayer)) {
-                continue;
-            }
+            // Хронологический цикл находится только при обходе с самой РАННЕЙ вершины
+            // (последнее ребро обязано быть не раньше первого), поэтому DFS запускается
+            // по всем вершинам ОГРАНИЧЕННОГО графа; при scanPlayer события пишутся
+            // только сканируемому игроку. Граф уже ограничен участниками игрока.
             Set<UUID> visited = new HashSet<>();
             visited.add(start);
             findChronologicalCycles(start, start, Long.MIN_VALUE, new ArrayDeque<>(), visited,
-                    adjacency, cfg.transferLoopLength(), MAX_LOOP_DEPTH, inCycle);
+                    adjacency, cfg.transferLoopLength(), MAX_LOOP_DEPTH, seenIncidents,
+                    incidents);
         }
         int written = 0;
-        for (UUID player : inCycle) {
-            if (onlyPlayer != null && !player.equals(onlyPlayer)) {
-                continue;
-            }
-            if (writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, player, null, null,
-                    "minLength=" + cfg.transferLoopLength(),
-                    dedupeKey("loop", player, bucket))) {
-                written++;
+        for (LoopIncident incident : incidents) {
+            String incidentKey = incident.key();
+            String details = "participants=" + incident.participants() + ";txs="
+                    + incident.txIds() + ";amounts=" + incident.amounts() + ";minLength="
+                    + cfg.transferLoopLength() + ";start=" + incident.times().get(0)
+                    + ";end=" + incident.times().get(incident.times().size() - 1);
+            if (onlyPlayer != null) {
+                if (incident.participants().contains(onlyPlayer)
+                        && writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, onlyPlayer, null, null,
+                        details, dedupeKey("loop", onlyPlayer, bucket) + "|" + incidentKey)) {
+                    written++;
+                }
+            } else {
+                for (UUID player : incident.participants()) {
+                    if (writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, player, null, null,
+                            details, dedupeKey("loop", player, bucket) + "|" + incidentKey)) {
+                        written++;
+                    }
+                }
             }
         }
         return written;
@@ -363,12 +463,15 @@ public final class SuspicionScanner {
     /**
      * DFS по рёбрам, упорядоченным по времени: ребро допускается только если оно
      * строго позже ребра, которым узел был достигнут ({@code entryTime}). Возврат
-     * в корень при размере пути ≥ minLength фиксирует участников цикла.
+     * в корень при размере пути ≥ minLength фиксирует КОНКРЕТНЫЙ инцидент цикла
+     * (участники + упорядоченные txId/суммы/времена); дубликат по составу txId
+     * отбрасывается через {@code seenIncidents}.
      */
     private void findChronologicalCycles(UUID root, UUID current, long entryTime,
-                                         Deque<UUID> path, Set<UUID> visited,
+                                         Deque<ChronoEdge> path, Set<UUID> visited,
                                          Map<UUID, List<ChronoEdge>> adjacency,
-                                         int minLength, int maxDepth, Set<UUID> inCycle) {
+                                         int minLength, int maxDepth, Set<String> seenIncidents,
+                                         List<LoopIncident> incidents) {
         if (path.size() >= maxDepth) {
             return;
         }
@@ -381,8 +484,10 @@ public final class SuspicionScanner {
             }
             if (edge.target().equals(root)) {
                 if (path.size() + 1 >= minLength) {
-                    inCycle.add(root);
-                    inCycle.addAll(path);
+                    LoopIncident incident = buildIncident(root, path, edge);
+                    if (seenIncidents.add(incident.key())) {
+                        incidents.add(incident);
+                    }
                 }
                 continue;
             }
@@ -390,12 +495,30 @@ public final class SuspicionScanner {
                 continue;
             }
             visited.add(edge.target());
-            path.addLast(edge.target());
+            path.addLast(edge);
             findChronologicalCycles(root, edge.target(), edge.createdAt(), path, visited,
-                    adjacency, minLength, maxDepth, inCycle);
+                    adjacency, minLength, maxDepth, seenIncidents, incidents);
             path.removeLast();
             visited.remove(edge.target());
         }
+    }
+
+    private static LoopIncident buildIncident(UUID root, Deque<ChronoEdge> path, ChronoEdge closing) {
+        List<UUID> participants = new ArrayList<>();
+        List<String> txIds = new ArrayList<>();
+        List<Long> amounts = new ArrayList<>();
+        List<Long> times = new ArrayList<>();
+        participants.add(root);
+        for (ChronoEdge e : path) {
+            participants.add(e.target());
+            txIds.add(e.row().transactionId());
+            amounts.add(e.row().amountMinor());
+            times.add(e.createdAt());
+        }
+        txIds.add(closing.row().transactionId());
+        amounts.add(closing.row().amountMinor());
+        times.add(closing.createdAt());
+        return new LoopIncident(participants, txIds, amounts, times);
     }
 
     /**
@@ -508,8 +631,31 @@ public final class SuspicionScanner {
 
     // ------------------------------------------------------------ helpers
 
-    /** Ребро графа переводов с временем перевода для хронологического поиска циклов. */
-    private record ChronoEdge(UUID target, long createdAt) {
+    /** Ребро графа переводов: полная строка перевода для хронологического поиска циклов. */
+    private record ChronoEdge(TransactionRow row) {
+
+        UUID target() {
+            return row.targetUuid();
+        }
+
+        long createdAt() {
+            return row.createdAt();
+        }
+    }
+
+    /**
+     * Конкретный инцидент цикла: участники и рёбра (txId/сумма/время) в
+     * хронологическом порядке. Ключ — отсортированный состав txId, поэтому разные
+     * циклы (в т.ч. у одного игрока) остаются разными инцидентами.
+     */
+    private record LoopIncident(List<UUID> participants, List<String> txIds,
+                                List<Long> amounts, List<Long> times) {
+
+        String key() {
+            List<String> sorted = new ArrayList<>(txIds);
+            sorted.sort(Comparator.naturalOrder());
+            return String.join(",", sorted);
+        }
     }
 
     private static String pairKey(UUID a, UUID b) {
@@ -560,11 +706,16 @@ public final class SuspicionScanner {
         }
     }
 
-    /** Итог сканирования: сколько сигналов каждого типа записано. */
+    /**
+     * Итог сканирования: сколько сигналов каждого типа записано и признак того,
+     * что анализ был ОГРАНИЧЕН (персональный граф scanPlayer или предел
+     * maxTransfersPerScan) — неполный анализ не выдаётся за полный.
+     */
     public record ScanSummary(int spamSignals, int roundTripSignals, int oversizedSignals,
                               int newAccountSignals, int rapidForwardingSignals,
                               int transferLoopSignals, int highPairFrequencySignals,
-                              int newAccountConcentrationSignals, int repeatedDestinationSignals) {
+                              int newAccountConcentrationSignals, int repeatedDestinationSignals,
+                              boolean limited) {
 
         public int total() {
             return spamSignals + roundTripSignals + oversizedSignals + newAccountSignals
@@ -573,7 +724,7 @@ public final class SuspicionScanner {
         }
 
         public static ScanSummary zero() {
-            return new ScanSummary(0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ScanSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, false);
         }
     }
 }

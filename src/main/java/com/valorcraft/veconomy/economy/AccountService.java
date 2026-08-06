@@ -161,6 +161,12 @@ public final class AccountService {
                 if (account.isEmpty()) {
                     return failed(TransactionResult.Status.ACCOUNT_NOT_FOUND);
                 }
+                // NO_CHANGES: статус уже целевой. Читаем текущий статус в той же
+                // транзакции и ничего не пишем — ни UPDATE, ни аудит-события, ни
+                // broadcast (команда видит NO_CHANGES и не шлёт «успех»).
+                if (account.get().status() == status) {
+                    return failed(TransactionResult.Status.NO_CHANGES);
+                }
                 long now = System.currentTimeMillis();
                 accounts.setStatus(connection, playerId, status, now);
                 // Аудит — в той же транзакции, что и смена статуса: событие не
@@ -307,7 +313,10 @@ public final class AccountService {
                 }
                 long previous = account.balanceMinor();
                 if (previous == newBalance) {
-                    return success(null, previous, -1L);
+                    // NO_CHANGES: баланс уже равен целевому — без ledger-записи, без
+                    // аудита ADMIN_BALANCE_CHANGE и без broadcast (команда трактует
+                    // это отдельной веткой, «успех» и уведомления не шлются).
+                    return failed(TransactionResult.Status.NO_CHANGES);
                 }
                 long delta = Math.abs(newBalance - previous);
                 long now = System.currentTimeMillis();

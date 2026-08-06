@@ -123,6 +123,7 @@ public final class TestDb implements AutoCloseable {
 
     @Override
     public void close() {
+        auditService.shutdown();
         database.close();
     }
 }

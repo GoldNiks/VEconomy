@@ -34,6 +34,13 @@ public final class DatabaseManager {
     private Connection connection;   // SQLite (одно соединение)
     private Path path;
 
+    /**
+     * Раздельный монитор транзакций SQLite. MySQL работает через пул соединений и не
+     * должен сериализоваться общим замком базы (см. {@link #inTransaction}): только
+     * SQLite с одним соединением требует взаимного исключения транзакций.
+     */
+    private final Object sqliteTransactionLock = new Object();
+
     public void open(Path dbPath, EconomySettings settings) {
         if (connection != null || pool != null) {
             throw new IllegalStateException("DatabaseManager уже открыт: " + path);
@@ -127,14 +134,19 @@ public final class DatabaseManager {
 
     /**
      * Выполнить работу в одной транзакции. Ошибка откатывает транзакцию.
-     * Для SQLite соединение одно и метод синхронизирован; для MySQL соединение
-     * берётся из пула (параллельные потоки получают разные соединения).
+     * Для SQLite соединение одно — транзакции сериализуются отдельным замком
+     * {@code sqliteTransactionLock}; для MySQL соединение берётся из пула, и метод
+     * НЕ блокируется общим монитором (параллельные потоки получают разные
+     * соединения и независимые транзакции). Один скан никогда не держит единую
+     * транзакцию/глобальный замок на всё время работы.
      */
-    public synchronized <T> T inTransaction(Function<Connection, T> work) {
+    public <T> T inTransaction(Function<Connection, T> work) {
         if (dialect == Dialect.MYSQL) {
             return inTransactionMySql(work);
         }
-        return inTransactionSqlite(work);
+        synchronized (sqliteTransactionLock) {
+            return inTransactionSqlite(work);
+        }
     }
 
     private <T> T inTransactionSqlite(Function<Connection, T> work) {

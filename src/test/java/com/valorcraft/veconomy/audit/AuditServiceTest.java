@@ -232,7 +232,7 @@ class AuditServiceTest {
             assertTrue(signal.open());
 
             assertTrue(db.auditService.resolve(signal.id(), ResolutionStatus.RESOLVED,
-                    "admin", "проверено"));
+                    "admin", "проверено").success());
             AuditEventRow resolved = db.auditService.event(signal.id()).orElseThrow();
             assertEquals(ResolutionStatus.RESOLVED.name(), resolved.status());
             assertEquals("admin", resolved.resolvedBy());
@@ -240,9 +240,15 @@ class AuditServiceTest {
             assertTrue(db.auditService.openSignals(10).isEmpty());
             assertEquals(1, db.auditService.countByStatus(ResolutionStatus.RESOLVED));
 
-            assertFalse(db.auditService.resolve(signal.id(), ResolutionStatus.DISMISSED,
-                            "admin", "ложное срабатывание"),
+            assertEquals(com.valorcraft.veconomy.audit.ResolveResult.Status.ALREADY_REVIEWED,
+                    db.auditService.resolve(signal.id(), ResolutionStatus.DISMISSED,
+                            "admin", "ложное срабатывание").status(),
                     "уже обработанный сигнал нельзя изменить повторно (только OPEN)");
+            AuditEventRow unchanged = db.auditService.event(signal.id()).orElseThrow();
+            assertEquals(ResolutionStatus.RESOLVED.name(), unchanged.status(),
+                    "повторный resolve не перезаписывает принятое решение");
+            assertEquals("admin", unchanged.resolvedBy());
+            assertEquals("проверено", unchanged.resolutionNote());
 
             db.auditService.record(AuditEventType.SIGNAL_ROUNDTRIP, AuditSeverity.SUSPICIOUS,
                     player, null, null, "круг");
@@ -250,13 +256,30 @@ class AuditServiceTest {
                     .filter(AuditEventRow::open)
                     .findFirst().orElseThrow();
             assertTrue(db.auditService.resolve(second.id(), ResolutionStatus.DISMISSED,
-                    "admin", "ложное срабатывание"));
+                    "admin", "ложное срабатывание").success());
             AuditEventRow dismissed = db.auditService.event(second.id()).orElseThrow();
             assertEquals(ResolutionStatus.DISMISSED.name(), dismissed.status());
             assertEquals(1, db.auditService.countByStatus(ResolutionStatus.DISMISSED));
 
-            assertFalse(db.auditService.resolve(999_999L, ResolutionStatus.DISMISSED, "admin", null),
+            assertEquals(com.valorcraft.veconomy.audit.ResolveResult.Status.NOT_FOUND,
+                    db.auditService.resolve(999_999L, ResolutionStatus.DISMISSED, "admin", null).status(),
                     "несуществующее событие нельзя обработать");
+        }
+    }
+
+    @Test
+    void resolveRejectsNonSignalAndReportsNotSuspicious() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.auditService.record(AuditEventType.ADMIN_BALANCE_CHANGE, AuditSeverity.INFO,
+                    player, null, null, "op=ADD;delta=100");
+
+            assertEquals(com.valorcraft.veconomy.audit.ResolveResult.Status.NOT_SUSPICIOUS,
+                    db.auditService.resolve(1L, ResolutionStatus.RESOLVED, "admin", null).status(),
+                    "не-сигнал не обрабатывается как сигнал");
+            AuditEventRow event = db.auditService.event(1L).orElseThrow();
+            assertEquals(ResolutionStatus.OPEN.name(), event.status(),
+                    "не-сигнал остаётся нетронутым");
         }
     }
 
@@ -351,9 +374,28 @@ class AuditServiceTest {
             var result = db.accountService.setBalance(player, 100,
                     com.valorcraft.veconomy.api.TransactionContext.of(
                             com.valorcraft.veconomy.api.TransactionType.ADMIN_SET_ADJUSTMENT, null, "без изменений"));
-            assertTrue(result.isSuccess());
+            assertEquals(com.valorcraft.veconomy.api.TransactionResult.Status.NO_CHANGES,
+                    result.status(), "set на тот же баланс — NO_CHANGES, а не ложный успех");
             assertEquals(before, db.auditService.count(),
                     "set на тот же баланс не должен плодить событие");
+        }
+    }
+
+    @Test
+    void freezeAlreadyFrozenIsNoChangesAndWritesNothing() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.accountService.deposit(player, 100, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.ADMIN_DEPOSIT, null, "старт"));
+            assertTrue(db.accountService.freeze(player, "заморозка")
+                    .isSuccess());
+            long before = db.auditService.count();
+
+            var again = db.accountService.freeze(player, "повторно");
+            assertEquals(com.valorcraft.veconomy.api.TransactionResult.Status.NO_CHANGES,
+                    again.status(), "повторная заморозка уже замороженного — NO_CHANGES");
+            assertEquals(before, db.auditService.count(),
+                    "повторная заморозка не должна плодить событие");
         }
     }
 
@@ -542,6 +584,45 @@ class AuditServiceTest {
             });
             assertTrue(done.await(10, TimeUnit.SECONDS), "сбойный скан должен завершиться");
             assertNotNull(failure.get(), "сбой доставляется как ошибка");
+        }
+    }
+
+    @Test
+    void afterShutdownNewScansRejectedAndPendingOutcomeNotDelivered() throws InterruptedException {
+        try (TestDb db = TestDb.create()) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch delivered = new CountDownLatch(1);
+            AuditService.ScanOutcome noop = new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                    delivered.countDown();
+                }
+
+                @Override
+                public void failed(String error) {
+                    delivered.countDown();
+                }
+            };
+            assertEquals(AuditService.ScanAccept.ACCEPTED,
+                    db.auditService.submitScan(() -> {
+                        started.countDown();
+                        try {
+                            release.await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return SuspicionScanner.ScanSummary.zero();
+                    }, noop));
+            assertTrue(started.await(10, TimeUnit.SECONDS), "скан должен стартовать");
+
+            db.auditService.shutdown();
+            assertEquals(AuditService.ScanAccept.BUSY,
+                    db.auditService.scanAllAsync(noop),
+                    "после остановки новые сканы отклоняются");
+            release.countDown();
+            assertFalse(delivered.await(2, TimeUnit.SECONDS),
+                    "колбэк прерванного остановкой скана не доставляется");
         }
     }
 

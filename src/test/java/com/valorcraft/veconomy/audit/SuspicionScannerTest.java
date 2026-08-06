@@ -445,6 +445,141 @@ class SuspicionScannerTest {
     }
 
     @Test
+    void scanPlayerSeesCycleThroughRestrictedGraph() throws IOException {
+        // Полный граф A→B→C→A: при персональном скан(B) цикл обязан быть виден,
+        // хотя собраны только локальные рёбра B и ограниченный граф участников.
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            transfer(db, alice, bob, 100);
+            transfer(db, bob, carol, 100);
+            transfer(db, carol, alice, 100);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(bob);
+            assertEquals(1, summary.transferLoopSignals(),
+                    "при scanPlayer инцидент пишется только сканируемому игроку");
+            assertEquals(1, summary.total());
+            assertTrue(summary.limited(), "персональный граф помечается «ограничено»");
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, bob));
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, alice),
+                    "сканируемый игрок не должен рисовать события остальным участникам");
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, carol));
+        }
+    }
+
+    @Test
+    void transferLoopDetailsContainOrderedTxIdsAndAmounts() throws IOException {
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            transfer(db, alice, bob, 111);
+            transfer(db, bob, carol, 222);
+            transfer(db, carol, alice, 333);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(3, summary.transferLoopSignals());
+            List<AuditEventRow> loopRows = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_LOOP.equals(s.eventType()))
+                    .toList();
+            assertEquals(3, loopRows.size());
+            String details = loopRows.get(0).details();
+            assertTrue(details.contains("participants=["), details);
+            assertTrue(details.contains("txs=["), "инцидент должен нести упорядоченные txId: " + details);
+            assertTrue(details.contains("111") && details.contains("222") && details.contains("333"),
+                    "суммы рёбер цикла в инциденте: " + details);
+            // Инцидент-суффикс ключа (после "|") у всех трёх участников один и тот же.
+            String incidentPart = loopRows.get(0).dedupeKey()
+                    .substring(loopRows.get(0).dedupeKey().lastIndexOf('|') + 1);
+            assertTrue(loopRows.stream().allMatch(r -> r.dedupeKey().endsWith("|" + incidentPart)),
+                    "события одного цикла дедуплицируются общим инцидент-суффиксом");
+        }
+    }
+
+    @Test
+    void distinctLoopsOfSamePlayerDoNotCollapse() throws IOException {
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            UUID dana = UUID.randomUUID();
+            UUID eric = UUID.randomUUID();
+            for (UUID p : new UUID[]{alice, bob, carol, dana, eric}) {
+                fund(db, p, 100_000);
+            }
+            // Два независимых цикла, оба через Bob: A→B→C→A и D→B→E→D.
+            transfer(db, alice, bob, 100);
+            transfer(db, bob, carol, 100);
+            transfer(db, carol, alice, 100);
+            transfer(db, dana, bob, 100);
+            transfer(db, bob, eric, 100);
+            transfer(db, eric, dana, 100);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            // Каждый участник каждого цикла получает событие: 3 + 3 = 6.
+            assertEquals(6, summary.transferLoopSignals());
+            List<AuditEventRow> bobEvents = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_LOOP.equals(s.eventType()) && bob.equals(s.playerId()))
+                    .toList();
+            assertEquals(2, bobEvents.size(),
+                    "bob участвует в двух разных циклах — два разных инцидента");
+            assertFalse(bobEvents.get(0).dedupeKey().equals(bobEvents.get(1).dedupeKey()),
+                    "циклы с разным составом txId не схлопываются в один");
+        }
+    }
+
+    @Test
+    void rapidForwardingPairCarriesBothTxIds() throws IOException {
+        writeConfig(tuned("\"rapidForwardAmount\":500,\"rapidForwardWindowMinutes\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            transfer(db, alice, bob, 1000);
+            transfer(db, bob, carol, 1000);
+
+            db.auditService.scanAll();
+            List<AuditEventRow> rapid = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_RAPID_FORWARDING.equals(s.eventType()))
+                    .toList();
+            assertEquals(1, rapid.size());
+            String details = rapid.get(0).details();
+            assertTrue(details.contains("inTx="), details);
+            assertTrue(details.contains("outTx="), details);
+            assertTrue(details.contains("deltaMillis="), details);
+        }
+    }
+
+    @Test
+    void maxTransfersPerScanLimitsAndFlagsSummary() throws IOException {
+        // Предел в 2 перевода: анализируется новейшая часть окна, сводка помечается.
+        writeConfig(tuned("\"maxTransfersPerScan\":2"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            for (int i = 0; i < 5; i++) {
+                transfer(db, alice, bob, 100);
+            }
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertTrue(summary.limited(), "при превышении максимума сводка помечается «ограничено»");
+        }
+    }
+
+    @Test
     void highPairFrequencySignalsEachSide() throws IOException {
         writeConfig(tuned("\"highPairFrequencyExchanges\":10"));
         try (TestDb db = TestDb.create(noCooldown())) {

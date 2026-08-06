@@ -69,19 +69,28 @@ public final class AuditRepository {
     }
 
     /**
-     * Дупликат ключа vs настоящая ошибка: MySQL — код 1062, SQLite — нарушение
-     * ограничения: базовый код 19 либо extended 2067 (UNIQUE) / 1555 (PRIMARY KEY).
-     * Единственные ограничения audit_events, которые может нарушить корректный
-     * INSERT, — уникальные индексы idempotency/dedupe; любые другие коды
-     * (busy, ioerror и т.п.) остаются ошибкой базы.
+     * Дупликат ключа vs настоящая ошибка — СТРОГО: только подтверждённое нарушение
+     * уникальности кастомных ключей дедупликации. Широкий SQLite код 19 (SQLITE_CONSTRAINT)
+     * НЕ считается дубликатом: он покрывает и NOT NULL, и CHECK, и FK — маскировать
+     * настоящие сбои записи нельзя. Признаются только extended-коды уникальности
+     * (2067 UNIQUE, 1555 PRIMARY KEY). MySQL — код 1062 И совпадение имени ограничения
+     * с известными уникальными индексами audit_events ({@code uk_audit_dedupe},
+     * {@code uk_audit_idem}) в сообщении драйвера; реакция на другой unique-индекс вряд
+     * ли вообще достижима, но отделяется как не-дупликат.
      */
     private static boolean isDuplicateKey(DatabaseManager.Dialect dialect, SQLException e) {
         if (dialect == DatabaseManager.Dialect.MYSQL) {
-            return e.getErrorCode() == 1062;
+            if (e.getErrorCode() != 1062) {
+                return false;
+            }
+            String message = e.getMessage() == null ? "" : e.getMessage();
+            return message.contains("uk_audit_idem") || message.contains("uk_audit_dedupe");
         }
         if (e instanceof org.sqlite.SQLiteException s) {
             int code = s.getResultCode() == null ? -1 : s.getResultCode().code;
-            return code == 19 || code == 2067 || code == 1555;
+            // Только confirmed unique/primary-key нарушения; все прочие коды (включая
+            // широкий 19, NOT NULL/CHECK/FK и busy/ioerror) — это ошибка базы.
+            return code == 2067 || code == 1555;
         }
         return false;
     }
@@ -157,15 +166,38 @@ public final class AuditRepository {
     }
 
     /**
-     * Атомарно перевести событие в обработанное состояние. Работает ТОЛЬКО по
-     * открытым сигналам подозрительной активности: условие {@code severity = 'SUSPICIOUS'
-     * AND status = 'OPEN'} в самом UPDATE делает проверку и изменение одним
-     * оператором — нельзя обработать не-сигнал, повторно обработать уже обработанный
-     * сигнал или потерять состояние из-за гонки с другим обработчиком. Возвращает
-     * false, если событие не найдено либо не соответствует условию.
+     * Перевести сигнал в обработанное состояние со СТРУКТУРИРОВАННЫМ результатом.
+     * Обрабатываются ТОЛЬКО открытые сигналы подозрительной активности:
+     * <ul>
+     *   <li>события с id нет — {@link ResolveResult.Status#NOT_FOUND};</li>
+     *   <li>событие есть, но severity ниже SUSPICIOUS — {@link ResolveResult.Status#NOT_SUSPICIOUS};</li>
+     *   <li>сигнал уже обработан — {@link ResolveResult.Status#ALREADY_REVIEWED} (повторный
+     *       resolve НЕ перезаписывает resolved_at/resolved_by/note — решение уже принято);</li>
+     *   <li>иначе - обновление одним UPDATE с гвардой {@code severity='SUSPICIOUS' AND status='OPEN'}
+     *       (проверка и изменение одним оператором — без гонок) и {@link ResolveResult.Status#SUCCESS}.</li>
+     * </ul>
      */
-    public boolean resolve(Connection connection, long id, ResolutionStatus status,
-                           String resolvedBy, String note, long now) {
+    public ResolveResult resolve(Connection connection, long id, ResolutionStatus status,
+                                 String resolvedBy, String note, long now) {
+        try (PreparedStatement lookup = connection.prepareStatement(
+                "SELECT severity, status FROM audit_events WHERE id = ?")) {
+            lookup.setLong(1, id);
+            try (ResultSet rs = lookup.executeQuery()) {
+                if (!rs.next()) {
+                    return new ResolveResult(ResolveResult.Status.NOT_FOUND);
+                }
+                String severity = rs.getString("severity");
+                if (severity == null || !AuditSeverity.SUSPICIOUS.name().equals(severity)) {
+                    return new ResolveResult(ResolveResult.Status.NOT_SUSPICIOUS);
+                }
+                String current = rs.getString("status");
+                if (current != null && !ResolutionStatus.OPEN.name().equals(current)) {
+                    return new ResolveResult(ResolveResult.Status.ALREADY_REVIEWED);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка проверки аудит-события " + id, e);
+        }
         try (PreparedStatement statement = connection.prepareStatement(
                 "UPDATE audit_events SET status = ?, resolved_at = ?, resolved_by = ?, "
                         + "resolution_note = ? WHERE id = ? AND severity = 'SUSPICIOUS' "
@@ -175,7 +207,8 @@ public final class AuditRepository {
             statement.setString(3, resolvedBy);
             statement.setString(4, note);
             statement.setLong(5, id);
-            return statement.executeUpdate() > 0;
+            statement.executeUpdate();
+            return new ResolveResult(ResolveResult.Status.SUCCESS);
         } catch (SQLException e) {
             throw new DatabaseException("Ошибка обработки аудит-события " + id, e);
         }

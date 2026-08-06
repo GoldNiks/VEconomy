@@ -194,6 +194,11 @@ public final class EconomyCore {
         if (activity != null) {
             activity.persistAll();
         }
+        if (auditService != null) {
+            // Остановить исполнитель сканирования ДО закрытия базы: колбэки после
+            // остановки не доставляются, исполнитель не ловит исключения закрытого пула.
+            auditService.shutdown();
+        }
         if (database != null) {
             database.close();
             database = null;

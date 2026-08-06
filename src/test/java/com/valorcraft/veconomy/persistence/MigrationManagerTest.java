@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -193,6 +194,28 @@ class MigrationManagerTest {
             assertTrue(indexes.contains("idx_audit_dedupe"), "частичный уникальный индекс dedupe_key");
             assertTrue(indexes.contains("idx_audit_idem"), "уникальный индекс idempotency_key");
         }
+    }
+
+    @Test
+    void auditV7MySqlPlanIsStructuredAndNotSplitOnCommas() {
+        List<String> statements = MigrationManager.auditV7MySqlStatements();
+        // Один оператор на один объект: составные индексы без разрезания по запятым.
+        for (String statement : statements) {
+            assertTrue(statement.startsWith("ALTER TABLE audit_events ADD "),
+                    "MySQL v7-оператор должен быть одним ALTER: " + statement);
+        }
+        // Полный набор v7-объектов покрыт.
+        for (String column : new String[]{"actor_type", "status", "resolved_at", "resolved_by",
+                "resolution_note", "idempotency_key", "counterparty_uuid", "dedupe_key"}) {
+            assertTrue(statements.stream().anyMatch(s -> s.contains("ADD COLUMN " + column + " ")),
+                    "нет ALTER ADD COLUMN " + column);
+        }
+        assertTrue(statements.stream().anyMatch(s -> s.contains("ADD UNIQUE INDEX uk_audit_idem")),
+                "ожидается уникальный индекс idempotency_key");
+        assertTrue(statements.stream().anyMatch(s -> s.contains("ADD UNIQUE INDEX uk_audit_dedupe")),
+                "ожидается уникальный индекс dedupe_key");
+        assertTrue(statements.stream().anyMatch(s -> s.contains("ADD INDEX idx_audit_severity (severity, created_at)")),
+                "составной индекс (severity, created_at) должен оставаться одним оператором");
     }
 
     private static int insertAuditIgnored(Connection connection, String id, String dedupeKey) {

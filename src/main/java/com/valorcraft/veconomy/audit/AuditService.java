@@ -13,9 +13,10 @@ import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -172,14 +173,18 @@ public final class AuditService {
         return database.inTransaction(connection -> audit.findById(connection, id));
     }
 
-    /** Перевести событие в обработанное состояние; false, если события нет. */
-    public boolean resolve(long id, ResolutionStatus status, String resolvedBy, String note) {
+    /**
+     * Перевести сигнал в обработанное состояние. Структурированный результат
+     * ({@link ResolveResult.Status}) отличает «события нет» от «не сигнал» и
+     * «уже обработано»; повторный resolve не перезаписывает решение.
+     */
+    public ResolveResult resolve(long id, ResolutionStatus status, String resolvedBy, String note) {
         try {
             return database.inTransaction(connection ->
                     audit.resolve(connection, id, status, resolvedBy, note, System.currentTimeMillis()));
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка обработки аудит-события {}", id, e);
-            return false;
+            return new ResolveResult(ResolveResult.Status.DATABASE_ERROR);
         }
     }
 
@@ -223,14 +228,26 @@ public final class AuditService {
      */
     private final Object scanGate = new Object();
     private ScanPhase scanPhase = ScanPhase.IDLE;
-    private final ExecutorService scanExecutor = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "veconomy-audit-scan");
-        thread.setDaemon(true);
-        return thread;
-    });
+
+    /**
+     * Исполнитель сканирования — явно сконфигурированный {@link ThreadPoolExecutor}
+     * (один рабочий поток, ограниченная очередь, явная политика отказов), а не
+     * обёртка {@code newSingleThreadExecutor} с неограниченной очередью: состояние
+     * потоков и фаза сканирования наблюдаемы, а остановка ({@link #shutdown()})
+     * выполняется до закрытия базы данных.
+     */
+    private final ThreadPoolExecutor scanExecutor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(1),
+            runnable -> {
+                Thread thread = new Thread(runnable, "veconomy-audit-scan");
+                thread.setDaemon(true);
+                return thread;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
 
     public enum ScanPhase {
-        IDLE, RUNNING
+        IDLE, RUNNING, BUSY, FAILED, SHUTTING_DOWN
     }
 
     /** Текущая фаза сканирования (для диагностики/статуса). */
@@ -244,7 +261,7 @@ public final class AuditService {
     public enum ScanAccept {
         /** Запущен в фоне; результат придёт через {@link ScanOutcome}. */
         ACCEPTED,
-        /** Уже идёт другое сканирование — запрос отклонён. */
+        /** Уже идёт другое сканирование либо исполнитель остановлен — запрос отклонён. */
         BUSY
     }
 
@@ -268,7 +285,10 @@ public final class AuditService {
     /** Пакетно-приватный вход для тестов с произвольной работой. */
     ScanAccept submitScan(Supplier<SuspicionScanner.ScanSummary> work, ScanOutcome outcome) {
         synchronized (scanGate) {
-            if (scanPhase == ScanPhase.RUNNING) {
+            if (scanPhase == ScanPhase.RUNNING || scanPhase == ScanPhase.BUSY) {
+                return ScanAccept.BUSY;
+            }
+            if (scanPhase == ScanPhase.SHUTTING_DOWN) {
                 return ScanAccept.BUSY;
             }
             scanPhase = ScanPhase.RUNNING;
@@ -277,6 +297,10 @@ public final class AuditService {
             scanExecutor.execute(() -> runScan(work, outcome));
         } catch (RejectedExecutionException e) {
             synchronized (scanGate) {
+                if (scanPhase == ScanPhase.SHUTTING_DOWN) {
+                    // Остановка выиграла гонку: скан не стартует.
+                    return ScanAccept.BUSY;
+                }
                 scanPhase = ScanPhase.IDLE;
             }
             VEconomyMod.LOGGER.error("Поток сканирования аудита недоступен", e);
@@ -293,10 +317,19 @@ public final class AuditService {
         } catch (Throwable t) {
             error = t.toString();
             VEconomyMod.LOGGER.error("Ошибка фонового сканирования аудита", t);
-        } finally {
-            synchronized (scanGate) {
-                scanPhase = ScanPhase.IDLE;
+        }
+        boolean shuttingDown;
+        synchronized (scanGate) {
+            if (scanPhase == ScanPhase.SHUTTING_DOWN) {
+                // Скан прерван остановкой: результат не доставляем, фазу не трогаем.
+                shuttingDown = true;
+            } else {
+                scanPhase = error == null ? ScanPhase.IDLE : ScanPhase.FAILED;
+                shuttingDown = false;
             }
+        }
+        if (shuttingDown) {
+            return;
         }
         final SuspicionScanner.ScanSummary result = summary;
         final String failure = error;
@@ -315,6 +348,30 @@ public final class AuditService {
         }
     }
 
+    /**
+     * Остановить сканирование: новые сканы отклоняются (BUSY), активный скан ждём
+     * ограниченное время и при превышении прерываем, колбэки после остановки не
+     * доставляются. Вызывается ДО {@link DatabaseManager#close()} в
+     * {@code EconomyCore.shutdown()}.
+     */
+    public void shutdown() {
+        synchronized (scanGate) {
+            if (scanPhase == ScanPhase.SHUTTING_DOWN) {
+                return;
+            }
+            scanPhase = ScanPhase.SHUTTING_DOWN;
+        }
+        scanExecutor.shutdown();
+        try {
+            if (!scanExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                scanExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scanExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
     /** Запустить эвристики по всем игрокам (синхронно; single-flight: параллельный вызов пропускается). */
     public SuspicionScanner.ScanSummary scanAll() {
         return guardedScan(scanner::scanAll);
@@ -328,16 +385,22 @@ public final class AuditService {
     private SuspicionScanner.ScanSummary guardedScan(
             Supplier<SuspicionScanner.ScanSummary> work) {
         synchronized (scanGate) {
-            if (scanPhase == ScanPhase.RUNNING) {
+            if (scanPhase == ScanPhase.RUNNING || scanPhase == ScanPhase.BUSY
+                    || scanPhase == ScanPhase.SHUTTING_DOWN) {
                 return SuspicionScanner.ScanSummary.zero();
             }
             scanPhase = ScanPhase.RUNNING;
         }
         try {
             return work.get();
+        } catch (Throwable t) {
+            VEconomyMod.LOGGER.error("Ошибка синхронного сканирования аудита", t);
+            return SuspicionScanner.ScanSummary.zero();
         } finally {
             synchronized (scanGate) {
-                scanPhase = ScanPhase.IDLE;
+                if (scanPhase != ScanPhase.SHUTTING_DOWN) {
+                    scanPhase = ScanPhase.IDLE;
+                }
             }
         }
     }

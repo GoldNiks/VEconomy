@@ -15,6 +15,7 @@ import com.valorcraft.veconomy.audit.AuditEventRow;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.audit.ResolutionStatus;
+import com.valorcraft.veconomy.audit.ResolveResult;
 import com.valorcraft.veconomy.audit.SuspicionScanner;
 import com.valorcraft.veconomy.config.AuditConfig;
 import com.valorcraft.veconomy.config.EconomyConfig;
@@ -278,8 +279,9 @@ public final class EconomyAdminCommand {
                     Component.translatable("error.limit").withStyle(ChatFormatting.RED));
             case ACCOUNT_DISABLED -> source.sendFailure(
                     Component.translatable("error.frozen").withStyle(ChatFormatting.RED));
-            case INVALID_AMOUNT -> invalidAmount(source);
-            case ACCOUNT_NOT_FOUND -> notFound(source, playerInput);
+            case NO_CHANGES -> source.sendSuccess(() ->
+                    Component.translatable("admin.balance.none", target.name())
+                            .withStyle(ChatFormatting.YELLOW), false);
             default -> source.sendFailure(
                     Component.translatable("error.internal").withStyle(ChatFormatting.RED));
         }
@@ -328,6 +330,9 @@ public final class EconomyAdminCommand {
                     Component.translatable("error.frozen").withStyle(ChatFormatting.RED));
             case LIMIT_EXCEEDED -> source.sendFailure(
                     Component.translatable("error.limit").withStyle(ChatFormatting.RED));
+case NO_CHANGES -> source.sendSuccess(() ->
+                    Component.translatable("admin.balance.nochange", target.name())
+                            .withStyle(ChatFormatting.YELLOW), false);
             default -> source.sendFailure(
                     Component.translatable("error.internal").withStyle(ChatFormatting.RED));
         }
@@ -425,6 +430,10 @@ public final class EconomyAdminCommand {
             }
         } else if (result.status() == TransactionResult.Status.ACCOUNT_NOT_FOUND) {
             return notFound(source, playerInput);
+        } else if (result.status() == TransactionResult.Status.NO_CHANGES) {
+            source.sendSuccess(() ->
+                    Component.translatable("admin.account.status.nochange", target.name())
+                            .withStyle(ChatFormatting.YELLOW), false);
         } else {
             source.sendFailure(Component.translatable("error.internal").withStyle(ChatFormatting.RED));
         }
@@ -550,23 +559,24 @@ public final class EconomyAdminCommand {
         return new AuditService.ScanOutcome() {
             @Override
             public void completed(SuspicionScanner.ScanSummary summary) {
-                if (who == null) {
-                    source.sendSuccess(() -> Component.translatable("admin.audit.scan.done",
-                            summary.spamSignals(), summary.roundTripSignals(),
-                            summary.oversizedSignals(), summary.newAccountSignals(),
-                            summary.rapidForwardingSignals(), summary.transferLoopSignals(),
-                            summary.highPairFrequencySignals(), summary.newAccountConcentrationSignals(),
-                            summary.repeatedDestinationSignals())
-                            .withStyle(ChatFormatting.GREEN), true);
-                } else {
-                    source.sendSuccess(() -> Component.translatable("admin.audit.scan.player.done", who,
-                            summary.spamSignals(), summary.roundTripSignals(),
-                            summary.oversizedSignals(), summary.newAccountSignals(),
-                            summary.rapidForwardingSignals(), summary.transferLoopSignals(),
-                            summary.highPairFrequencySignals(), summary.newAccountConcentrationSignals(),
-                            summary.repeatedDestinationSignals())
-                            .withStyle(ChatFormatting.GREEN), true);
+                Object[] numbers = new Object[]{
+                        summary.spamSignals(), summary.roundTripSignals(),
+                        summary.oversizedSignals(), summary.newAccountSignals(),
+                        summary.rapidForwardingSignals(), summary.transferLoopSignals(),
+                        summary.highPairFrequencySignals(), summary.newAccountConcentrationSignals(),
+                        summary.repeatedDestinationSignals()};
+                Object[] args = who == null ? numbers
+                        : java.util.stream.Stream.concat(java.util.stream.Stream.of(who),
+                        java.util.Arrays.stream(numbers)).toArray();
+                MutableComponent done = Component.translatable(who == null
+                        ? "admin.audit.scan.done" : "admin.audit.scan.player.done", args)
+                        .withStyle(ChatFormatting.GREEN);
+                if (summary.limited()) {
+                    done.append(Component.literal(" ")
+                            .append(Component.translatable("admin.audit.scan.limited")
+                                    .withStyle(ChatFormatting.YELLOW)));
                 }
+                source.sendSuccess(() -> done, true);
             }
 
             @Override
@@ -606,6 +616,10 @@ public final class EconomyAdminCommand {
                 playerName).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> Component.translatable("admin.audit.event.actor",
                 actorName, event.actorType().name()).withStyle(ChatFormatting.GRAY), false);
+        if (event.counterpartyUuid() != null) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.event.counterparty",
+                    displayName(source, event.counterpartyUuid())).withStyle(ChatFormatting.GRAY), false);
+        }
         if (event.amountMinor() != null) {
             source.sendSuccess(() -> Component.translatable("admin.audit.event.amount",
                     EconomyCore.formatter().format(event.amountMinor())).withStyle(ChatFormatting.GRAY), false);
@@ -649,6 +663,18 @@ public final class EconomyAdminCommand {
                 displayName(source, tx.sourceUuid())).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> Component.translatable("admin.audit.tx.to",
                 displayName(source, tx.targetUuid())).withStyle(ChatFormatting.GRAY), false);
+        String actorName = tx.actorUuid() == null
+                ? "CONSOLE" : displayName(source, tx.actorUuid());
+        source.sendSuccess(() -> Component.translatable("admin.audit.tx.actor",
+                actorName).withStyle(ChatFormatting.GRAY), false);
+        if (tx.sourceBalanceAfter() != null || tx.targetBalanceAfter() != null) {
+            String balances = (tx.sourceBalanceAfter() == null ? "-"
+                    : EconomyCore.formatter().format(tx.sourceBalanceAfter()))
+                    + " -> " + (tx.targetBalanceAfter() == null ? "-"
+                    : EconomyCore.formatter().format(tx.targetBalanceAfter()));
+            source.sendSuccess(() -> Component.translatable("admin.audit.tx.after",
+                    balances).withStyle(ChatFormatting.GRAY), false);
+        }
         source.sendSuccess(() -> Component.translatable("admin.audit.tx.time",
                 formatTimestamp(tx.createdAt())).withStyle(ChatFormatting.GRAY), false);
         if (tx.reason() != null && !tx.reason().isBlank()) {
@@ -658,6 +684,14 @@ public final class EconomyAdminCommand {
         if (tx.idempotencyKey() != null && !tx.idempotencyKey().isBlank()) {
             source.sendSuccess(() -> Component.translatable("admin.audit.tx.idem",
                     tx.idempotencyKey()).withStyle(ChatFormatting.GRAY), false);
+        }
+        if (tx.metadata() != null && !tx.metadata().isEmpty()) {
+            // Только безопасная текстовая разметка «key=value; …» — никаких сырых JSON-блоков.
+            source.sendSuccess(() -> Component.translatable("admin.audit.tx.metadata",
+                    tx.metadata().entrySet().stream()
+                            .map(e -> e.getKey() + "=" + e.getValue())
+                            .collect(java.util.stream.Collectors.joining("; ")))
+                    .withStyle(ChatFormatting.GRAY), false);
         }
         return 1;
     }
@@ -703,15 +737,35 @@ public final class EconomyAdminCommand {
         } else {
             resolvedBy = "console";
         }
-        boolean done = EconomyCore.audit().resolve(id, status, resolvedBy, note);
-        if (!done) {
-            source.sendFailure(Component.translatable("admin.audit.event.notfound", id)
-                    .withStyle(ChatFormatting.RED));
-            return 1;
+        ResolveResult result = EconomyCore.audit().resolve(id, status, resolvedBy, note);
+        switch (result.status()) {
+            case NOT_FOUND -> {
+                source.sendFailure(Component.translatable("admin.audit.event.notfound", id)
+                        .withStyle(ChatFormatting.RED));
+                return 1;
+            }
+            case NOT_SUSPICIOUS -> {
+                source.sendFailure(Component.translatable("admin.audit.resolve.nosignal", id)
+                        .withStyle(ChatFormatting.RED));
+                return 1;
+            }
+            case ALREADY_REVIEWED -> {
+                source.sendFailure(Component.translatable("admin.audit.resolve.already", id)
+                        .withStyle(ChatFormatting.YELLOW));
+                return 1;
+            }
+            case DATABASE_ERROR -> {
+                source.sendFailure(Component.translatable("error.internal")
+                        .withStyle(ChatFormatting.RED));
+                return 1;
+            }
+            case SUCCESS -> {
+                String key = status == ResolutionStatus.RESOLVED
+                        ? "admin.audit.resolve.done" : "admin.audit.dismiss.done";
+                source.sendSuccess(() -> Component.translatable(key, id)
+                        .withStyle(ChatFormatting.GREEN), true);
+            }
         }
-        String key = status == ResolutionStatus.RESOLVED
-                ? "admin.audit.resolve.done" : "admin.audit.dismiss.done";
-        source.sendSuccess(() -> Component.translatable(key, id).withStyle(ChatFormatting.GREEN), true);
         return 1;
     }
 
@@ -766,6 +820,11 @@ public final class EconomyAdminCommand {
                     .withStyle(severityColor));
             line.append(Component.literal(row.eventType()).withStyle(ChatFormatting.AQUA));
             line.append(Component.literal(" " + playerName).withStyle(ChatFormatting.WHITE));
+            if (row.counterpartyUuid() != null) {
+                line.append(Component.literal(" -> "
+                                + displayName(source, row.counterpartyUuid()))
+                        .withStyle(ChatFormatting.GRAY));
+            }
             if (row.amountMinor() != null) {
                 line.append(Component.literal(" " + EconomyCore.formatter().format(row.amountMinor()))
                         .withStyle(ChatFormatting.GREEN));
