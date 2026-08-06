@@ -33,6 +33,8 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -686,14 +688,41 @@ case NO_CHANGES -> source.sendSuccess(() ->
                     tx.idempotencyKey()).withStyle(ChatFormatting.GRAY), false);
         }
         if (tx.metadata() != null && !tx.metadata().isEmpty()) {
+            // Чувствительные ключи (token/secret/password/ip/address/authorization/session)
+            // показываются с замаскированным значением, остальные — как есть.
             // Только безопасная текстовая разметка «key=value; …» — никаких сырых JSON-блоков.
             source.sendSuccess(() -> Component.translatable("admin.audit.tx.metadata",
-                    tx.metadata().entrySet().stream()
+                    safeMetadata(tx.metadata()).entrySet().stream()
                             .map(e -> e.getKey() + "=" + e.getValue())
                             .collect(java.util.stream.Collectors.joining("; ")))
                     .withStyle(ChatFormatting.GRAY), false);
         }
         return 1;
+    }
+
+    /** Маркеры ключей метаданных, значения которых не показываются административной команде. */
+    private static final String[] SENSITIVE_METADATA_TOKENS = {
+            "token", "secret", "password", "ip", "address", "authorization", "session",
+    };
+
+    private static final String REDACTED_VALUE = "\u2588\u2588\u2588\u2588\u2588";
+
+    /** Метаданные для вывода: чувствительные значения заменяются маской, ключи сохраняются. */
+    static Map<String, String> safeMetadata(Map<String, String> metadata) {
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : metadata.entrySet()) {
+            String key = entry.getKey();
+            String lower = key.toLowerCase(Locale.ROOT);
+            boolean sensitive = false;
+            for (String token : SENSITIVE_METADATA_TOKENS) {
+                if (lower.contains(token)) {
+                    sensitive = true;
+                    break;
+                }
+            }
+            out.put(key, sensitive ? REDACTED_VALUE : entry.getValue());
+        }
+        return out;
     }
 
     private static String displayName(CommandSourceStack source, UUID id) {

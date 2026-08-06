@@ -138,6 +138,34 @@ public final class TransactionRepository {
         }
     }
 
+    /**
+     * Переводы окна с жёстким лимитом прямо в SQL ({@code LIMIT}): для скана загружается
+     * не больше {@code limit} строк, дополнительные строки для определения «ограничено»
+     * не читаются в память. Порядок стабильный: {@code created_at}, затем
+     * {@code transaction_id} (новые сверху, tie-break по id) — между прогонами окна
+     * результат воспроизводим.
+     */
+    public List<TransactionRow> transfersSinceLimited(Connection connection, long sinceMillis,
+                                                      int limit) {
+        List<TransactionRow> result = new ArrayList<>();
+        try (var statement = connection.prepareStatement(
+                "SELECT * FROM transactions WHERE transaction_type = ? AND created_at >= ? "
+                        + "ORDER BY created_at DESC, transaction_id DESC LIMIT ?")) {
+            statement.setString(1, TransactionType.PLAYER_TRANSFER.name());
+            statement.setLong(2, sinceMillis);
+            statement.setInt(3, limit);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    result.add(map(rs));
+                }
+            }
+            return result;
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения ограниченного набора переводов с "
+                    + sinceMillis, e);
+        }
+    }
+
     public long sumAmountByTypeSince(Connection connection, TransactionType type, long sinceMillis) {
         return aggregateByTypeSince(connection, type, sinceMillis, "COALESCE(SUM(amount_minor), 0)");
     }
@@ -171,59 +199,75 @@ public final class TransactionRepository {
     /**
      * Переводы, обе стороны которых входят в {@code participants} — ограниченный граф
      * вокруг игрока для {@code scanPlayer}: loop-эвристика получает дополнительные
-     * рёбра (A→B→C→A виден при сканировании B), но НЕ весь журнал аудита. Для
-     * множества больше {@code maxParticipants} запрос разбивается по батчам (MySQL
-     * и SQLite ограничивают число параметров, и один огромный IN всё равно потянет
-     * лишний объём).
+     * рёбра (A→B→C→A виден при сканировании B), но НЕ весь журнал аудита. Отправители
+     * и получатели разбиваются на слайсы по {@link #MAX_IN_PARAMETERS} НЕЗАВИСИМО,
+     * и запросы выполняются для всех пар слайсов (перевод между UUID из разных пакетов
+     * не теряется); дубликаты по transaction_id убираются. Для множества больше
+     * {@code maxParticipants} анализ ограничивается первыми UUID — это защита от
+     * неограниченного расширения графа (MySQL и SQLite ограничивают число параметров).
      */
     public List<TransactionRow> transfersBetween(Connection connection, Collection<UUID> participants,
                                                  long sinceMillis) {
+        return transfersBetween(connection, participants, sinceMillis, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Вариант с пределом числа участников: используются первые {@code maxParticipants}
+     * UUID (в стабильном порядке обхода коллекции), остальные в граф не попадают.
+     */
+    public List<TransactionRow> transfersBetween(Connection connection, Collection<UUID> participants,
+                                                 long sinceMillis, int maxParticipants) {
         if (participants == null || participants.isEmpty()) {
             return List.of();
         }
         List<UUID> unique = participants.stream().distinct().toList();
-        List<TransactionRow> result = new ArrayList<>();
-        int batch = 0;
-        while (batch < unique.size()) {
-            int end = Math.min(unique.size(), batch + MAX_IN_PARAMETERS);
-            List<UUID> slice = unique.subList(batch, end);
-            StringBuilder sql = new StringBuilder("SELECT * FROM transactions WHERE transaction_type = ? "
-                    + "AND created_at >= ? AND source_uuid IN (");
-            for (int i = 0; i < slice.size(); i++) {
-                sql.append('?');
-                if (i < slice.size() - 1) {
-                    sql.append(',');
-                }
-            }
-            sql.append(") AND target_uuid IN (");
-            for (int i = 0; i < slice.size(); i++) {
-                sql.append('?');
-                if (i < slice.size() - 1) {
-                    sql.append(',');
-                }
-            }
-            sql.append(')');
-            try (var statement = connection.prepareStatement(sql.toString())) {
-                int index = 1;
-                statement.setString(index++, TransactionType.PLAYER_TRANSFER.name());
-                statement.setLong(index++, sinceMillis);
-                for (UUID id : slice) {
-                    statement.setString(index++, id.toString());
-                }
-                for (UUID id : slice) {
-                    statement.setString(index++, id.toString());
-                }
-                try (ResultSet rs = statement.executeQuery()) {
-                    while (rs.next()) {
-                        result.add(map(rs));
-                    }
-                }
-            } catch (SQLException e) {
-                throw new DatabaseException("Ошибка чтения переводов графа участников", e);
-            }
-            batch = end;
+        if (unique.size() > maxParticipants) {
+            unique = unique.subList(0, maxParticipants);
         }
-        return result;
+        Map<String, TransactionRow> byId = new java.util.LinkedHashMap<>();
+        for (int srcStart = 0; srcStart < unique.size(); srcStart += MAX_IN_PARAMETERS) {
+            int srcEnd = Math.min(unique.size(), srcStart + MAX_IN_PARAMETERS);
+            List<UUID> sourceSlice = unique.subList(srcStart, srcEnd);
+            for (int tgtStart = 0; tgtStart < unique.size(); tgtStart += MAX_IN_PARAMETERS) {
+                int tgtEnd = Math.min(unique.size(), tgtStart + MAX_IN_PARAMETERS);
+                List<UUID> targetSlice = unique.subList(tgtStart, tgtEnd);
+                String sql = "SELECT * FROM transactions WHERE transaction_type = ? "
+                        + "AND created_at >= ? AND source_uuid IN ("
+                        + inPlaceholders(sourceSlice.size()) + ") AND target_uuid IN ("
+                        + inPlaceholders(targetSlice.size()) + ")";
+                try (var statement = connection.prepareStatement(sql)) {
+                    int index = 1;
+                    statement.setString(index++, TransactionType.PLAYER_TRANSFER.name());
+                    statement.setLong(index++, sinceMillis);
+                    for (UUID id : sourceSlice) {
+                        statement.setString(index++, id.toString());
+                    }
+                    for (UUID id : targetSlice) {
+                        statement.setString(index++, id.toString());
+                    }
+                    try (ResultSet rs = statement.executeQuery()) {
+                        while (rs.next()) {
+                            TransactionRow row = map(rs);
+                            byId.putIfAbsent(row.transactionId(), row);
+                        }
+                    }
+                } catch (SQLException e) {
+                    throw new DatabaseException("Ошибка чтения переводов графа участников", e);
+                }
+            }
+        }
+        return new ArrayList<>(byId.values());
+    }
+
+    private static String inPlaceholders(int size) {
+        StringBuilder sql = new StringBuilder();
+        for (int i = 0; i < size; i++) {
+            if (i > 0) {
+                sql.append(',');
+            }
+            sql.append('?');
+        }
+        return sql.toString();
     }
 
     /** Максимум элементов в IN-списке (порог достаточно низкий для обоих диалектов). */

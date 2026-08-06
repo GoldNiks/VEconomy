@@ -268,6 +268,67 @@ class AuditServiceTest {
     }
 
     @Test
+    void concurrentResolveYieldsExactlyOneSuccessAndNoRewrite() throws Exception {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.auditService.record(AuditEventType.SIGNAL_TRANSFER_SPAM, AuditSeverity.SUSPICIOUS,
+                    player, null, null, "transfers=50");
+            AuditEventRow signal = db.auditService.signals(10).get(0);
+
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.ExecutorService pool =
+                    java.util.concurrent.Executors.newFixedThreadPool(2);
+            java.util.concurrent.ConcurrentMap<String, com.valorcraft.veconomy.audit.ResolveResult.Status>
+                    results = new java.util.concurrent.ConcurrentHashMap<>();
+            java.util.function.BiConsumer<String, String> resolve = (admin, note) -> {
+                ready.countDown();
+                try {
+                    start.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                results.put(admin.toLowerCase(),
+                        db.auditService.resolve(signal.id(), ResolutionStatus.RESOLVED,
+                                admin, note).status());
+            };
+            try {
+                pool.execute(() -> resolve.accept("admin-a", "первый"));
+                pool.execute(() -> resolve.accept("admin-b", "второй"));
+                assertTrue(ready.await(5, TimeUnit.SECONDS));
+                start.countDown();
+                pool.shutdown();
+                assertTrue(pool.awaitTermination(15, TimeUnit.SECONDS), "resolve должен завершиться");
+            } finally {
+                pool.shutdownNow();
+            }
+
+            long successes = results.values().stream()
+                    .filter(com.valorcraft.veconomy.audit.ResolveResult.Status.SUCCESS::equals).count();
+            long already = results.values().stream()
+                    .filter(com.valorcraft.veconomy.audit.ResolveResult.Status.ALREADY_REVIEWED::equals).count();
+            assertEquals(1, successes,
+                    "ровно один администратор должен получить SUCCESS при рассмотрении одного сигнала");
+            assertEquals(1, already,
+                    "второй администратор должен получить ALREADY_REVIEWED, а не SUCCESS");
+
+            AuditEventRow done = db.auditService.event(signal.id()).orElseThrow();
+            assertEquals(ResolutionStatus.RESOLVED.name(), done.status());
+            // Победитель гонки — тот, кто получил SUCCESS (а не произвольный ключ карты).
+            String winner = results.entrySet().stream()
+                    .filter(e -> com.valorcraft.veconomy.audit.ResolveResult.Status.SUCCESS
+                            .equals(e.getValue()))
+                    .findFirst().orElseThrow().getKey();
+            String winnerNote = "admin-a".equals(winner) ? "первый" : "второй";
+            assertEquals(winner, done.resolvedBy(), "resolved_by — только победитель гонки");
+            assertEquals(winnerNote, done.resolutionNote(),
+                    "resolution_note победителя не должна перезаписываться проигравшим");
+            assertTrue(done.resolvedAt() > 0, "resolved_at заполняется один раз");
+        }
+    }
+
+    @Test
     void resolveRejectsNonSignalAndReportsNotSuspicious() {
         try (TestDb db = TestDb.create()) {
             UUID player = UUID.randomUUID();
@@ -623,6 +684,82 @@ class AuditServiceTest {
             release.countDown();
             assertFalse(delivered.await(2, TimeUnit.SECONDS),
                     "колбэк прерванного остановкой скана не доставляется");
+        }
+    }
+
+    @Test
+    void scanDatabaseErrorDeliversFailedNotZeroResult() throws InterruptedException {
+        try (TestDb db = TestDb.create()) {
+            // Сканирование после закрытия базы: ошибка репозитория НЕ выводится
+            // как «успешно найдено 0 сигналов» — вызывается failed с причиной.
+            db.database.close();
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<String> failure = new AtomicReference<>();
+            AtomicReference<Boolean> completedCalled = new AtomicReference<>(false);
+            AuditService.ScanOutcome outcome = new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                    completedCalled.set(true);
+                    done.countDown();
+                }
+
+                @Override
+                public void failed(String error) {
+                    failure.set(error);
+                    done.countDown();
+                }
+            };
+            assertEquals(AuditService.ScanAccept.ACCEPTED, db.auditService.scanAllAsync(outcome));
+            assertTrue(done.await(10, TimeUnit.SECONDS), "сбойный скан должен завершиться");
+            assertNotNull(failure.get(), "ошибка базы доставляется как failed");
+            assertFalse(completedCalled.get(),
+                    "ошибка базы не выводится как успешное сканирование с нулём сигналов");
+        }
+    }
+
+    @Test
+    void shutdownWhileScanCompletingDeliversNoOutcome() throws InterruptedException {
+        try (TestDb db = TestDb.create()) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch delivered = new CountDownLatch(1);
+            AuditService.ScanOutcome noop = new AuditService.ScanOutcome() {
+                @Override
+                public void completed(SuspicionScanner.ScanSummary summary) {
+                    delivered.countDown();
+                }
+
+                @Override
+                public void failed(String error) {
+                    delivered.countDown();
+                }
+            };
+            assertEquals(AuditService.ScanAccept.ACCEPTED,
+                    db.auditService.submitScan(() -> {
+                        started.countDown();
+                        try {
+                            release.await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return SuspicionScanner.ScanSummary.zero();
+                    }, noop));
+            assertTrue(started.await(10, TimeUnit.SECONDS), "скан должен стартовать");
+
+            Thread shutdownThread = new Thread(db.auditService::shutdown);
+            shutdownThread.start();
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (db.auditService.scanPhase() != AuditService.ScanPhase.SHUTTING_DOWN
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(AuditService.ScanPhase.SHUTTING_DOWN, db.auditService.scanPhase(),
+                    "shutdown обязан выставить фазу остановки до ожидания скана");
+            release.countDown();
+            shutdownThread.join(15_000);
+            assertFalse(shutdownThread.isAlive(), "shutdown должен завершиться после остановки скана");
+            assertFalse(delivered.await(1, TimeUnit.SECONDS),
+                    "колбэк скана, завершившегося во время остановки, не доставляется");
         }
     }
 

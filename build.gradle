@@ -77,6 +77,13 @@ dependencies {
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.2'
+
+    // Интеграционная проверка MySQL через Testcontainers. Выполняется ТОЛЬКО
+    // в отдельном профиле gradle mysqlIntegrationTest (нужен рабочий Docker);
+    // обычный test-набор эти классы пропускает (см. @EnabledIfSystemProperty).
+    testImplementation 'org.testcontainers:testcontainers:1.19.8'
+    testImplementation 'org.testcontainers:mysql:1.19.8'
+    testImplementation 'org.testcontainers:junit-jupiter:1.19.8'
 }
 
 test {
@@ -84,6 +91,21 @@ test {
     testLogging {
         events "passed", "failed", "skipped"
     }
+}
+
+// Отдельный интеграционный профиль MySQL: запускает только тесты *MySql*
+// с включённым системным свойством veconomy.mysqlIntegration. Умолчательный
+// сбор (обычный `test`/`clean test`) их пропускает — никакой имитации успеха.
+tasks.register('mysqlIntegrationTest', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "failed", "skipped"
+    }
+    systemProperty 'veconomy.mysqlIntegration', 'true'
+    filter {
+        includeTestsMatching '*MySql*'
+    }
+    jvmArgs '-Dveconomy.mysqlIntegration=true'
 }
 
 processResources {

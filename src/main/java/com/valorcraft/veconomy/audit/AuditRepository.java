@@ -167,18 +167,38 @@ public final class AuditRepository {
 
     /**
      * Перевести сигнал в обработанное состояние со СТРУКТУРИРОВАННЫМ результатом.
-     * Обрабатываются ТОЛЬКО открытые сигналы подозрительной активности:
+     * Обрабатываются ТОЛЬКО открытые сигналы подозрительной активности. Сначала —
+     * АТОМАРНЫЙ условный UPDATE ({@code severity='SUSPICIOUS' AND status='OPEN'}):
+     * проверка состояния и изменение — одним оператором, без гонок между
+     * администраторами. Если UPDATE затронул ровно одну строку — SUCCESS; при нуле
+     * строк выполняется дополнительное чтение для классификации:
      * <ul>
      *   <li>события с id нет — {@link ResolveResult.Status#NOT_FOUND};</li>
      *   <li>событие есть, но severity ниже SUSPICIOUS — {@link ResolveResult.Status#NOT_SUSPICIOUS};</li>
      *   <li>сигнал уже обработан — {@link ResolveResult.Status#ALREADY_REVIEWED} (повторный
-     *       resolve НЕ перезаписывает resolved_at/resolved_by/note — решение уже принято);</li>
-     *   <li>иначе - обновление одним UPDATE с гвардой {@code severity='SUSPICIOUS' AND status='OPEN'}
-     *       (проверка и изменение одним оператором — без гонок) и {@link ResolveResult.Status#SUCCESS}.</li>
+     *       resolve НЕ перезаписывает resolved_at/resolved_by/note — решение уже принято).</li>
      * </ul>
+     * SUCCESS возвращается ТОЛЬКО когда UPDATE реально изменил строку.
      */
     public ResolveResult resolve(Connection connection, long id, ResolutionStatus status,
                                  String resolvedBy, String note, long now) {
+        int updated;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE audit_events SET status = ?, resolved_at = ?, resolved_by = ?, "
+                        + "resolution_note = ? WHERE id = ? AND severity = 'SUSPICIOUS' "
+                        + "AND status = 'OPEN'")) {
+            statement.setString(1, status.name());
+            statement.setLong(2, now);
+            statement.setString(3, resolvedBy);
+            statement.setString(4, note);
+            statement.setLong(5, id);
+            updated = statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка обработки аудит-события " + id, e);
+        }
+        if (updated > 0) {
+            return new ResolveResult(ResolveResult.Status.SUCCESS);
+        }
         try (PreparedStatement lookup = connection.prepareStatement(
                 "SELECT severity, status FROM audit_events WHERE id = ?")) {
             lookup.setLong(1, id);
@@ -190,27 +210,10 @@ public final class AuditRepository {
                 if (severity == null || !AuditSeverity.SUSPICIOUS.name().equals(severity)) {
                     return new ResolveResult(ResolveResult.Status.NOT_SUSPICIOUS);
                 }
-                String current = rs.getString("status");
-                if (current != null && !ResolutionStatus.OPEN.name().equals(current)) {
-                    return new ResolveResult(ResolveResult.Status.ALREADY_REVIEWED);
-                }
+                return new ResolveResult(ResolveResult.Status.ALREADY_REVIEWED);
             }
         } catch (SQLException e) {
             throw new DatabaseException("Ошибка проверки аудит-события " + id, e);
-        }
-        try (PreparedStatement statement = connection.prepareStatement(
-                "UPDATE audit_events SET status = ?, resolved_at = ?, resolved_by = ?, "
-                        + "resolution_note = ? WHERE id = ? AND severity = 'SUSPICIOUS' "
-                        + "AND status = 'OPEN'")) {
-            statement.setString(1, status.name());
-            statement.setLong(2, now);
-            statement.setString(3, resolvedBy);
-            statement.setString(4, note);
-            statement.setLong(5, id);
-            statement.executeUpdate();
-            return new ResolveResult(ResolveResult.Status.SUCCESS);
-        } catch (SQLException e) {
-            throw new DatabaseException("Ошибка обработки аудит-события " + id, e);
         }
     }
 

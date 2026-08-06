@@ -318,22 +318,27 @@ public final class AuditService {
             error = t.toString();
             VEconomyMod.LOGGER.error("Ошибка фонового сканирования аудита", t);
         }
-        boolean shuttingDown;
         synchronized (scanGate) {
             if (scanPhase == ScanPhase.SHUTTING_DOWN) {
                 // Скан прерван остановкой: результат не доставляем, фазу не трогаем.
-                shuttingDown = true;
-            } else {
-                scanPhase = error == null ? ScanPhase.IDLE : ScanPhase.FAILED;
-                shuttingDown = false;
+                VEconomyMod.LOGGER.info("Фоновый скан аудита завершён уже после остановки сервиса — "
+                        + "результат не доставляется");
+                return;
             }
-        }
-        if (shuttingDown) {
-            return;
+            scanPhase = error == null ? ScanPhase.IDLE : ScanPhase.FAILED;
         }
         final SuspicionScanner.ScanSummary result = summary;
         final String failure = error;
         Runnable delivery = () -> {
+            // ПОВТОРНАЯ проверка непосредственно перед вызовом колбэка: между завершением
+            // скана и публикацией в server.execute() сервис мог уйти в SHUTTING_DOWN —
+            // колбэк не обращается к уже остановленному серверу и не выдаёт результат
+            // за действительный.
+            synchronized (scanGate) {
+                if (scanPhase == ScanPhase.SHUTTING_DOWN) {
+                    return;
+                }
+            }
             if (failure != null) {
                 outcome.failed(failure);
             } else {
@@ -348,11 +353,12 @@ public final class AuditService {
         }
     }
 
-    /**
+/**
      * Остановить сканирование: новые сканы отклоняются (BUSY), активный скан ждём
-     * ограниченное время и при превышении прерываем, колбэки после остановки не
-     * доставляются. Вызывается ДО {@link DatabaseManager#close()} в
-     * {@code EconomyCore.shutdown()}.
+     * ограниченное время, при превышении — принудительное прерывание
+     * ({@code shutdownNow}) и повторное ожидание; незавершившаяся задача логируется.
+     * Колбэки после остановки не доставляются. Вызывается ДО
+     * {@link DatabaseManager#close()} в {@code EconomyCore.shutdown()}.
      */
     public void shutdown() {
         synchronized (scanGate) {
@@ -362,13 +368,25 @@ public final class AuditService {
             scanPhase = ScanPhase.SHUTTING_DOWN;
         }
         scanExecutor.shutdown();
+        boolean terminated;
         try {
-            if (!scanExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
-                scanExecutor.shutdownNow();
-            }
+            terminated = scanExecutor.awaitTermination(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
-            scanExecutor.shutdownNow();
             Thread.currentThread().interrupt();
+            terminated = false;
+        }
+        if (!terminated) {
+            VEconomyMod.LOGGER.warn("Сканирование аудита не завершилось за 10 секунд — "
+                    + "задача принудительно прерывается");
+            scanExecutor.shutdownNow();
+            try {
+if (!scanExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    VEconomyMod.LOGGER.error("Фоновый скан аудита не завершился даже после "
+                            + "принудительного прерывания");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

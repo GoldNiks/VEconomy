@@ -7,6 +7,7 @@ import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.config.AuditConfig;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.TreasuryService;
+import com.valorcraft.veconomy.persistence.TransactionRow;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -89,6 +91,25 @@ class SuspicionScannerTest {
         TransactionResult result = db.transferService.transfer(from, to, amount,
                 TransactionContext.of(TransactionType.PLAYER_TRANSFER, null, "тест"));
         assertTrue(result.isSuccess(), "перевод должен пройти: " + result.status());
+    }
+
+    /**
+     * Перевод с ЯВНЫМ временем и случайным txId: детерминированные сценарии циклов и
+     * пересылок — порядок операций не зависит от случайных миллисекунд вставки.
+     */
+    private static void transferAt(TestDb db, UUID from, UUID to, long amount, long atMillis) {
+        transferAt(db, from, to, amount, atMillis, UUID.randomUUID().toString());
+    }
+
+    /** Перевод с явным временем И явным transactionId (детерминированный tie-break). */
+    private static void transferAt(TestDb db, UUID from, UUID to, long amount, long atMillis,
+                                   String transactionId) {
+        TransactionRow row = new TransactionRow(transactionId, TransactionType.PLAYER_TRANSFER,
+                from, to, amount, atMillis, null, "тест", null, Map.of(), null, null);
+        db.database.inTransaction(connection -> {
+            db.transactions.insert(connection, row);
+            return null;
+        });
     }
 
     private static List<AuditEventRow> signals(TestDb db) {
@@ -391,8 +412,9 @@ class SuspicionScannerTest {
             UUID carol = UUID.randomUUID();
             fund(db, alice, 100_000);
             fund(db, bob, 100_000);
-            transfer(db, alice, bob, 1000);   // крупный перевод...
-            transfer(db, bob, carol, 1000);   // ...тут же пересылается дальше
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 1000, base + 1000);   // крупный перевод (входящий для bob)...
+            transferAt(db, bob, carol, 1000, base + 2000);   // ...позже пересылается дальше
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             assertEquals(1, summary.rapidForwardingSignals());
@@ -414,9 +436,10 @@ class SuspicionScannerTest {
             fund(db, alice, 100_000);
             fund(db, bob, 100_000);
             fund(db, carol, 100_000);
-            transfer(db, alice, bob, 100);
-            transfer(db, bob, carol, 100);
-            transfer(db, carol, alice, 100);
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 100, base + 1000);
+            transferAt(db, bob, carol, 100, base + 2000);
+            transferAt(db, carol, alice, 100, base + 3000);
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             assertEquals(3, summary.transferLoopSignals());
@@ -456,9 +479,10 @@ class SuspicionScannerTest {
             fund(db, alice, 100_000);
             fund(db, bob, 100_000);
             fund(db, carol, 100_000);
-            transfer(db, alice, bob, 100);
-            transfer(db, bob, carol, 100);
-            transfer(db, carol, alice, 100);
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 100, base + 1000);
+            transferAt(db, bob, carol, 100, base + 2000);
+            transferAt(db, carol, alice, 100, base + 3000);
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(bob);
             assertEquals(1, summary.transferLoopSignals(),
@@ -482,9 +506,10 @@ class SuspicionScannerTest {
             fund(db, alice, 100_000);
             fund(db, bob, 100_000);
             fund(db, carol, 100_000);
-            transfer(db, alice, bob, 111);
-            transfer(db, bob, carol, 222);
-            transfer(db, carol, alice, 333);
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 111, base + 1000);
+            transferAt(db, bob, carol, 222, base + 2000);
+            transferAt(db, carol, alice, 333, base + 3000);
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             assertEquals(3, summary.transferLoopSignals());
@@ -497,11 +522,22 @@ class SuspicionScannerTest {
             assertTrue(details.contains("txs=["), "инцидент должен нести упорядоченные txId: " + details);
             assertTrue(details.contains("111") && details.contains("222") && details.contains("333"),
                     "суммы рёбер цикла в инциденте: " + details);
-            // Инцидент-суффикс ключа (после "|") у всех трёх участников один и тот же.
-            String incidentPart = loopRows.get(0).dedupeKey()
-                    .substring(loopRows.get(0).dedupeKey().lastIndexOf('|') + 1);
-            assertTrue(loopRows.stream().allMatch(r -> r.dedupeKey().endsWith("|" + incidentPart)),
-                    "события одного цикла дедуплицируются общим инцидент-суффиксом");
+            // dedupe_key — фиксированный хэш «loop:<sha256>»: без сырых списков txId,
+            // умещается в VARCHAR(256), повторный скан того же окна ничего не дописывает.
+            for (AuditEventRow row : loopRows) {
+                assertTrue(row.dedupeKey().startsWith("loop:"),
+                        "ключ цикла — loop:<sha256>: " + row.dedupeKey());
+                assertTrue(row.dedupeKey().length() <= 256,
+                        "хешированный ключ умещается в VARCHAR(256): " + row.dedupeKey());
+                assertFalse(row.dedupeKey().contains(","),
+                        "сырой список txId не должен лежать в dedupe_key: " + row.dedupeKey());
+            }
+            SuspicionScanner.ScanSummary again = db.auditService.scanAll();
+            assertEquals(0, again.total(),
+                    "повторный скан даёт тот же ключ — база отклоняет дубликаты");
+            assertEquals(3, db.auditService.signals(100).stream()
+                    .filter(s -> AuditEventType.SIGNAL_TRANSFER_LOOP.equals(s.eventType()))
+                    .count());
         }
     }
 
@@ -517,13 +553,14 @@ class SuspicionScannerTest {
             for (UUID p : new UUID[]{alice, bob, carol, dana, eric}) {
                 fund(db, p, 100_000);
             }
+            long base = System.currentTimeMillis() - 60_000;
             // Два независимых цикла, оба через Bob: A→B→C→A и D→B→E→D.
-            transfer(db, alice, bob, 100);
-            transfer(db, bob, carol, 100);
-            transfer(db, carol, alice, 100);
-            transfer(db, dana, bob, 100);
-            transfer(db, bob, eric, 100);
-            transfer(db, eric, dana, 100);
+            transferAt(db, alice, bob, 100, base + 1000);
+            transferAt(db, bob, carol, 100, base + 2000);
+            transferAt(db, carol, alice, 100, base + 3000);
+            transferAt(db, dana, bob, 100, base + 4000);
+            transferAt(db, bob, eric, 100, base + 5000);
+            transferAt(db, eric, dana, 100, base + 6000);
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             // Каждый участник каждого цикла получает событие: 3 + 3 = 6.
@@ -535,6 +572,8 @@ class SuspicionScannerTest {
                     "bob участвует в двух разных циклах — два разных инцидента");
             assertFalse(bobEvents.get(0).dedupeKey().equals(bobEvents.get(1).dedupeKey()),
                     "циклы с разным составом txId не схлопываются в один");
+            assertTrue(bobEvents.get(0).dedupeKey().length() <= 256,
+                    "ключ цикла умещается в VARCHAR(256)");
         }
     }
 
@@ -547,8 +586,9 @@ class SuspicionScannerTest {
             UUID carol = UUID.randomUUID();
             fund(db, alice, 100_000);
             fund(db, bob, 100_000);
-            transfer(db, alice, bob, 1000);
-            transfer(db, bob, carol, 1000);
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 1000, base + 1000);
+            transferAt(db, bob, carol, 1000, base + 2000);
 
             db.auditService.scanAll();
             List<AuditEventRow> rapid = signals(db).stream()
@@ -559,6 +599,10 @@ class SuspicionScannerTest {
             assertTrue(details.contains("inTx="), details);
             assertTrue(details.contains("outTx="), details);
             assertTrue(details.contains("deltaMillis="), details);
+            assertTrue(rapid.get(0).dedupeKey().startsWith("rapid:"),
+                    "ключ пересылки — rapid:<sha256>: " + rapid.get(0).dedupeKey());
+            assertTrue(rapid.get(0).dedupeKey().length() <= 256,
+                    "ключ пересылки умещается в VARCHAR(256)");
         }
     }
 
@@ -663,6 +707,93 @@ class SuspicionScannerTest {
             assertTrue(alice.equals(shared.get(0).playerId()));
             assertTrue(shared.get(0).details().contains(bob.toString()),
                     "детали должны содержать получателя: " + shared.get(0).details());
+        }
+    }
+
+    @Test
+    void rapidForwardingTieIsOrderedByTransactionId() throws IOException {
+        // Исходящий и входящий в ОДНУ миллисекунду: «позже» определяется transaction_id.
+        writeConfig(tuned("\"rapidForwardAmount\":500,\"rapidForwardWindowMinutes\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            long base = System.currentTimeMillis() - 60_000;
+            // Равные времена: «позже» решает transaction_id — исходящий СТРОГО больше.
+            transferAt(db, alice, bob, 1000, base + 1000, "in-tx-a");
+            transferAt(db, bob, carol, 1000, base + 1000, "out-tx-b");
+
+            db.auditService.scanAll();
+            assertEquals(1, signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_RAPID_FORWARDING.equals(s.eventType())
+                            && bob.equals(s.playerId()))
+                    .count(), "исходящий с бОльшим txId при равном времени — пересылка");
+        }
+    }
+
+    @Test
+    void rapidForwardingRejectsNotLaterAtEqualTimestamp() throws IOException {
+        writeConfig(tuned("\"rapidForwardAmount\":500,\"rapidForwardWindowMinutes\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            long base = System.currentTimeMillis() - 60_000;
+            // Исходящий с txId МЕНЬШЕ входящего при равном времени: «после» по
+            // паре (created_at, transaction_id) не выполняется → пересылки нет.
+            transferAt(db, alice, bob, 1000, base + 1000, "tx-9");
+            transferAt(db, bob, carol, 1000, base + 1000, "tx-1");
+
+            db.auditService.scanAll();
+            assertEquals(0, db.auditService.signals(100).stream()
+                    .filter(s -> AuditEventType.SIGNAL_RAPID_FORWARDING.equals(s.eventType()))
+                    .count(), "исходящий с меньшим txId при равном времени не является пересылкой");
+        }
+    }
+
+    @Test
+    void loopAtEqualTimestampsOrderedByTransactionId() throws IOException {
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 100, base + 1000, "edge-a");
+            transferAt(db, bob, carol, 100, base + 1000, "edge-b");
+            transferAt(db, carol, alice, 100, base + 1000, "edge-c");
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(3, summary.transferLoopSignals(),
+                    "a<b<c при равных временах образуют строго возрастающую цепочку");
+        }
+    }
+
+    @Test
+    void loopAtEqualTimestampsBreaksWhenTieBreakerContradictsOrder() throws IOException {
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            long base = System.currentTimeMillis() - 60_000;
+            transferAt(db, alice, bob, 100, base + 1000, "edge-c");
+            transferAt(db, bob, carol, 100, base + 1000, "edge-b");
+            transferAt(db, carol, alice, 100, base + 1000, "edge-a");
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(0, summary.transferLoopSignals(),
+                    "порядок по (created_at, transaction_id) должен быть непрерывно возрастающим");
         }
     }
 }
