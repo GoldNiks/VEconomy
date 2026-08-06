@@ -772,18 +772,22 @@ public final class WeeklyFundService {
                                 (int) Math.min(Integer.MAX_VALUE, row.points()), share, now, txId));
                         return null;
                     });
+                    // Аудит — только ПОСЛЕ подтверждённой записи состояния выплаты и для
+                    // SUCCESS, и для DUPLICATE (повтор после сбоя записи состояния тоже
+                    // означает состоявшуюся выплату). Стабильный dedupe-ключ по (неделя,
+                    // игрок) гарантирует ровно одно событие WEEKLY_PAYOUT на игрока: если
+                    // первый запуск упал между депозитом и записью состояния, повторный
+                    // пройдёт по DUPLICATE и не создаст второго события.
+                    if (audit != null) {
+                        audit.record(AuditEventType.WEEKLY_PAYOUT, AuditSeverity.INFO, playerId,
+                                null, AuditActorType.SYSTEM, share,
+                                "week=" + paidWeek + ";tx=" + txId,
+                                "weekly|" + paidWeek + "|" + playerId);
+                    }
+                    payments.put(playerId, share);
                 } catch (DatabaseException e) {
                     VEconomyMod.LOGGER.error("Ошибка записи выплаты недели {} игроку {}", paidWeek, playerId, e);
                     continue;
-                }
-                if (result.status() == TransactionResult.Status.SUCCESS) {
-                    payments.put(playerId, share);
-                    if (audit != null) {
-                        // Запись аудита — отдельная транзакция после подтверждённой выплаты.
-                        audit.record(AuditEventType.WEEKLY_PAYOUT, AuditSeverity.INFO, playerId,
-                                null, AuditActorType.SYSTEM, share,
-                                "week=" + paidWeek + ";tx=" + txId);
-                    }
                 }
             } else {
                 // Неуспех (заморожен, лимит, ...): период не закрывается, повторный

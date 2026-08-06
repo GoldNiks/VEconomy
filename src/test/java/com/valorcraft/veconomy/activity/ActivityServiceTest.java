@@ -58,12 +58,12 @@ class ActivityServiceTest {
             assertEquals(RewardExclusionStatus.NOT_EXCLUDED,
                     db.activityService.excludedFromRewards(player));
             AccountFlagUpdateResult set = db.activityService.setExcludedFromRewards(player, true);
-            assertEquals(AccountFlagUpdateResult.Status.OK, set.status());
+            assertEquals(AccountFlagUpdateResult.Status.SUCCESS, set.status());
             assertTrue(set.resultingValue());
             assertEquals(RewardExclusionStatus.EXCLUDED,
                     db.activityService.excludedFromRewards(player));
             AccountFlagUpdateResult clear = db.activityService.setExcludedFromRewards(player, false);
-            assertEquals(AccountFlagUpdateResult.Status.OK, clear.status());
+            assertEquals(AccountFlagUpdateResult.Status.SUCCESS, clear.status());
             assertFalse(clear.resultingValue());
             assertEquals(RewardExclusionStatus.NOT_EXCLUDED,
                     db.activityService.excludedFromRewards(player));
@@ -110,6 +110,21 @@ class ActivityServiceTest {
             assertTrue(db.activityService.setExcludedFromRewards(player, true).isSuccess());
             assertEquals(RewardExclusionStatus.EXCLUDED,
                     db.activityService.excludedFromRewards(player));
+        }
+    }
+
+    @Test
+    void exclusionNoChangeReportsExplicitStatus() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            assertTrue(db.activityService.setExcludedFromRewards(player, true).isSuccess());
+            assertEquals(AccountFlagUpdateResult.Status.NO_CHANGES,
+                    db.activityService.setExcludedFromRewards(player, true).status(),
+                    "повторное исключение в том же состоянии — явный NO_CHANGES");
+            assertEquals(AccountFlagUpdateResult.Status.SUCCESS,
+                    db.activityService.setExcludedFromRewards(player, false).status());
+            assertEquals(AccountFlagUpdateResult.Status.PLAYER_NOT_FOUND,
+                    db.activityService.setExcludedFromRewards(null, true).status());
         }
     }
 

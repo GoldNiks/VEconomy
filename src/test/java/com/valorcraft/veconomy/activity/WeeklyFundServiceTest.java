@@ -722,4 +722,64 @@ class WeeklyFundServiceTest {
             assertTrue(db.weeklyFundService.status().weekDistributed());
         }
     }
+
+    /**
+     * Блокер: аудит выплаты не дублируется после «краша» между депозитом и записью состояния.
+     * Повторный запуск той же недели идёт по DUPLICATE-пути (тот же idempotency-ключ), но
+     * стабильный dedupe-ключ аудита даёт ровно одно событие WEEKLY_PAYOUT на игрока.
+     */
+    @Test
+    void payoutAuditNotDuplicatedAfterStateWriteCrashAndRetry() {
+        try (TestDb db = TestDb.create(fund(400))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            seedWeekly(db, alice, 300);
+            String paidWeek = WeekId.previous(WeekId.current());
+
+            Map<UUID, Long> first = db.weeklyFundService.maybeDistribute();
+            assertEquals(1, first.size());
+            assertEquals(1, payoutAuditCount(db, alice));
+
+            // «Краш» между депозитом и записью состояния: период снова PENDING, план PLANNED,
+            // распределённая неделя откатывается назад — очередь выплат снова видит эту неделю.
+            db.database.inTransaction(connection -> {
+                try (var statement = connection.prepareStatement(
+                        "UPDATE weekly_activity_periods SET status = 'PENDING', transaction_id = NULL, paid_at = NULL "
+                                + "WHERE player_uuid = ?")) {
+                    statement.setString(1, alice.toString());
+                    statement.executeUpdate();
+                } catch (java.sql.SQLException e) {
+                    throw new RuntimeException(e);
+                }
+                return null;
+            });
+            db.database.inTransaction(connection -> {
+                try (var statement = connection.prepareStatement(
+                        "UPDATE weekly_fund_plans SET payout_status = 'PLANNED', paid_at = NULL "
+                                + "WHERE week_id = ?")) {
+                    statement.setString(1, paidWeek);
+                    statement.executeUpdate();
+                } catch (java.sql.SQLException e) {
+                    throw new RuntimeException(e);
+                }
+                return null;
+            });
+            markDistributed(db, WeekId.previous(paidWeek));
+
+            // Повторный запуск той же недели: депозит возвращает DUPLICATE (тот же ключ),
+            // состояние записывается, аудит — ровно одно событие на игрока.
+            Map<UUID, Long> retry = db.weeklyFundService.runNow();
+            assertEquals(1, retry.size());
+            assertEquals(1, payoutAuditCount(db, alice),
+                    "повтор выплаты после сбоя не должен дублировать аудит-событие");
+            // единственный игрок получает весь фонд, повторный депозит не засчитан
+            assertEquals(400, db.accountService.getBalance(alice));
+        }
+    }
+
+    private static long payoutAuditCount(TestDb db, UUID player) {
+        return db.auditService.byPlayer(player, 100).stream()
+                .filter(r -> com.valorcraft.veconomy.audit.AuditEventType.WEEKLY_PAYOUT.equals(r.eventType()))
+                .count();
+    }
 }

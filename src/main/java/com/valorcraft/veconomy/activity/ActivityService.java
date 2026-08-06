@@ -219,15 +219,28 @@ public final class ActivityService {
     /**
      * Установить флаг исключения из наград (админ-команда {@code exclude-rewards}/
      * {@code include-rewards}). Работает и для игроков без записи активности:
-     * создаётся минимальная запись. Успех возвращается явным результатом: при ошибке
-     * базы изменение не применено и {@link AccountFlagUpdateResult.Status#DATABASE_ERROR}
-     * не должен отображаться как успех. {@code actorId} — кто менял флаг (null = консоль).
+     * создаётся минимальная запись. Результат явный: {@link AccountFlagUpdateResult.Status#SUCCESS}
+     * при подтверждённом изменении, {@link AccountFlagUpdateResult.Status#NO_CHANGES} если
+     * флаг уже равен запрошенному значению (без записи и без аудита),
+     * {@link AccountFlagUpdateResult.Status#PLAYER_NOT_FOUND} если не задан идентификатор,
+     * {@link AccountFlagUpdateResult.Status#DATABASE_ERROR} если изменение не применено.
+     * Аудит пишется только при реальном изменении. {@code actorId} — кто менял флаг
+     * (null = консоль).
      */
     public AccountFlagUpdateResult setExcludedFromRewards(UUID playerId, boolean excluded,
                                                           UUID actorId) {
+        if (playerId == null) {
+            return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.PLAYER_NOT_FOUND,
+                    excluded, "player_not_found");
+        }
         try {
+            PlayerActivityRow existing = database.inTransaction(connection ->
+                    repository.find(connection, playerId).orElse(null));
+            if (existing != null && existing.excludedFromRewards() == excluded) {
+                return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.NO_CHANGES,
+                        excluded, null);
+            }
             database.inTransaction(connection -> {
-                PlayerActivityRow existing = repository.find(connection, playerId).orElse(null);
                 long now = System.currentTimeMillis();
                 PlayerActivityRow row = existing != null
                         ? new PlayerActivityRow(existing.playerId(), existing.firstSeenAt(),
@@ -241,11 +254,12 @@ public final class ActivityService {
                 return null;
             });
             if (audit != null) {
-                // Запись аудита — отдельная транзакция после подтверждённого изменения.
+                // Запись аудита — отдельная транзакция после подтверждённого изменения
+                // (по NO_CHANGES ветка не выполняется: без изменения аудита нет).
                 audit.record(AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO, playerId,
                         actorId, AuditActorType.of(actorId), null, "excluded=" + excluded);
             }
-            return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.OK, excluded, null);
+            return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.SUCCESS, excluded, null);
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка установки флага исключения {}", playerId, e);
             return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.DATABASE_ERROR,

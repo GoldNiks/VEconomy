@@ -36,6 +36,10 @@ public final class ActivityHandlers {
 
     private static int tickCounter;
     private static int lastPersistTick;
+    private static int lastAuditPruneTick;
+
+    /** Очистка старых аудит-событий по политике удержания: раз в час, не на тике. */
+    private static final int AUDIT_PRUNE_INTERVAL_TICKS = 20 * 60 * 60;
 
     private ActivityHandlers() {}
 
@@ -157,6 +161,13 @@ public final class ActivityHandlers {
         if (tickCounter - lastPersistTick >= persistTicks) {
             lastPersistTick = tickCounter;
             onPersistInterval(settings);
+        }
+        if (tickCounter - lastAuditPruneTick >= AUDIT_PRUNE_INTERVAL_TICKS) {
+            lastAuditPruneTick = tickCounter;
+            // Лёгкая периодическая очистка аудита (DELETE по индексам severity/created_at);
+            // полное сканирование сигналов выполняется только явной админ-командой.
+            EconomyCore.audit().prune(
+                    com.valorcraft.veconomy.config.AuditConfig.settings().retentionDays());
         }
     }
 

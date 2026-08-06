@@ -65,6 +65,7 @@
   "admin.account.unfrozen": "Account of player %s has been unfrozen.",
   "admin.account.excluded": "Player %s has been excluded from rewards.",
   "admin.account.included": "Player %s has been included in rewards.",
+  "admin.account.exclude.nochange": "Player %s reward exclusion flag is already set to the requested value.",
   "admin.account.exclude.failed": "Failed to change reward exclusion flag for %s: database error.",
 
   "notify.admin.frozen": "Administrator froze the account of player %s",

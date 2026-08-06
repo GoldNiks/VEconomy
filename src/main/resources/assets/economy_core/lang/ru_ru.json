@@ -65,6 +65,7 @@
   "admin.account.unfrozen": "Аккаунт игрока %s разморожен.",
   "admin.account.excluded": "Игрок %s исключён из наград.",
   "admin.account.included": "Игрок %s включён в награды.",
+  "admin.account.exclude.nochange": "Флаг исключения игрока %s уже имеет запрошенное значение.",
   "admin.account.exclude.failed": "Не удалось изменить флаг исключения игрока %s: ошибка базы данных.",
 
   "notify.admin.frozen": "Администратор заморозил аккаунт игрока %s",

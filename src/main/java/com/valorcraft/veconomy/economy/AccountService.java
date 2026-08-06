@@ -5,6 +5,7 @@ import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
+import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventType;
 import com.valorcraft.veconomy.audit.AuditService;
@@ -224,6 +225,8 @@ public final class AccountService {
                 null, context.type(), null, playerId, amount, System.currentTimeMillis(),
                 context.actorId(), context.reason(), context.idempotencyKey(),
                 context.metadata(), null, newBalance));
+        auditAdminChange(connection, playerId, context, "ADD", account.balanceMinor(),
+                newBalance, amount, txId);
         return success(txId, -1L, newBalance);
     }
 
@@ -258,6 +261,8 @@ public final class AccountService {
                         null, context.type(), playerId, null, amount, System.currentTimeMillis(),
                         context.actorId(), context.reason(), context.idempotencyKey(),
                         context.metadata(), newBalance, null));
+                auditAdminChange(connection, playerId, context, "REMOVE", account.balanceMinor(),
+                        newBalance, amount, txId);
                 return success(txId, newBalance, -1L);
             });
         } catch (DatabaseException e) {
@@ -305,6 +310,8 @@ public final class AccountService {
                         null, context.type(), playerId, playerId, delta, now,
                         context.actorId(), context.reason(), context.idempotencyKey(),
                         metadata, newBalance, null));
+                auditAdminChange(connection, playerId, context, "SET", previous,
+                        newBalance, delta, txId);
                 return success(txId, newBalance, -1L);
             });
         } catch (DatabaseException e) {
@@ -314,6 +321,31 @@ public final class AccountService {
     }
 
     // ---------------------------------------------------------------- internals
+
+    /**
+     * Аудит административных изменений баланса в той же транзакции, что и сам
+     * перенос денег: событие не переживёт откат ledger-изменения. Пишется только
+     * для подтверждённых изменений (после успешной записи ledger), с op/old/new/
+     * delta/tx/reason и стабильным dedupe-ключом по txId (повтор идемпотентного
+     * контекста не создаёт второго события).
+     */
+    private void auditAdminChange(Connection connection, UUID playerId, TransactionContext context,
+                                  String op, long oldBalance, long newBalance, long delta, String txId) {
+        if (audit == null || !isAdminBalanceChange(context.type())) {
+            return;
+        }
+        audit.recordIn(connection, AuditEventType.ADMIN_BALANCE_CHANGE, AuditSeverity.INFO,
+                playerId, context.actorId(), AuditActorType.of(context.actorId()), delta,
+                "op=" + op + ";old=" + oldBalance + ";new=" + newBalance + ";delta=" + delta
+                        + ";tx=" + txId + ";reason=" + (context.reason() == null ? "" : context.reason()),
+                "abl|" + txId);
+    }
+
+    private static boolean isAdminBalanceChange(TransactionType type) {
+        return type == TransactionType.ADMIN_DEPOSIT
+                || type == TransactionType.ADMIN_WITHDRAW
+                || type == TransactionType.ADMIN_SET_ADJUSTMENT;
+    }
 
     private TransactionResult checkIdempotency(Connection connection, TransactionContext context) {
         if (context.idempotencyKey() == null || context.idempotencyKey().isBlank()) {

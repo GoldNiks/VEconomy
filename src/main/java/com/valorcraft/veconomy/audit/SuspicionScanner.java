@@ -10,7 +10,6 @@ import com.valorcraft.veconomy.persistence.DatabaseManager;
 import com.valorcraft.veconomy.persistence.TransactionRepository;
 import com.valorcraft.veconomy.persistence.TransactionRow;
 
-import java.sql.Connection;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -24,13 +23,27 @@ import java.util.UUID;
 /**
  * Эвристики подозрительной активности по журналу переводов. Каждый сработавший
  * сигнал пишется в {@code audit_events} с северити SUSPICIOUS и дедуплицируется
- * по (тип, игрок, окно): повторный {@code scan} в том же окне не плодит события.
+ * стабильным {@code dedupeKey} окна: повторный {@code scan} в том же окне не
+ * плодит события (уникальный частичный индекс отклоняет вставку-дубликат).
+ * <p>
+ * Системные аккаунты (казна и т.п.) исключаются централизованно через
+ * {@link #isSystem(UUID)}: ни одна эвристика не считает их ни отправителями,
+ * ни получателями, ни «свежими» аккаунтами.
+ * <p>
+ * {@code scanPlayer} не выгружает весь журнал: переводы запрашиваются SQL-запросом
+ * только по этому игроку, а счётчик исходящих переводов считается агрегацией
+ * GROUP BY в базе, а не в памяти. Полное сканирование выполняется только явной
+ * админ-командой (не по тику); на конкурентный вызов {@code AuditService} отвечает
+ * zero-сводкой (single-flight).
  *
  * <ul>
- *   <li>SIGNAL_TRANSFER_SPAM — один игрок совершил много переводов в окне;</li>
- *   <li>SIGNAL_ROUNDTRIP — пара игроков гоняет переводы в обе стороны;</li>
- *   <li>SIGNAL_OVERSIZED — перевод выше порога {@code oversizedTransferAmount};</li>
- *   <li>SIGNAL_NEW_ACCOUNT — перевод с/на свежесозданный аккаунт крупной суммы;</li>
+ *   <li>SIGNAL_TRANSFER_SPAM — игрок совершил много исходящих переводов в окне
+ *       (только отправитель; «входящий спам» — отдельная эвристика-фан-ин);</li>
+ *   <li>SIGNAL_ROUNDTRIP — пара гоняет переводы в обе стороны; событие пишется
+ *       КАЖДОМУ участнику с общим incident id в деталях;</li>
+ *   <li>SIGNAL_OVERSIZED — исходящий перевод выше порога (субъект — отправитель);</li>
+ *   <li>SIGNAL_NEW_ACCOUNT — крупные переводы свежесозданных аккаунтов; проверяются
+ *       обе стороны перевода (и отправитель, и получатель могут быть «свежими»);</li>
  *   <li>SIGNAL_RAPID_FORWARDING — крупный перевод тут же пересылается дальше;</li>
  *   <li>SIGNAL_TRANSFER_LOOP — деньги идут по циклу из 3+ участников;</li>
  *   <li>SIGNAL_HIGH_PAIR_FREQUENCY — очень частая активность одной пары;</li>
@@ -61,7 +74,7 @@ public final class SuspicionScanner {
         return scan(null);
     }
 
-    /** Просканировать одного игрока (фильтр по всем эвристикам). */
+    /** Просканировать одного игрока (данные и фильтр — только этот игрок). */
     public ScanSummary scanPlayer(UUID playerId) {
         return scan(playerId);
     }
@@ -74,19 +87,23 @@ public final class SuspicionScanner {
         }
         long windowMillis = cfg.windowMinutes() * 60_000L;
         long windowStart = System.currentTimeMillis() - windowMillis;
+        long bucket = windowStart / windowMillis;
         try {
+            // Для scanPlayer не выгружаем весь журнал: только переводы этого игрока.
             List<TransactionRow> transfers = database.inTransaction(connection ->
-                    transactions.transfersSince(connection, windowStart));
+                    onlyPlayer != null
+                            ? transactions.transfersSinceForPlayer(connection, onlyPlayer, windowStart)
+                            : transactions.transfersSince(connection, windowStart));
             List<AccountRow> allAccounts = database.inTransaction(connection -> accounts.all(connection));
-            int spam = scanSpam(transfers, cfg, windowStart, onlyPlayer);
-            int roundTrips = scanRoundTrips(transfers, cfg, windowStart, onlyPlayer);
-            int oversized = scanOversized(transfers, cfg, windowStart, onlyPlayer);
-            int newAccount = scanNewAccountTransfers(transfers, allAccounts, cfg, windowStart, onlyPlayer);
-            int rapidForwarding = scanRapidForwarding(transfers, cfg, windowStart, onlyPlayer);
-            int loops = scanTransferLoops(transfers, cfg, windowStart, onlyPlayer);
-            int highPair = scanHighPairFrequency(transfers, cfg, windowStart, onlyPlayer);
-            int concentration = scanNewAccountConcentration(transfers, allAccounts, cfg, windowStart, onlyPlayer);
-            int sharedDestination = scanRepeatedSharedDestination(transfers, cfg, windowStart, onlyPlayer);
+            int spam = scanSpam(cfg, windowStart, bucket, onlyPlayer);
+            int roundTrips = scanRoundTrips(transfers, cfg, bucket, onlyPlayer);
+            int oversized = scanOversized(transfers, cfg, bucket, onlyPlayer);
+            int newAccount = scanNewAccountTransfers(transfers, allAccounts, cfg, bucket, onlyPlayer);
+            int rapidForwarding = scanRapidForwarding(transfers, cfg, windowStart, bucket, onlyPlayer);
+            int loops = scanTransferLoops(transfers, cfg, bucket, onlyPlayer);
+            int highPair = scanHighPairFrequency(transfers, cfg, bucket, onlyPlayer);
+            int concentration = scanNewAccountConcentration(transfers, allAccounts, cfg, bucket, onlyPlayer);
+            int sharedDestination = scanRepeatedSharedDestination(transfers, cfg, bucket, onlyPlayer);
             return new ScanSummary(spam, roundTrips, oversized, newAccount,
                     rapidForwarding, loops, highPair, concentration, sharedDestination);
         } catch (DatabaseException e) {
@@ -97,36 +114,37 @@ public final class SuspicionScanner {
 
     // ------------------------------------------------------------ heuristics
 
-    /** Много переводов одного игрока в окне (участник с любой стороны). */
-    private int scanSpam(List<TransactionRow> transfers, AuditConfig.Settings cfg,
-                         long windowStart, UUID onlyPlayer) {
-        Map<UUID, Integer> counts = new HashMap<>();
-        for (TransactionRow row : transfers) {
-            if (row.sourceUuid() != null) {
-                counts.merge(row.sourceUuid(), 1, Integer::sum);
-            }
-            if (row.targetUuid() != null) {
-                counts.merge(row.targetUuid(), 1, Integer::sum);
-            }
-        }
-        Set<UUID> players = onlyPlayer == null ? counts.keySet() : Set.of(onlyPlayer);
+    /**
+     * Много ИСХОДЯЩИХ переводов одного игрока в окне. Счётчик — SQL-агрегация
+     * GROUP BY по {@code source_uuid}, а не перебор журнала в памяти. Получатель
+     * спамером не считается (входящие переводы — не активность спама).
+     */
+    private int scanSpam(AuditConfig.Settings cfg, long windowStart, long bucket, UUID onlyPlayer) {
+        Map<UUID, Integer> counts = database.inTransaction(connection ->
+                transactions.outgoingTransferCountsBySource(connection, windowStart, onlyPlayer));
         int written = 0;
-        for (UUID player : players) {
-            int count = counts.getOrDefault(player, 0);
-            if (count < cfg.transferSpamCount()) {
+        for (Map.Entry<UUID, Integer> entry : counts.entrySet()) {
+            UUID player = entry.getKey();
+            if (isSystem(player) || entry.getValue() < cfg.transferSpamCount()) {
                 continue;
             }
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_TRANSFER_SPAM, player, null,
-                    "transfers=" + count + ";windowMinutes=" + cfg.windowMinutes())) {
+            if (writeSignal(AuditEventType.SIGNAL_TRANSFER_SPAM, player, null, null,
+                    "transfers=" + entry.getValue() + ";windowMinutes=" + cfg.windowMinutes(),
+                    dedupeKey("spam", player, bucket))) {
                 written++;
             }
         }
         return written;
     }
 
-    /** Пара гоняет переводы в обе стороны: не меньше {@code roundTripExchanges} обменов. */
+    /**
+     * Пара гоняет переводы в обе стороны: не меньше {@code roundTripExchanges} обменов.
+     * Событие пишется каждому участнику (у каждого — своя строка в таблице) с общим
+     * incident id в деталях. Пары A–B и A–C независимы: dedupe-ключ включает пару,
+     * поэтому событие по одной паре не гасит сигнал по другой.
+     */
     private int scanRoundTrips(List<TransactionRow> transfers, AuditConfig.Settings cfg,
-                               long windowStart, UUID onlyPlayer) {
+                               long bucket, UUID onlyPlayer) {
         Map<String, long[]> pairs = new HashMap<>(); // key "a|b" (a<b) -> [a->b, b->a]
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null) {
@@ -134,6 +152,9 @@ public final class SuspicionScanner {
             }
             UUID a = row.sourceUuid();
             UUID b = row.targetUuid();
+            if (isSystem(a) || isSystem(b)) {
+                continue;
+            }
             String key = pairKey(a, b);
             long[] counts = pairs.computeIfAbsent(key, k -> new long[2]);
             if (a.compareTo(b) < 0) {
@@ -151,28 +172,39 @@ public final class SuspicionScanner {
             }
             UUID a = UUID.fromString(entry.getKey().split("\\|")[0]);
             UUID b = UUID.fromString(entry.getKey().split("\\|")[1]);
-            if (onlyPlayer != null && !a.equals(onlyPlayer) && !b.equals(onlyPlayer)) {
-                continue;
-            }
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_ROUNDTRIP, a, null,
-                    "pair=" + b + ";exchanges=" + exchanges)) {
-                written++;
+            String incident = "RT|" + entry.getKey() + "|" + bucket;
+            for (UUID participant : new UUID[]{a, b}) {
+                if (onlyPlayer != null && !participant.equals(onlyPlayer)) {
+                    continue;
+                }
+                UUID partner = participant.equals(a) ? b : a;
+                if (writeSignal(AuditEventType.SIGNAL_ROUNDTRIP, participant, partner, null,
+                        "pair=" + partner + ";exchanges=" + exchanges + ";incident=" + incident,
+                        dedupeKey("roundtrip", participant, bucket) + "|" + entry.getKey())) {
+                    written++;
+                }
             }
         }
         return written;
     }
 
-    /** Переводы выше порога; событие пишется получателю (целевая сторона). */
-    private int scanOversized(List<TransactionRow> transfers,
-                              AuditConfig.Settings cfg, long windowStart, UUID onlyPlayer) {
+    /** Исходящие переводы выше порога; событие пишется ОТПРАВИТЕЛЮ (субъект — sender). */
+    private int scanOversized(List<TransactionRow> transfers, AuditConfig.Settings cfg,
+                              long bucket, UUID onlyPlayer) {
         Map<UUID, Long> largest = new HashMap<>();
         Map<UUID, Integer> counts = new HashMap<>();
+        Map<UUID, UUID> recipients = new HashMap<>();
         for (TransactionRow row : transfers) {
-            if (row.amountMinor() < cfg.oversizedTransferAmount() || row.targetUuid() == null) {
+            if (row.amountMinor() < cfg.oversizedTransferAmount() || row.sourceUuid() == null) {
                 continue;
             }
-            largest.merge(row.targetUuid(), row.amountMinor(), Math::max);
-            counts.merge(row.targetUuid(), 1, Integer::sum);
+            UUID sender = row.sourceUuid();
+            if (isSystem(sender) || isSystem(row.targetUuid())) {
+                continue;
+            }
+            largest.merge(sender, row.amountMinor(), Math::max);
+            counts.merge(sender, 1, Integer::sum);
+            recipients.put(sender, row.targetUuid());
         }
         Set<UUID> players = onlyPlayer == null ? largest.keySet() : Set.of(onlyPlayer);
         int written = 0;
@@ -180,38 +212,46 @@ public final class SuspicionScanner {
             if (!counts.containsKey(player)) {
                 continue;
             }
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_OVERSIZED, player,
+            if (writeSignal(AuditEventType.SIGNAL_OVERSIZED, player, recipients.get(player),
                     largest.get(player),
-                    "transfers=" + counts.get(player) + ";amount=" + largest.get(player))) {
+                    "transfers=" + counts.get(player) + ";amount=" + largest.get(player)
+                            + ";to=" + recipients.get(player),
+                    dedupeKey("oversized", player, bucket))) {
                 written++;
             }
         }
         return written;
     }
 
-    /** Крупные переводы свежесозданных аккаунтов. */
+    /**
+     * Крупные переводы свежесозданных аккаунтов. Проверяются ОБЕ стороны перевода:
+     * свежий отправитель и/или свежий получатель получают сигнал независимо
+     * (без else-if), события по каждому учитываются отдельно.
+     */
     private int scanNewAccountTransfers(List<TransactionRow> transfers, List<AccountRow> allAccounts,
-                                        AuditConfig.Settings cfg, long windowStart, UUID onlyPlayer) {
+                                        AuditConfig.Settings cfg, long bucket, UUID onlyPlayer) {
         long ageMillis = cfg.newAccountDays() * 86_400_000L;
         long now = System.currentTimeMillis();
         Set<UUID> fresh = freshAccounts(allAccounts, ageMillis, now);
         Map<UUID, Long> totals = new HashMap<>();
         Map<UUID, Integer> counts = new HashMap<>();
+        Map<UUID, UUID> counterparties = new HashMap<>();
         for (TransactionRow row : transfers) {
             if (row.amountMinor() < cfg.newAccountTransferAmount()) {
                 continue;
             }
-            UUID freshSide = null;
-            if (fresh.contains(row.sourceUuid())) {
-                freshSide = row.sourceUuid();
-            } else if (fresh.contains(row.targetUuid())) {
-                freshSide = row.targetUuid();
+            UUID source = row.sourceUuid();
+            UUID target = row.targetUuid();
+            if (source != null && !isSystem(source) && fresh.contains(source)) {
+                totals.merge(source, row.amountMinor(), Long::sum);
+                counts.merge(source, 1, Integer::sum);
+                counterparties.put(source, target);
             }
-            if (freshSide == null) {
-                continue;
+            if (target != null && !isSystem(target) && fresh.contains(target)) {
+                totals.merge(target, row.amountMinor(), Long::sum);
+                counts.merge(target, 1, Integer::sum);
+                counterparties.put(target, source);
             }
-            totals.merge(freshSide, row.amountMinor(), Long::sum);
-            counts.merge(freshSide, 1, Integer::sum);
         }
         Set<UUID> players = onlyPlayer == null ? counts.keySet() : Set.of(onlyPlayer);
         int written = 0;
@@ -219,10 +259,11 @@ public final class SuspicionScanner {
             if (!counts.containsKey(player)) {
                 continue;
             }
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_NEW_ACCOUNT, player,
+            if (writeSignal(AuditEventType.SIGNAL_NEW_ACCOUNT, player, counterparties.get(player),
                     totals.get(player),
                     "transfers=" + counts.get(player) + ";total=" + totals.get(player)
-                            + ";accountAgeDays=" + cfg.newAccountDays())) {
+                            + ";accountAgeDays=" + cfg.newAccountDays(),
+                    dedupeKey("newacct", player, bucket))) {
                 written++;
             }
         }
@@ -231,7 +272,7 @@ public final class SuspicionScanner {
 
     /** Крупный перевод пересылается дальше в течение короткого окна (промежуточный узел). */
     private int scanRapidForwarding(List<TransactionRow> transfers, AuditConfig.Settings cfg,
-                                    long windowStart, UUID onlyPlayer) {
+                                    long windowStart, long bucket, UUID onlyPlayer) {
         long forwardMillis = cfg.rapidForwardWindowMinutes() * 60_000L;
         Map<UUID, List<TransactionRow>> bySource = new HashMap<>();
         for (TransactionRow row : transfers) {
@@ -239,12 +280,11 @@ public final class SuspicionScanner {
                 bySource.computeIfAbsent(row.sourceUuid(), k -> new ArrayList<>()).add(row);
             }
         }
-        Set<UUID> targets = onlyPlayer == null ? bySource.keySet() : Set.of(onlyPlayer);
         int written = 0;
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null
                     || row.amountMinor() < cfg.rapidForwardAmount()
-                    || row.targetUuid().equals(TreasuryService.TREASURY_UUID)) {
+                    || isSystem(row.targetUuid()) || isSystem(row.sourceUuid())) {
                 continue;
             }
             UUID forwarder = row.targetUuid();
@@ -262,10 +302,11 @@ public final class SuspicionScanner {
                         || next.targetUuid() == null) {
                     continue;
                 }
-                if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_RAPID_FORWARDING,
-                        forwarder, row.amountMinor(),
+                if (writeSignal(AuditEventType.SIGNAL_RAPID_FORWARDING,
+                        forwarder, next.targetUuid(), row.amountMinor(),
                         "amount=" + row.amountMinor() + ";windowMinutes="
-                                + cfg.rapidForwardWindowMinutes() + ";to=" + next.targetUuid())) {
+                                + cfg.rapidForwardWindowMinutes() + ";to=" + next.targetUuid(),
+                        dedupeKey("rapid", forwarder, bucket))) {
                     written++;
                 }
                 break;
@@ -276,11 +317,14 @@ public final class SuspicionScanner {
 
     /** Цикл переводов из 3+ участников (A→B→C→A и длиннее, до {@value MAX_LOOP_DEPTH}). */
     private int scanTransferLoops(List<TransactionRow> transfers, AuditConfig.Settings cfg,
-                                  long windowStart, UUID onlyPlayer) {
+                                  long bucket, UUID onlyPlayer) {
         Map<UUID, Set<UUID>> adjacency = new HashMap<>();
         Set<UUID> nodes = new HashSet<>();
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null) {
+                continue;
+            }
+            if (isSystem(row.sourceUuid()) || isSystem(row.targetUuid())) {
                 continue;
             }
             adjacency.computeIfAbsent(row.sourceUuid(), k -> new HashSet<>()).add(row.targetUuid());
@@ -300,8 +344,9 @@ public final class SuspicionScanner {
         }
         int written = 0;
         for (UUID player : inCycle) {
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_TRANSFER_LOOP, player, null,
-                    "minLength=" + cfg.transferLoopLength())) {
+            if (writeSignal(AuditEventType.SIGNAL_TRANSFER_LOOP, player, null, null,
+                    "minLength=" + cfg.transferLoopLength(),
+                    dedupeKey("loop", player, bucket))) {
                 written++;
             }
         }
@@ -333,12 +378,15 @@ public final class SuspicionScanner {
         }
     }
 
-    /** Очень высокая частота обменов между одной парой. */
+    /** Очень высокая частота обменов между одной парой (событие — участнику пары). */
     private int scanHighPairFrequency(List<TransactionRow> transfers, AuditConfig.Settings cfg,
-                                      long windowStart, UUID onlyPlayer) {
+                                      long bucket, UUID onlyPlayer) {
         Map<String, Integer> pairs = new HashMap<>();
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null) {
+                continue;
+            }
+            if (isSystem(row.sourceUuid()) || isSystem(row.targetUuid())) {
                 continue;
             }
             pairs.merge(pairKey(row.sourceUuid(), row.targetUuid()), 1, Integer::sum);
@@ -350,11 +398,14 @@ public final class SuspicionScanner {
             }
             UUID a = UUID.fromString(entry.getKey().split("\\|")[0]);
             UUID b = UUID.fromString(entry.getKey().split("\\|")[1]);
+            UUID subject = onlyPlayer == null || onlyPlayer.equals(a) ? a : b;
             if (onlyPlayer != null && !a.equals(onlyPlayer) && !b.equals(onlyPlayer)) {
                 continue;
             }
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_HIGH_PAIR_FREQUENCY, a, null,
-                    "pair=" + b + ";exchanges=" + entry.getValue())) {
+            UUID partner = subject.equals(a) ? b : a;
+            if (writeSignal(AuditEventType.SIGNAL_HIGH_PAIR_FREQUENCY, subject, partner, null,
+                    "pair=" + partner + ";exchanges=" + entry.getValue(),
+                    dedupeKey("highpair", subject, bucket) + "|" + entry.getKey())) {
                 written++;
             }
         }
@@ -363,7 +414,7 @@ public final class SuspicionScanner {
 
     /** Свежий аккаунт принимает переводы от многих отправителей. */
     private int scanNewAccountConcentration(List<TransactionRow> transfers, List<AccountRow> allAccounts,
-                                            AuditConfig.Settings cfg, long windowStart, UUID onlyPlayer) {
+                                            AuditConfig.Settings cfg, long bucket, UUID onlyPlayer) {
         long ageMillis = cfg.newAccountDays() * 86_400_000L;
         long now = System.currentTimeMillis();
         Set<UUID> fresh = freshAccounts(allAccounts, ageMillis, now);
@@ -371,7 +422,7 @@ public final class SuspicionScanner {
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null
                     || !fresh.contains(row.targetUuid())
-                    || row.sourceUuid().equals(TreasuryService.TREASURY_UUID)) {
+                    || isSystem(row.sourceUuid()) || isSystem(row.targetUuid())) {
                 continue;
             }
             sourcesByFresh.computeIfAbsent(row.targetUuid(), k -> new HashSet<>()).add(row.sourceUuid());
@@ -384,9 +435,10 @@ public final class SuspicionScanner {
             if (sources < cfg.newAccountConcentrationSources()) {
                 continue;
             }
-            if (writeIfAbsent(cfg, windowStart, AuditEventType.SIGNAL_NEW_ACCOUNT_CONCENTRATION,
-                    player, null,
-                    "sources=" + sources + ";accountAgeDays=" + cfg.newAccountDays())) {
+            if (writeSignal(AuditEventType.SIGNAL_NEW_ACCOUNT_CONCENTRATION,
+                    player, null, null,
+                    "sources=" + sources + ";accountAgeDays=" + cfg.newAccountDays(),
+                    dedupeKey("conc", player, bucket))) {
                 written++;
             }
         }
@@ -395,10 +447,13 @@ public final class SuspicionScanner {
 
     /** Один игрок многократно переводит одному и тому же получателю. */
     private int scanRepeatedSharedDestination(List<TransactionRow> transfers, AuditConfig.Settings cfg,
-                                              long windowStart, UUID onlyPlayer) {
+                                              long bucket, UUID onlyPlayer) {
         Map<UUID, Map<UUID, Integer>> counts = new HashMap<>();
         for (TransactionRow row : transfers) {
             if (row.sourceUuid() == null || row.targetUuid() == null) {
+                continue;
+            }
+            if (isSystem(row.sourceUuid()) || isSystem(row.targetUuid())) {
                 continue;
             }
             counts.computeIfAbsent(row.sourceUuid(), k -> new HashMap<>())
@@ -411,9 +466,10 @@ public final class SuspicionScanner {
                 if (entry.getValue() < cfg.repeatedDestinationTransfers()) {
                     continue;
                 }
-                if (writeIfAbsent(cfg, windowStart,
-                        AuditEventType.SIGNAL_REPEATED_SHARED_DESTINATION, sender, null,
-                        "to=" + entry.getKey() + ";transfers=" + entry.getValue())) {
+                if (writeSignal(AuditEventType.SIGNAL_REPEATED_SHARED_DESTINATION, sender,
+                        entry.getKey(), null,
+                        "to=" + entry.getKey() + ";transfers=" + entry.getValue(),
+                        dedupeKey("dest", sender, bucket) + "|" + entry.getKey())) {
                     written++;
                 }
             }
@@ -427,10 +483,23 @@ public final class SuspicionScanner {
         return a.compareTo(b) < 0 ? a + "|" + b : b + "|" + a;
     }
 
+    /** Стабильный ключ окна для сигнала: (тип, игрок, окно) — дубликат окна игнорируется. */
+    private static String dedupeKey(String prefix, UUID player, long bucket) {
+        return prefix + "|" + player + "|" + bucket;
+    }
+
+    /**
+     * Системный аккаунт (казна и т.п.): исключается из всех эвристик — не может
+     * быть спамером, участником пары, «свежим» аккаунтом или получателем сигнала.
+     */
+    private static boolean isSystem(UUID id) {
+        return id == null || TreasuryService.TREASURY_UUID.equals(id);
+    }
+
     private static Set<UUID> freshAccounts(List<AccountRow> allAccounts, long ageMillis, long now) {
         Set<UUID> fresh = new HashSet<>();
         for (AccountRow account : allAccounts) {
-            if (account.playerId().equals(TreasuryService.TREASURY_UUID)) {
+            if (isSystem(account.playerId())) {
                 continue;
             }
             if (now - account.createdAt() <= ageMillis) {
@@ -440,17 +509,17 @@ public final class SuspicionScanner {
         return fresh;
     }
 
-    /** Записать сигнал, если в окне ещё нет такого же для игрока. */
-    private boolean writeIfAbsent(AuditConfig.Settings cfg, long windowStart, String type,
-                                  UUID playerId, Long amount, String details) {
+    /**
+     * Записать сигнал; уникальный частичный индекс {@code dedupe_key} отклоняет
+     * повторное событие того же окна (возвращает false, в сводку не попадает).
+     */
+    private boolean writeSignal(String type, UUID playerId, UUID counterparty, Long amount,
+                                String details, String dedupeKey) {
         try {
             return database.inTransaction(connection -> {
-                if (audit.existsTypeForPlayerSince(connection, type, playerId, windowStart)) {
-                    return false;
-                }
-                audit.insert(connection, database.dialect(),
-                        AuditEventRow.signal(type, playerId, amount, details));
-                return true;
+                long id = audit.insert(connection, database.dialect(),
+                        AuditEventRow.signal(type, playerId, counterparty, amount, details, dedupeKey));
+                return id >= 0;
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка записи аудит-сигнала {} для {}", type, playerId, e);

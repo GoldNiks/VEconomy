@@ -6,6 +6,7 @@ import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
 import com.valorcraft.veconomy.persistence.TransactionRepository;
 
+import java.sql.Connection;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Optional;
@@ -41,8 +42,14 @@ public final class AuditService {
     /** Записать событие аудита (отдельной транзакцией). Возвращает результат записи. */
     public AuditWriteResult record(String eventType, AuditSeverity severity, UUID playerId,
                                    UUID actorId, AuditActorType actorType, Long amountMinor, String details) {
+        return record(eventType, severity, playerId, actorId, actorType, amountMinor, details, null);
+    }
+
+    public AuditWriteResult record(String eventType, AuditSeverity severity, UUID playerId,
+                                   UUID actorId, AuditActorType actorType, Long amountMinor,
+                                   String details, String dedupeKey) {
         AuditEventRow row = AuditEventRow.newEvent(eventType, severity, playerId, actorId,
-                actorType, amountMinor, details);
+                actorType, amountMinor, details, dedupeKey);
         int retried = flushPending();
         boolean written = write(row);
         if (!written) {
@@ -60,6 +67,19 @@ public final class AuditService {
     public AuditWriteResult record(String eventType, AuditSeverity severity, UUID playerId,
                                    UUID actorId, String details) {
         return record(eventType, severity, playerId, actorId, null, details);
+    }
+
+    /**
+     * Записать событие в уже открытой транзакции (соединение передаёт вызывающий).
+     * Ошибка базы пробрасывается как {@link DatabaseException} — транзакция вызывающего
+     * откатится целиком, так что событие не переживёт откат денежного изменения.
+     */
+    public void recordIn(Connection connection, String eventType, AuditSeverity severity,
+                         UUID playerId, UUID actorId, AuditActorType actorType, Long amountMinor,
+                         String details, String dedupeKey) {
+        audit.insert(connection, database.dialect(),
+                AuditEventRow.newEvent(eventType, severity, playerId, actorId, actorType,
+                        amountMinor, details, dedupeKey));
     }
 
     // ------------------------------------------------------------ retry
@@ -164,13 +184,54 @@ public final class AuditService {
         return database.inTransaction(audit::count);
     }
 
-    /** Запустить эвристики по всем игрокам. */
-    public SuspicionScanner.ScanSummary scanAll() {
-        return scanner.scanAll();
+    /**
+     * Удалить события старше {@code retentionDays} дней (политика удержания).
+     * Возвращает число удалённых строк; при ошибке базы — 0 (очистка повторится
+     * на следующем вызове).
+     */
+    public long prune(int retentionDays) {
+        if (retentionDays <= 0) {
+            return 0;
+        }
+        long cutoff = System.currentTimeMillis() - retentionDays * 86_400_000L;
+        try {
+            return database.inTransaction(connection -> audit.prune(connection, cutoff));
+        } catch (DatabaseException e) {
+            VEconomyMod.LOGGER.error("Ошибка очистки старых аудит-событий (retentionDays={}): {}",
+                    retentionDays, e.toString());
+            return 0;
+        }
     }
 
-    /** Запустить эвристики по одному игроку. */
+    // ------------------------------------------------------------ scanning
+
+    private final Object scanLock = new Object();
+    private boolean scanInProgress = false;
+
+    /** Запустить эвристики по всем игрокам (single-flight: параллельный вызов пропускается). */
+    public SuspicionScanner.ScanSummary scanAll() {
+        return guardedScan(scanner::scanAll);
+    }
+
+    /** Запустить эвристики по одному игроку (single-flight; данные — только этого игрока). */
     public SuspicionScanner.ScanSummary scanPlayer(UUID playerId) {
-        return scanner.scanPlayer(playerId);
+        return guardedScan(() -> scanner.scanPlayer(playerId));
+    }
+
+    private SuspicionScanner.ScanSummary guardedScan(
+            java.util.function.Supplier<SuspicionScanner.ScanSummary> work) {
+        synchronized (scanLock) {
+            if (scanInProgress) {
+                return SuspicionScanner.ScanSummary.zero();
+            }
+            scanInProgress = true;
+        }
+        try {
+            return work.get();
+        } finally {
+            synchronized (scanLock) {
+                scanInProgress = false;
+            }
+        }
     }
 }

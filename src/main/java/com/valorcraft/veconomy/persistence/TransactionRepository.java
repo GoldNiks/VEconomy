@@ -141,6 +141,61 @@ public final class TransactionRepository {
         return aggregateByTypeSince(connection, type, sinceMillis, "COALESCE(SUM(amount_minor), 0)");
     }
 
+    /**
+     * Переводы одного игрока с {@code sinceMillis} (участник с любой стороны) — для
+     * {@code scanPlayer}: эвристики получают только строки этого игрока, а не весь журнал.
+     */
+    public List<TransactionRow> transfersSinceForPlayer(Connection connection, UUID playerId,
+                                                        long sinceMillis) {
+        List<TransactionRow> result = new ArrayList<>();
+        try (var statement = connection.prepareStatement(
+                "SELECT * FROM transactions WHERE transaction_type = ? AND created_at >= ? "
+                        + "AND (source_uuid = ? OR target_uuid = ?) ORDER BY created_at DESC")) {
+            String uuid = playerId.toString();
+            statement.setString(1, TransactionType.PLAYER_TRANSFER.name());
+            statement.setLong(2, sinceMillis);
+            statement.setString(3, uuid);
+            statement.setString(4, uuid);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    result.add(map(rs));
+                }
+            }
+            return result;
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения переводов игрока " + playerId, e);
+        }
+    }
+
+    /**
+     * Число исходящих переводов по отправителю с {@code sinceMillis} (SQL-агрегация:
+     * счётчик не выгружает весь журнал в память). Опционально — только один отправитель.
+     */
+    public java.util.Map<UUID, Integer> outgoingTransferCountsBySource(Connection connection,
+                                                                       long sinceMillis, UUID onlySource) {
+        java.util.Map<UUID, Integer> counts = new java.util.HashMap<>();
+        String sql = "SELECT source_uuid, COUNT(*) FROM transactions "
+                + "WHERE transaction_type = ? AND created_at >= ? AND source_uuid IS NOT NULL "
+                + (onlySource != null ? "AND source_uuid = ?" : "")
+                + " GROUP BY source_uuid";
+        try (var statement = connection.prepareStatement(sql)) {
+            int index = 1;
+            statement.setString(index++, TransactionType.PLAYER_TRANSFER.name());
+            statement.setLong(index++, sinceMillis);
+            if (onlySource != null) {
+                statement.setString(index, onlySource.toString());
+            }
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    counts.put(UUID.fromString(rs.getString(1)), rs.getInt(2));
+                }
+            }
+            return counts;
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка SQL-агрегации исходящих переводов", e);
+        }
+    }
+
     private long aggregateByTypeSince(Connection connection, TransactionType type, long sinceMillis, String aggregate) {
         try (var statement = connection.prepareStatement(
                 "SELECT " + aggregate + " FROM transactions WHERE transaction_type = ? AND created_at >= ?")) {

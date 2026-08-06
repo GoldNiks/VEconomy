@@ -115,7 +115,7 @@ class SuspicionScannerTest {
     }
 
     @Test
-    void transferSpamSignalsAllParticipants() throws IOException {
+    void transferSpamSignalsOnlyOutgoingSender() throws IOException {
         writeConfig(config(2, 100_000, 1_000_000_000L, 1_000_000_000L));
         try (TestDb db = TestDb.create(noCooldown())) {
             UUID alice = UUID.randomUUID();
@@ -125,10 +125,11 @@ class SuspicionScannerTest {
             transfer(db, alice, bob, 100);
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
-            assertEquals(2, summary.spamSignals());
-            assertEquals(2, summary.total());
+            assertEquals(1, summary.spamSignals(), "сигнал пишется только отправителю");
+            assertEquals(1, summary.total());
             assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_SPAM, alice));
-            assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_SPAM, bob));
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_SPAM, bob),
+                    "получатель не считается спамером по входящим переводам");
         }
     }
 
@@ -149,7 +150,7 @@ class SuspicionScannerTest {
     }
 
     @Test
-    void roundTripSignalsPairWithBothDirections() throws IOException {
+    void roundTripSignalsEachParticipantWithCommonIncident() throws IOException {
         writeConfig(config(100_000, 2, 1_000_000_000L, 1_000_000_000L));
         try (TestDb db = TestDb.create(noCooldown())) {
             UUID alice = UUID.randomUUID();
@@ -160,20 +161,29 @@ class SuspicionScannerTest {
             transfer(db, bob, alice, 100);
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
-            assertEquals(1, summary.roundTripSignals());
-            assertEquals(1, summary.total());
-            // Сигнал пишется на один из участников пары (детерминированно по сортированному ключу
-            // пары); у кого именно — зависит от порядка пары, поэтому проверяем пару в деталях.
+            assertEquals(2, summary.roundTripSignals(), "событие пишется каждому участнику пары");
+            assertEquals(2, summary.total());
             List<AuditEventRow> roundTrips = signals(db).stream()
                     .filter(s -> AuditEventType.SIGNAL_ROUNDTRIP.equals(s.eventType()))
                     .toList();
-            assertEquals(1, roundTrips.size());
-            AuditEventRow signal = roundTrips.get(0);
-            assertTrue(alice.equals(signal.playerId()) || bob.equals(signal.playerId()));
-            String partner = alice.equals(signal.playerId()) ? bob.toString() : alice.toString();
-            assertTrue(signal.details().contains(partner),
-                    "детали должны содержать второго участника пары: " + signal.details());
+            assertEquals(2, roundTrips.size());
+            assertTrue(roundTrips.stream().anyMatch(s -> alice.equals(s.playerId())));
+            assertTrue(roundTrips.stream().anyMatch(s -> bob.equals(s.playerId())));
+            AuditEventRow aliceEvent = roundTrips.stream().filter(s -> alice.equals(s.playerId()))
+                    .findFirst().orElseThrow();
+            AuditEventRow bobEvent = roundTrips.stream().filter(s -> bob.equals(s.playerId()))
+                    .findFirst().orElseThrow();
+            assertEquals(incidentOf(aliceEvent.details()), incidentOf(bobEvent.details()),
+                    "у обоих участников один и тот же incident id");
+            assertTrue(aliceEvent.details().contains(bob.toString()),
+                    "детали должны содержать второго участника пары: " + aliceEvent.details());
+            assertTrue(bobEvent.details().contains(alice.toString()),
+                    "детали должны содержать второго участника пары: " + bobEvent.details());
         }
+    }
+
+    private static String incidentOf(String details) {
+        return details.substring(details.indexOf("incident="));
     }
 
     @Test
@@ -192,7 +202,7 @@ class SuspicionScannerTest {
     }
 
     @Test
-    void oversizedSignalsRecipientOnly() throws IOException {
+    void oversizedSignalsSenderOnly() throws IOException {
         writeConfig(config(100_000, 100_000, 1000, 1_000_000_000L));
         try (TestDb db = TestDb.create(noCooldown())) {
             UUID alice = UUID.randomUUID();
@@ -203,13 +213,14 @@ class SuspicionScannerTest {
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             assertEquals(1, summary.oversizedSignals());
-            assertTrue(hasSignal(db, AuditEventType.SIGNAL_OVERSIZED, bob));
-            assertFalse(hasSignal(db, AuditEventType.SIGNAL_OVERSIZED, alice));
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_OVERSIZED, alice),
+                    "субъект сигнала — отправитель");
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_OVERSIZED, bob));
         }
     }
 
     @Test
-    void newAccountSignalsFreshSideOnly() throws IOException {
+    void newAccountSignalsEachFreshSide() throws IOException {
         writeConfig(config(100_000, 100_000, 1_000_000_000L, 500));
         try (TestDb db = TestDb.create(noCooldown())) {
             UUID alice = UUID.randomUUID();
@@ -219,13 +230,13 @@ class SuspicionScannerTest {
             fund(db, bob, 100_000);
             ageAccount(db, alice, 4000);   // старше окна newAccountDays=3650 — не «свежий»
             transfer(db, alice, bob, 700);   // свежая сторона — bob (получатель)
-            transfer(db, bob, carol, 600);   // свежая сторона — bob (отправитель)
+            transfer(db, bob, carol, 600);   // свежие стороны — bob (отправитель) и carol (получатель)
 
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
-            assertEquals(1, summary.newAccountSignals());
+            assertEquals(2, summary.newAccountSignals(), "событие пишется каждой свежей стороне");
             assertTrue(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT, bob));
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT, carol));
             assertFalse(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT, alice));
-            assertFalse(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT, carol));
         }
     }
 
@@ -255,7 +266,7 @@ class SuspicionScannerTest {
             transfer(db, alice, bob, 100);
 
             SuspicionScanner.ScanSummary first = db.auditService.scanAll();
-            assertEquals(2, first.total());
+            assertEquals(1, first.total(), "только исходящий спам отправителя");
             long before = db.auditService.count();
 
             SuspicionScanner.ScanSummary second = db.auditService.scanAll();
@@ -284,6 +295,73 @@ class SuspicionScannerTest {
             assertEquals(1, summary.spamSignals(), "спам: только alice в скоупе");
             assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_SPAM, alice));
             assertFalse(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_SPAM, bob));
+        }
+    }
+
+    @Test
+    void roundTripEachParticipantSeenFromPlayerScan() throws IOException {
+        writeConfig(config(100_000, 2, 1_000_000_000L, 1_000_000_000L));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            transfer(db, alice, bob, 100);
+            transfer(db, bob, alice, 100);
+
+            // второй участник видит своё событие через scanPlayer (без полного сканирования)
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(bob);
+            assertEquals(1, summary.roundTripSignals());
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_ROUNDTRIP, bob));
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_ROUNDTRIP, alice),
+                    "scanPlayer пишет событие только сканируемому игроку");
+
+            // повтор в том же окне не плодит событий
+            assertEquals(0, db.auditService.scanPlayer(bob).total());
+            assertEquals(1, db.auditService.signals(100).stream()
+                    .filter(s -> AuditEventType.SIGNAL_ROUNDTRIP.equals(s.eventType()))
+                    .count());
+        }
+    }
+
+    @Test
+    void roundTripPairsAreIndependent() throws IOException {
+        writeConfig(config(100_000, 2, 1_000_000_000L, 1_000_000_000L));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            transfer(db, alice, bob, 100);
+            transfer(db, bob, alice, 100);
+            transfer(db, alice, carol, 100);
+            transfer(db, carol, alice, 100);
+
+            // пары A–B и A–C независимы: у alice по одному событию на пару
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(alice);
+            assertEquals(2, summary.roundTripSignals());
+            assertEquals(2, db.auditService.signals(100).stream()
+                    .filter(s -> AuditEventType.SIGNAL_ROUNDTRIP.equals(s.eventType())
+                            && alice.equals(s.playerId()))
+                    .count());
+        }
+    }
+
+    @Test
+    void newAccountBothSidesOfOneTransferWriteTwoEvents() throws IOException {
+        writeConfig(config(100_000, 100_000, 1_000_000_000L, 500));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            transfer(db, alice, bob, 700); // обе стороны свежие
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(2, summary.newAccountSignals());
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT, alice));
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT, bob));
         }
     }
 

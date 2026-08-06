@@ -18,17 +18,18 @@ public final class AuditRepository {
 
     private static final String COLUMNS = "event_type, severity, player_uuid, actor_uuid, actor_type, "
             + "amount_minor, details, created_at, status, resolved_at, resolved_by, "
-            + "resolution_note, idempotency_key";
+            + "resolution_note, idempotency_key, counterparty_uuid, dedupe_key";
 
     /**
-     * Вставить событие и вернуть его id. Идемпотентно по {@code idempotency_key}:
-     * повторная вставка того же ключа (повтор после сбоя записи) игнорируется
-     * и возвращает -1 — дубликат не создаётся.
+     * Вставить событие и вернуть его id. Идемпотентно по {@code idempotency_key} и
+     * {@code dedupe_key}: повторная вставка того же ключа (повтор после сбоя записи
+     * либо повторное событие того же окна) игнорируется и возвращает -1 — дубликат
+     * не создаётся.
      */
     public long insert(Connection connection, DatabaseManager.Dialect dialect, AuditEventRow row) {
         String sql = dialect == DatabaseManager.Dialect.MYSQL
-                ? "INSERT IGNORE INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                : "INSERT OR IGNORE INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                ? "INSERT IGNORE INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                : "INSERT OR IGNORE INTO audit_events (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement statement = connection.prepareStatement(sql,
                 Statement.RETURN_GENERATED_KEYS)) {
             statement.setString(1, row.eventType());
@@ -52,10 +53,13 @@ public final class AuditRepository {
             statement.setString(11, row.resolvedBy());
             statement.setString(12, row.resolutionNote());
             statement.setString(13, row.idempotencyKey());
+            statement.setString(14, row.counterpartyUuid() != null ? row.counterpartyUuid().toString() : null);
+            statement.setString(15, row.dedupeKey());
             int updated = statement.executeUpdate();
             if (updated == 0) {
-                // INSERT OR IGNORE / INSERT IGNORE отклонил повтор (тот же idempotency_key):
-                // строк не прибавилось, и getGeneratedKeys вернёт ключ предыдущей вставки.
+                // INSERT OR IGNORE / INSERT IGNORE отклонил повтор (тот же idempotency_key
+                // или dedupe_key): строк не прибавилось, and getGeneratedKeys вернёт ключ
+                // предыдущей вставки. Возвращаем -1 — события не создано.
                 return -1;
             }
             try (ResultSet keys = statement.getGeneratedKeys()) {
@@ -143,6 +147,26 @@ public final class AuditRepository {
         return count(connection, null);
     }
 
+    /**
+     * Удалить события старше {@code cutoffMillis}. Удаление идёт по северити и опирается
+     * на индекс {@code (severity, created_at)}: пакеты по одному северити используют индекс
+     * дважды, и удаление не спотыкается о другие нагрузки.
+     */
+    public long prune(Connection connection, long cutoffMillis) {
+        long removed = 0;
+        for (AuditSeverity severity : AuditSeverity.values()) {
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "DELETE FROM audit_events WHERE severity = ? AND created_at < ?")) {
+                statement.setString(1, severity.name());
+                statement.setLong(2, cutoffMillis);
+                removed += statement.executeUpdate();
+            } catch (SQLException e) {
+                throw new DatabaseException("Ошибка очистки старых аудит-событий", e);
+            }
+        }
+        return removed;
+    }
+
     public long count(Connection connection, String status) {
         String sql = status == null
                 ? "SELECT COUNT(*) FROM audit_events"
@@ -165,6 +189,9 @@ public final class AuditRepository {
             String player = rs.getString("player_uuid");
             String actor = rs.getString("actor_uuid");
             String actorType = rs.getString("actor_type");
+            String counterparty = rs.getString("counterparty_uuid");
+            // amount_minor может быть SQL NULL (событие без суммы): читаем сразу и сохраняем
+            // признак NULL прежде, чем следующий getXXX в строке перезапишет wasNull().
             long amount = rs.getLong("amount_minor");
             boolean amountNull = rs.wasNull();
             long resolvedAt = rs.getLong("resolved_at");
@@ -184,7 +211,9 @@ public final class AuditRepository {
                     resolvedAtNull ? null : resolvedAt,
                     rs.getString("resolved_by"),
                     rs.getString("resolution_note"),
-                    rs.getString("idempotency_key")));
+                    rs.getString("idempotency_key"),
+                    counterparty != null ? UUID.fromString(counterparty) : null,
+                    rs.getString("dedupe_key")));
         }
         return rows;
     }

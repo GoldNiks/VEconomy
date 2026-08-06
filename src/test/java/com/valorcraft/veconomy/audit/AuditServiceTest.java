@@ -94,11 +94,14 @@ class AuditServiceTest {
             assertTrue(db.accountService.unfreeze(player, "апелляция").isSuccess());
 
             List<AuditEventRow> rows = db.auditService.byPlayer(player, 10);
-            assertEquals(2, rows.size());
+            assertEquals(3, rows.size(), "депозит, заморозка и разморозка — по одному событию");
             assertEquals(AuditEventType.ACCOUNT_UNFROZEN, rows.get(0).eventType());
             assertTrue(rows.get(0).details().contains("апелляция"));
             assertEquals(AuditEventType.ACCOUNT_FROZEN, rows.get(1).eventType());
             assertTrue(rows.get(1).details().contains("нарушение правил"));
+            assertEquals(AuditEventType.ADMIN_BALANCE_CHANGE, rows.get(2).eventType(),
+                    "админ-депозит фиксируется событием изменения баланса");
+            assertTrue(rows.get(2).details().contains("op=ADD"));
         }
     }
 
@@ -204,11 +207,14 @@ class AuditServiceTest {
                     player, null, null, "консоль");
 
             List<AuditEventRow> rows = db.auditService.byPlayer(player, 10);
-            // Новые сверху: последним записан UNFROZEN (консоль), раньше — FROZEN (игрок).
+            // Новые сверху: последним записан UNFROZEN (консоль), раньше — FROZEN (игрок),
+            // ещё раньше — админ-депозит (консоль).
             assertEquals(AuditActorType.CONSOLE, rows.get(0).actorType());
             assertNull(rows.get(0).actorId());
             assertEquals(AuditActorType.PLAYER, rows.get(1).actorType());
             assertEquals(actor, rows.get(1).actorId());
+            assertEquals(AuditActorType.CONSOLE, rows.get(2).actorType());
+            assertEquals(AuditEventType.ADMIN_BALANCE_CHANGE, rows.get(2).eventType());
         }
     }
 
@@ -281,6 +287,163 @@ class AuditServiceTest {
             assertEquals(1, db.auditService.count(), "отложенное событие должно записаться после восстановления");
         } finally {
             db.close();
+        }
+    }
+
+    @Test
+    void adminBalanceChangeRecordsAddRemoveSet() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            UUID actor = UUID.randomUUID();
+            db.accountService.deposit(player, 100, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.ADMIN_DEPOSIT, actor, "пополнение"));
+            db.accountService.withdraw(player, 30, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.ADMIN_WITHDRAW, actor, "списание"));
+            db.accountService.setBalance(player, 120, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.ADMIN_SET_ADJUSTMENT, actor, "установка"));
+
+            List<AuditEventRow> changes = db.auditService.byPlayer(player, 10).stream()
+                    .filter(r -> AuditEventType.ADMIN_BALANCE_CHANGE.equals(r.eventType()))
+                    .toList();
+            assertEquals(3, changes.size());
+            // Новые сверху: SET, REMOVE, ADD.
+            AuditEventRow set = changes.get(0);
+            assertEquals(50L, set.amountMinor(), "сумма события — дельта баланса");
+            assertEquals(actor, set.actorId());
+            assertEquals(AuditActorType.PLAYER, set.actorType());
+            assertTrue(set.details().contains("op=SET"), set.details());
+            assertTrue(set.details().contains("old=70"), set.details());
+            assertTrue(set.details().contains("new=120"), set.details());
+            assertTrue(set.details().contains("delta=50"), set.details());
+            assertTrue(set.details().contains("установка"));
+            assertTrue(changes.get(1).details().contains("op=REMOVE"), changes.get(1).details());
+            assertTrue(changes.get(1).details().contains("delta=30"));
+            assertTrue(changes.get(2).details().contains("op=ADD"), changes.get(2).details());
+            assertTrue(changes.get(2).details().contains("delta=100"));
+        }
+    }
+
+    @Test
+    void adminBalanceSetWithoutChangeWritesNothing() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.accountService.deposit(player, 100, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.ADMIN_DEPOSIT, null, "старт"));
+            long before = db.auditService.count();
+
+            var result = db.accountService.setBalance(player, 100,
+                    com.valorcraft.veconomy.api.TransactionContext.of(
+                            com.valorcraft.veconomy.api.TransactionType.ADMIN_SET_ADJUSTMENT, null, "без изменений"));
+            assertTrue(result.isSuccess());
+            assertEquals(before, db.auditService.count(),
+                    "set на тот же баланс не должен плодить событие");
+        }
+    }
+
+    @Test
+    void failedWithdrawWritesNoAdminChange() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.accountService.deposit(player, 100, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.ADMIN_DEPOSIT, null, "старт"));
+
+            assertFalse(db.accountService.withdraw(player, 200,
+                    com.valorcraft.veconomy.api.TransactionContext.of(
+                            com.valorcraft.veconomy.api.TransactionType.ADMIN_WITHDRAW, null, "слишком много"))
+                    .isSuccess());
+            List<AuditEventRow> changes = db.auditService.byPlayer(player, 10).stream()
+                    .filter(r -> AuditEventType.ADMIN_BALANCE_CHANGE.equals(r.eventType()))
+                    .toList();
+            assertEquals(1, changes.size(), "неуспешное списание не пишется в аудит");
+        }
+    }
+
+    @Test
+    void nonAdminDepositWritesNoAdminChange() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.accountService.deposit(player, 100, com.valorcraft.veconomy.api.TransactionContext.of(
+                    com.valorcraft.veconomy.api.TransactionType.MILESTONE_REWARD, null, "веха"));
+            assertTrue(db.auditService.byPlayer(player, 10).isEmpty(),
+                    "не-админские операции не пишут ADMIN_BALANCE_CHANGE");
+        }
+    }
+
+    @Test
+    void exclusionNoChangeWritesNoAudit() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            assertTrue(db.activityService.setExcludedFromRewards(player, true).isSuccess());
+            assertEquals(com.valorcraft.veconomy.activity.AccountFlagUpdateResult.Status.NO_CHANGES,
+                    db.activityService.setExcludedFromRewards(player, true).status());
+            assertEquals(1, db.auditService.byPlayer(player, 10).size(),
+                    "повторное исключение без изменения флага не пишет событие");
+        }
+    }
+
+    @Test
+    void exclusionUnknownPlayerIsNotFound() {
+        try (TestDb db = TestDb.create()) {
+            assertEquals(com.valorcraft.veconomy.activity.AccountFlagUpdateResult.Status.PLAYER_NOT_FOUND,
+                    db.activityService.setExcludedFromRewards(null, true).status());
+        }
+    }
+
+    @Test
+    void nullAmountMinorReadsBackAsNull() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.auditService.record(AuditEventType.ACCOUNT_FROZEN, AuditSeverity.INFO,
+                    player, null, null, "без суммы");
+            AuditEventRow row = db.auditService.recent(10).get(0);
+            assertNull(row.amountMinor(), "NULL-сумма должна читаться как NULL, а не 0");
+        }
+    }
+
+    @Test
+    void pruneRemovesOnlyEventsOlderThanRetention() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.auditService.record(AuditEventType.ACCOUNT_FROZEN, AuditSeverity.INFO,
+                    player, null, null, "старое");
+            db.auditService.record(AuditEventType.ACCOUNT_UNFROZEN, AuditSeverity.INFO,
+                    player, null, null, "свежее");
+            // состарить первое событие на двое суток назад
+            db.database.inTransaction(connection -> {
+                try (var statement = connection.prepareStatement(
+                        "UPDATE audit_events SET created_at = ? WHERE event_type = ?")) {
+                    statement.setLong(1, System.currentTimeMillis() - 2 * 86_400_000L);
+                    statement.setString(2, AuditEventType.ACCOUNT_FROZEN);
+                    statement.executeUpdate();
+                } catch (java.sql.SQLException e) {
+                    throw new RuntimeException(e);
+                }
+                return null;
+            });
+
+            long removed = db.auditService.prune(1);
+            assertEquals(1, removed, "старее суток — только старое событие");
+            assertEquals(1, db.auditService.count());
+            assertEquals(AuditEventType.ACCOUNT_UNFROZEN, db.auditService.recent(10).get(0).eventType());
+        }
+    }
+
+    @Test
+    void signalDedupeKeyRejectsDuplicateInsert() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            AuditEventRow signal = AuditEventRow.signal(AuditEventType.SIGNAL_TRANSFER_SPAM,
+                    player, null, null, "transfers=3", "spam|" + player + "|1");
+            AuditRepository repository = new AuditRepository();
+            db.database.inTransaction(connection -> {
+                repository.insert(connection, db.database.dialect(), signal);
+                return null;
+            });
+            long second = db.database.inTransaction(connection ->
+                    repository.insert(connection, db.database.dialect(), signal));
+
+            assertEquals(-1L, second, "повторная вставка того же окна игнорируется");
+            assertEquals(1, db.auditService.count());
         }
     }
 }

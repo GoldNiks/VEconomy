@@ -11,10 +11,7 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
-import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventRow;
-import com.valorcraft.veconomy.audit.AuditEventType;
-import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.audit.ResolutionStatus;
 import com.valorcraft.veconomy.audit.SuspicionScanner;
@@ -318,9 +315,8 @@ public final class EconomyAdminCommand {
                         Component.translatable("notify.admin.set",
                                 target.name(), EconomyCore.formatter().format(amount))
                                 .withStyle(ChatFormatting.GOLD));
-                EconomyCore.audit().record(AuditEventType.ADMIN_BALANCE_CHANGE, AuditSeverity.INFO,
-                        target.uuid(), actor, AuditActorType.of(actor), amount,
-                        "reason=" + reason + ";tx=" + result.transactionId());
+                // Событие ADMIN_BALANCE_CHANGE пишется в AccountService в той же
+                // транзакции, что и изменение баланса (op/old/new/delta/tx/reason).
             }
             case ACCOUNT_NOT_FOUND -> notFound(source, playerInput);
             case ACCOUNT_DISABLED -> source.sendFailure(
@@ -442,19 +438,25 @@ public final class EconomyAdminCommand {
                 ? p.getUUID() : null;
         AccountFlagUpdateResult update = EconomyCore.activity().setExcludedFromRewards(
                 target.uuid(), excluded, actor);
-        if (update.status() != AccountFlagUpdateResult.Status.OK) {
-            source.sendFailure(Component.translatable("admin.account.exclude.failed", target.name())
-                    .withStyle(ChatFormatting.RED));
-            return 1;
-        }
-        String verb = excluded ? "admin.account.excluded" : "admin.account.included";
-        source.sendSuccess(() -> Component.translatable(verb, target.name())
-                .withStyle(ChatFormatting.GREEN), true);
-        if (EconomyCore.settings().broadcastAdminChanges
-                && source.getServer() != null && source.getServer().getPlayerList() != null) {
-            source.getServer().getPlayerList().broadcastSystemMessage(
-                    Component.translatable(excluded ? "notify.admin.excluded" : "notify.admin.included",
-                            target.name()).withStyle(ChatFormatting.GOLD), false);
+        switch (update.status()) {
+            case SUCCESS -> {
+                String verb = excluded ? "admin.account.excluded" : "admin.account.included";
+                source.sendSuccess(() -> Component.translatable(verb, target.name())
+                        .withStyle(ChatFormatting.GREEN), true);
+                if (EconomyCore.settings().broadcastAdminChanges
+                        && source.getServer() != null && source.getServer().getPlayerList() != null) {
+                    source.getServer().getPlayerList().broadcastSystemMessage(
+                            Component.translatable(excluded ? "notify.admin.excluded" : "notify.admin.included",
+                                    target.name()).withStyle(ChatFormatting.GOLD), false);
+                }
+            }
+            case NO_CHANGES -> source.sendSuccess(() ->
+                    Component.translatable("admin.account.exclude.nochange", target.name())
+                            .withStyle(ChatFormatting.YELLOW), false);
+            case PLAYER_NOT_FOUND -> notFound(source, playerInput);
+            case DATABASE_ERROR -> source.sendFailure(
+                    Component.translatable("admin.account.exclude.failed", target.name())
+                            .withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -559,7 +561,7 @@ public final class EconomyAdminCommand {
                 ? "-" : PlayerResolver.resolve(source.getServer(),
                 event.playerId().toString()).name();
         String actorName = event.actorId() == null
-                ? "-" : PlayerResolver.resolve(source.getServer(),
+                ? "CONSOLE" : PlayerResolver.resolve(source.getServer(),
                 event.actorId().toString()).name();
         source.sendSuccess(() -> Component.translatable("admin.audit.event.title", event.id())
                 .withStyle(ChatFormatting.GOLD), false);

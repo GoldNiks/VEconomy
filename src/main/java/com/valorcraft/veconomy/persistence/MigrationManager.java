@@ -202,10 +202,14 @@ public final class MigrationManager {
             CREATE INDEX IF NOT EXISTS idx_audit_player ON audit_events(player_uuid, created_at);
             CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type, created_at);
             """,
-            // v7 — полный набор сигналов, жизненный цикл событий и actor attribution.
-            // status/resolved_at/resolved_by/resolution_note — обработка подозрительных
-            // событий администратором; idempotency_key защищает от дублей при повторе
-            // записи после сбоя; actor_type фиксирует инициатора события.
+            // v7 — полный набор сигналов, жизненный цикл событий, actor attribution,
+            // участник-контрагент и дедупликационный ключ. status/resolved_at/resolved_by/
+            // resolution_note — обработка подозрительных событий администратором;
+            // idempotency_key защищает от дублей при повторе записи после сбоя;
+            // actor_type фиксирует инициатора субъекта. counterparty_uuid — вторая
+            // сторона пары/перевода (для ROUNDTRIP каждому участнику пишется своё
+            // событие с общим incident id); dedupe_key — стабильный логический ключ
+            // окна для сигналов (частичный уникальный индекс: NULL-ключи не конфликтуют).
             """
             ALTER TABLE audit_events ADD COLUMN actor_type VARCHAR(16);
             ALTER TABLE audit_events ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'OPEN';
@@ -213,7 +217,12 @@ public final class MigrationManager {
             ALTER TABLE audit_events ADD COLUMN resolved_by VARCHAR(64);
             ALTER TABLE audit_events ADD COLUMN resolution_note VARCHAR(1024);
             ALTER TABLE audit_events ADD COLUMN idempotency_key VARCHAR(64);
+            ALTER TABLE audit_events ADD COLUMN counterparty_uuid VARCHAR(36);
+            ALTER TABLE audit_events ADD COLUMN dedupe_key VARCHAR(256);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_idem ON audit_events(idempotency_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_dedupe ON audit_events(dedupe_key)
+                WHERE dedupe_key IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_events(severity, created_at);
             """
     };
 
@@ -384,6 +393,9 @@ public final class MigrationManager {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """,
             // v7 — полный набор сигналов, жизненный цикл и actor attribution (см. SQLite-скрипт).
+            // Дополнительно: counterparty_uuid, dedupe_key с unique-ключом (MySQL допускает
+            // несколько NULL — эквивалент частичного уникального индекса SQLite) и индекс
+            // severity+created_at для очистки по политике удержания.
             """
             ALTER TABLE audit_events
                 ADD COLUMN actor_type VARCHAR(16),
@@ -392,7 +404,11 @@ public final class MigrationManager {
                 ADD COLUMN resolved_by VARCHAR(64),
                 ADD COLUMN resolution_note VARCHAR(1024),
                 ADD COLUMN idempotency_key VARCHAR(64),
-                ADD UNIQUE KEY uk_audit_idem (idempotency_key);
+                ADD UNIQUE KEY uk_audit_idem (idempotency_key),
+                ADD COLUMN counterparty_uuid VARCHAR(36),
+                ADD COLUMN dedupe_key VARCHAR(256),
+                ADD UNIQUE KEY uk_audit_dedupe (dedupe_key),
+                ADD KEY idx_audit_severity (severity, created_at);
             """
     };
 

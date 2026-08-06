@@ -81,11 +81,13 @@ public final class AuditConfig {
                 Settings.defaults().newAccountConcentrationSources());
         int repeatedDestinationTransfers = intRange(signals, "repeatedDestinationTransfers", 1, 100_000,
                 Settings.defaults().repeatedDestinationTransfers());
+        int retentionDays = intRange(signals, "retentionDays", 1, 3650,
+                Settings.defaults().retentionDays());
         return new Settings(enabled, windowMinutes, transferSpamCount, roundTripExchanges,
                 oversizedTransferAmount, newAccountDays, newAccountTransferAmount,
                 rapidForwardAmount, rapidForwardWindowMinutes, transferLoopLength,
                 highPairFrequencyExchanges, newAccountConcentrationSources,
-                repeatedDestinationTransfers);
+                repeatedDestinationTransfers, retentionDays);
     }
 
     private static boolean bool(JsonObject object, String field, boolean fallback) {
@@ -155,11 +157,14 @@ public final class AuditConfig {
             /** Минимум разных отправителей на новый аккаунт для CONCENTRATION. */
             int newAccountConcentrationSources,
             /** Минимум переводов одного игрока одному получателю для SHARED_DESTINATION. */
-            int repeatedDestinationTransfers) {
+            int repeatedDestinationTransfers,
+
+            /** Сколько дней хранить события аудита (старше — очищаются при старте/периодически). */
+            int retentionDays) {
 
         public static Settings defaults() {
             return new Settings(true, 30, 12, 4, 500_000L, 7, 100_000L,
-                    100_000L, 5, 3, 10, 5, 10);
+                    100_000L, 5, 3, 10, 5, 10, 90);
         }
     }
 
@@ -182,7 +187,8 @@ public final class AuditConfig {
                     "transferLoopLength": 3,
                     "highPairFrequencyExchanges": 10,
                     "newAccountConcentrationSources": 5,
-                    "repeatedDestinationTransfers": 10
+                    "repeatedDestinationTransfers": 10,
+                    "retentionDays": 90
                   }
                 }
                 """;

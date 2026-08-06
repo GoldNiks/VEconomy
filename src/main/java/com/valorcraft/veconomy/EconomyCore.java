@@ -102,6 +102,10 @@ public final class EconomyCore {
                 treasuryRepository, payoutRepository, planRepository, accountRepository, escrowRepository,
                 accountService, auditService, initialSettings);
 
+        // Политика удержания: очистка старых событий аудита при старте
+        // (периодически повторяется в ActivityHandlers.onServerTick).
+        auditService.prune(AuditConfig.settings().retentionDays());
+
         api = new EconomyApi() {
             @Override
             public long getBalance(UUID playerId) {
@@ -180,6 +184,9 @@ public final class EconomyCore {
         }
         if (weeklyFund != null) {
             weeklyFund.applySettings(newSettings);
+        }
+        if (auditService != null) {
+            auditService.prune(AuditConfig.settings().retentionDays());
         }
     }
 
