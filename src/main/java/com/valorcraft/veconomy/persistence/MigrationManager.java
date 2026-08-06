@@ -184,6 +184,23 @@ public final class MigrationManager {
                 first_visited_at INTEGER NOT NULL,
                 PRIMARY KEY (player_uuid, dimension)
             );
+            """,
+            // v6 — события аудита и сигналы подозрительной активности. Ledger
+            // хранит деньги; здесь — административные действия и сработавшие
+            // эвристики с северити и деталями.
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                player_uuid TEXT,
+                actor_uuid TEXT,
+                amount_minor INTEGER,
+                details TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_player ON audit_events(player_uuid, created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type, created_at);
             """
     };
 
@@ -336,6 +353,21 @@ public final class MigrationManager {
                 dimension VARCHAR(64) NOT NULL,
                 first_visited_at BIGINT NOT NULL,
                 PRIMARY KEY (player_uuid, dimension)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            // v6 — события аудита и сигналы подозрительной активности (см. SQLite-скрипт).
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                event_type VARCHAR(64) NOT NULL,
+                severity VARCHAR(16) NOT NULL,
+                player_uuid VARCHAR(36),
+                actor_uuid VARCHAR(36),
+                amount_minor BIGINT,
+                details VARCHAR(1024),
+                created_at BIGINT NOT NULL,
+                KEY idx_audit_player (player_uuid, created_at),
+                KEY idx_audit_type (event_type, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
     };

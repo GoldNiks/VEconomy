@@ -5,6 +5,9 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditEventType;
+import com.valorcraft.veconomy.audit.AuditService;
+import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.config.EconomySettings.WeeklyFund;
 import com.valorcraft.veconomy.economy.AccountService;
@@ -65,6 +68,7 @@ public final class WeeklyFundService {
     private final AccountRepository accounts;
     private final EscrowRepository escrow;
     private final AccountService accountService;
+    private final AuditService audit;
     private volatile EconomySettings settings;
     private volatile ForecastCacheEntry forecastCache;
 
@@ -73,7 +77,7 @@ public final class WeeklyFundService {
                              WeeklyTreasuryRepository treasury, WeeklyPayoutRepository payouts,
                              WeeklyFundPlanRepository plans, AccountRepository accounts,
                              EscrowRepository escrow, AccountService accountService,
-                             EconomySettings settings) {
+                             AuditService audit, EconomySettings settings) {
         this.database = database;
         this.activityRepository = activityRepository;
         this.days = days;
@@ -84,6 +88,7 @@ public final class WeeklyFundService {
         this.accounts = accounts;
         this.escrow = escrow;
         this.accountService = accountService;
+        this.audit = audit;
         this.settings = settings;
         WeekId.useZone(WeeklyMath.zoneOf(settings.weeklyFund.timeZone));
     }
@@ -772,6 +777,12 @@ public final class WeeklyFundService {
                 }
                 if (result.status() == TransactionResult.Status.SUCCESS) {
                     payments.put(playerId, share);
+                    if (audit != null) {
+                        // Запись аудита — отдельная транзакция после подтверждённой выплаты.
+                        audit.record(AuditEventType.WEEKLY_PAYOUT, AuditSeverity.INFO, playerId, null,
+                                share,
+                                "week=" + paidWeek + ";tx=" + txId);
+                    }
                 }
             } else {
                 // Неуспех (заморожен, лимит, ...): период не закрывается, повторный

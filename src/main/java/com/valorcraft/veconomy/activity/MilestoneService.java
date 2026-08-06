@@ -4,6 +4,9 @@ import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditEventType;
+import com.valorcraft.veconomy.audit.AuditService;
+import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.config.EconomySettings.MilestoneReward;
 import com.valorcraft.veconomy.config.MilestoneConfig;
@@ -39,18 +42,21 @@ public final class MilestoneService {
     private final ActivityService activity;
     private final DimensionVisitRepository visits;
     private final MilestoneConditionRegistry conditions;
+    private final AuditService audit;
     private volatile EconomySettings settings;
     private volatile List<MilestoneDefinition> definitions = List.of();
 
     public MilestoneService(DatabaseManager database, MilestoneRepository milestones,
                             AccountService accounts, ActivityService activity,
-                            DimensionVisitRepository visits, EconomySettings settings) {
+                            DimensionVisitRepository visits, AuditService audit,
+                            EconomySettings settings) {
         this.database = database;
         this.milestones = milestones;
         this.accounts = accounts;
         this.activity = activity;
         this.visits = visits;
         this.conditions = new MilestoneConditionRegistry(activity, database, visits);
+        this.audit = audit;
         this.settings = settings;
         rebuildDefinitions(settings);
     }
@@ -227,17 +233,24 @@ public final class MilestoneService {
      * @return true, если отметка существовала и снята
      */
     public boolean revoke(UUID playerId, String milestoneId) {
+        boolean existed;
         try {
-            return database.inTransaction(connection -> {
-                boolean existed = milestones.find(connection, playerId, milestoneId).isPresent();
+            existed = database.inTransaction(connection -> {
+                boolean found = milestones.find(connection, playerId, milestoneId).isPresent();
                 milestones.revoke(connection, playerId, milestoneId);
                 VEconomyMod.LOGGER.info("Отозван milestone {} у игрока {}", milestoneId, playerId);
-                return existed;
+                return found;
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка отзыва milestone {} у {}", milestoneId, playerId, e);
             return false;
         }
+        if (existed && audit != null) {
+            // Запись аудита — отдельная транзакция после подтверждённого отзыва.
+            audit.record(AuditEventType.MILESTONE_REVOKED, AuditSeverity.INFO, playerId, null,
+                    "milestone=" + milestoneId);
+        }
+        return existed;
     }
 
     /** Выдан ли milestone игроку. */
@@ -288,8 +301,9 @@ public final class MilestoneService {
      */
     private MilestoneGrantResult doGrant(UUID playerId, MilestoneDefinition def, UUID actorId,
                                          String reason, String idempotencyKey) {
+        MilestoneGrantResult result;
         try {
-            return database.inTransaction(connection -> {
+            result = database.inTransaction(connection -> {
                 if (milestones.find(connection, playerId, def.id()).isPresent()) {
                     return MilestoneGrantResult.failed(MilestoneGrantResult.Status.ALREADY_CLAIMED);
                 }
@@ -318,6 +332,14 @@ public final class MilestoneService {
             VEconomyMod.LOGGER.error("Ошибка выдачи milestone {} игроку {}", def.id(), playerId, e);
             return MilestoneGrantResult.failed(MilestoneGrantResult.Status.DATABASE_ERROR);
         }
+        if (result.status() == MilestoneGrantResult.Status.GRANTED && audit != null) {
+            // Запись аудита — отдельная транзакция после подтверждённой выдачи.
+            audit.record(AuditEventType.MILESTONE_GRANTED, AuditSeverity.INFO, playerId, actorId,
+                    result.amountMinor(),
+                    "milestone=" + def.id() + ";type=" + def.type().name()
+                            + ";tx=" + result.transactionId());
+        }
+        return result;
     }
 
     private static MilestoneGrantResult.Status mapDepositStatus(TransactionResult deposit) {

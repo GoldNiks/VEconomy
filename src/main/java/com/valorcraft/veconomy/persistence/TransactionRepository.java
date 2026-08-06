@@ -118,6 +118,25 @@ public final class TransactionRepository {
         return aggregateByTypeSince(connection, type, sinceMillis, "COUNT(*)");
     }
 
+    /** Все переводы между игроками с {@code sinceMillis} (для аудит-эвристик), новые сверху. */
+    public List<TransactionRow> transfersSince(Connection connection, long sinceMillis) {
+        List<TransactionRow> result = new ArrayList<>();
+        try (var statement = connection.prepareStatement(
+                "SELECT * FROM transactions WHERE transaction_type = ? AND created_at >= ? "
+                        + "ORDER BY created_at DESC")) {
+            statement.setString(1, TransactionType.PLAYER_TRANSFER.name());
+            statement.setLong(2, sinceMillis);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    result.add(map(rs));
+                }
+            }
+            return result;
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка чтения переводов с " + sinceMillis, e);
+        }
+    }
+
     public long sumAmountByTypeSince(Connection connection, TransactionType type, long sinceMillis) {
         return aggregateByTypeSince(connection, type, sinceMillis, "COALESCE(SUM(amount_minor), 0)");
     }

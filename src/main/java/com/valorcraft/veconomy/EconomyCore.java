@@ -17,7 +17,10 @@ import com.valorcraft.veconomy.activity.WeeklyFundService;
 import com.valorcraft.veconomy.activity.WeeklyPeriodRepository;
 import com.valorcraft.veconomy.activity.WeeklyPayoutRepository;
 import com.valorcraft.veconomy.activity.WeeklyTreasuryRepository;
+import com.valorcraft.veconomy.audit.AuditRepository;
+import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
+import com.valorcraft.veconomy.config.AuditConfig;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.config.MilestoneConfig;
 import com.valorcraft.veconomy.economy.AccountService;
@@ -47,6 +50,7 @@ public final class EconomyCore {
     private static EscrowService escrowService;
     private static CurrencyFormatter formatter;
     private static EconomyStatistics statistics;
+    private static AuditService auditService;
     private static ActivityService activity;
     private static MilestoneService milestones;
     private static WeeklyFundService weeklyFund;
@@ -61,6 +65,7 @@ public final class EconomyCore {
             throw new IllegalStateException("Экономика уже запущена");
         }
         settings = initialSettings;
+        AuditConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
         MilestoneConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get(),
                 initialSettings.maximumBalance);
         database = new DatabaseManager();
@@ -71,8 +76,10 @@ public final class EconomyCore {
         EscrowRepository escrowRepository = new EscrowRepository();
 
         ledgerService = new LedgerService(database, transactionRepository);
+        auditService = new AuditService(database, new AuditRepository(),
+                accountRepository, transactionRepository);
         accountService = new AccountService(database, accountRepository, transactionRepository,
-                ledgerService, initialSettings);
+                ledgerService, auditService, initialSettings);
         transferService = new TransferService(database, accountRepository, transactionRepository,
                 ledgerService, initialSettings);
         escrowService = new EscrowService(database, accountRepository, escrowRepository,
@@ -88,12 +95,12 @@ public final class EconomyCore {
         WeeklyTreasuryRepository treasuryRepository = new WeeklyTreasuryRepository();
         WeeklyActivityDayRepository dayRepository = new WeeklyActivityDayRepository();
         WeeklyFundPlanRepository planRepository = new WeeklyFundPlanRepository();
-        activity = new ActivityService(database, activityRepository, dayRepository, initialSettings);
+        activity = new ActivityService(database, activityRepository, dayRepository, auditService, initialSettings);
         milestones = new MilestoneService(database, milestoneRepository, accountService, activity,
-                visitRepository, initialSettings);
+                visitRepository, auditService, initialSettings);
         weeklyFund = new WeeklyFundService(database, activityRepository, dayRepository, periodRepository,
                 treasuryRepository, payoutRepository, planRepository, accountRepository, escrowRepository,
-                accountService, initialSettings);
+                accountService, auditService, initialSettings);
 
         api = new EconomyApi() {
             @Override
@@ -150,6 +157,7 @@ public final class EconomyCore {
     /** Применить новые (перезагруженные) настройки к сервисам. */
     public static synchronized void applySettings(EconomySettings newSettings) {
         settings = newSettings;
+        AuditConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
         MilestoneConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get(),
                 newSettings.maximumBalance);
         if (accountService != null) {
@@ -220,6 +228,10 @@ public final class EconomyCore {
 
     public static EconomyStatistics statistics() {
         return statistics;
+    }
+
+    public static AuditService audit() {
+        return auditService;
     }
 
     public static ActivityService activity() {

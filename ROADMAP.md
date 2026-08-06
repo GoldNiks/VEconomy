@@ -22,7 +22,7 @@
 | `/money`, `/pay`, `/money history` | DONE | + `/balance`-алиасы, `/money activity` |
 | Админ `balance get/add/remove/set` | DONE | уровень 4, причина обязательна |
 | SQLite и MySQL | DONE | диалект-зависимые миграции, HikariCP |
-| SQL-миграции | DONE | идемпотентные, версии 1–4 |
+| SQL-миграции | DONE | идемпотентные, версии 1–6 |
 | Economy API | DONE | `EconomyApi`, `TransactionContext/Result` |
 | Escrow API | DONE | резерв → завершение/возврат |
 | Чат-уведомления об админ-изменениях | DONE | `notifications.broadcastAdminChanges` |
@@ -60,9 +60,10 @@
 
 | Область | Статус | Примечание |
 |---------|--------|------------|
-| Таблица audit-событий | NOT IMPLEMENTED | есть только ledger + лог-сообщения |
-| Suspicion signals | NOT IMPLEMENTED | Этап 3 |
-| Команды `/economy admin audit ...` | NOT IMPLEMENTED | Этап 3 |
+| Таблица audit-событий | DONE | `audit_events` (миграция v6), `AuditRepository`, `AuditService` |
+| События сервисов | DONE | freeze/unfreeze, exclude-rewards, milestone grant/revoke, weekly payout |
+| Suspicion signals | DONE | спам/рондатрип/оверсайз/новые аккаунты, `veconomy-audit.json`, дедупликация в окне |
+| Команды `/economy admin audit list/player/signals/scan` | DONE | Этап 3 |
 | `/economy admin stats` | PARTIAL | supply/игроки/казна/escrow/эмиссия/медиана/переводы есть; нет замороженных/исключённых/сигналов/аггрегата по типам |
 | `/economy admin diagnostics` | NOT IMPLEMENTED | Этап 4 |
 

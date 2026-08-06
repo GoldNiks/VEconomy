@@ -162,6 +162,33 @@ class WeeklyFundServiceTest {
     }
 
     @Test
+    void payoutWritesAuditEvents() {
+        try (TestDb db = TestDb.create(fund(400))) {
+            markSnapshotDue(db);
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            seedWeekly(db, alice, 300);
+            seedWeekly(db, bob, 100);
+
+            Map<UUID, Long> payments = db.weeklyFundService.maybeDistribute();
+            assertEquals(2, payments.size());
+
+            java.util.List<com.valorcraft.veconomy.audit.AuditEventRow> rows = db.auditService.recent(10);
+            assertEquals(2, rows.size(), "на каждую успешную выплату должно быть событие аудита");
+            long amountOf = rows.stream()
+                    .filter(r -> com.valorcraft.veconomy.audit.AuditEventType.WEEKLY_PAYOUT.equals(r.eventType())
+                            && alice.equals(r.playerId()))
+                    .mapToLong(r -> r.amountMinor() == null ? -1 : r.amountMinor())
+                    .sum();
+            assertEquals(300L, amountOf);
+            assertTrue(rows.stream().anyMatch(r ->
+                            com.valorcraft.veconomy.audit.AuditEventType.WEEKLY_PAYOUT.equals(r.eventType())
+                                    && bob.equals(r.playerId()) && r.amountMinor() == 100L),
+                    "для bob должна быть запись WEEKLY_PAYOUT на 100");
+        }
+    }
+
+    @Test
     void distributesWhenTotalActivityExceedsFund() {
         // Критический случай: totalActive > fund. Доли считаются по очкам, не по секундам на юнит.
         try (TestDb db = TestDb.create(fund(100))) {

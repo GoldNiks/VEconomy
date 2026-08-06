@@ -1,6 +1,7 @@
 package com.valorcraft.veconomy.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.api.AccountStatus;
@@ -8,7 +9,11 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditEventRow;
+import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
+import com.valorcraft.veconomy.audit.SuspicionScanner;
+import com.valorcraft.veconomy.config.AuditConfig;
 import com.valorcraft.veconomy.config.EconomyConfig;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.TreasuryService;
@@ -22,6 +27,7 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -118,6 +124,32 @@ public final class EconomyAdminCommand {
                                                         .executes(EconomyAdminCommand::milestoneRevoke)))))
                         .then(Commands.literal("reload")
                                 .executes(EconomyAdminCommand::reload))
+                        .then(Commands.literal("audit")
+                                .then(Commands.literal("list")
+                                        .executes(context -> auditList(context, null))
+                                        .then(Commands.argument("limit", IntegerArgumentType.integer(1, 500))
+                                                .executes(context -> auditList(context,
+                                                        IntegerArgumentType.getInteger(context, "limit")))))
+                                .then(Commands.literal("player")
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .executes(context -> auditPlayer(context, null))
+                                                .then(Commands.argument("limit",
+                                                                IntegerArgumentType.integer(1, 500))
+                                                        .executes(context -> auditPlayer(context,
+                                                                IntegerArgumentType.getInteger(
+                                                                        context, "limit"))))))
+                                .then(Commands.literal("signals")
+                                        .executes(context -> auditSignals(context, null))
+                                        .then(Commands.argument("limit", IntegerArgumentType.integer(1, 500))
+                                                .executes(context -> auditSignals(context,
+                                                        IntegerArgumentType.getInteger(context, "limit")))))
+                                .then(Commands.literal("scan")
+                                        .executes(context -> auditScan(context, null))
+                                        .then(Commands.argument("player", StringArgumentType.word())
+                                                .suggests(players)
+                                                .executes(context -> auditScan(context,
+                                                        StringArgumentType.getString(context, "player"))))))
                         .then(Commands.literal("weekly")
                                 .then(Commands.literal("status")
                                         .executes(EconomyAdminCommand::weeklyStatus))
@@ -381,6 +413,114 @@ public final class EconomyAdminCommand {
                             target.name()).withStyle(ChatFormatting.GOLD), false);
         }
         return 1;
+    }
+
+    // ---------------------------------------------------------------- audit
+
+    private static final int AUDIT_LIMIT_DEFAULT = 20;
+
+    private static int auditList(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                 Integer limit) {
+        CommandSourceStack source = context.getSource();
+        int effective = limit != null ? limit : AUDIT_LIMIT_DEFAULT;
+        List<AuditEventRow> rows = EconomyCore.audit().recent(effective);
+        sendAuditRows(source, "admin.audit.list.title", new Object[]{rows.size()}, rows);
+        return 1;
+    }
+
+    private static int auditPlayer(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                   Integer limit) {
+        CommandSourceStack source = context.getSource();
+        String playerInput = StringArgumentType.getString(context, "player");
+        PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+        if (!target.exists()) {
+            return notFound(source, playerInput);
+        }
+        int effective = limit != null ? limit : AUDIT_LIMIT_DEFAULT;
+        List<AuditEventRow> rows = EconomyCore.audit().byPlayer(target.uuid(), effective);
+        sendAuditRows(source, "admin.audit.player.title",
+                new Object[]{target.name(), rows.size()}, rows);
+        return 1;
+    }
+
+    private static int auditSignals(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                    Integer limit) {
+        CommandSourceStack source = context.getSource();
+        int effective = limit != null ? limit : AUDIT_LIMIT_DEFAULT;
+        List<AuditEventRow> rows = EconomyCore.audit().signals(effective);
+        sendAuditRows(source, "admin.audit.signals.title", new Object[]{rows.size()}, rows);
+        return 1;
+    }
+
+    private static int auditScan(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                 String playerInput) {
+        CommandSourceStack source = context.getSource();
+        if (!AuditConfig.settings().enabled()) {
+            source.sendFailure(Component.translatable("admin.audit.scan.disabled")
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        SuspicionScanner.ScanSummary summary;
+        String who;
+        if (playerInput == null) {
+            summary = EconomyCore.audit().scanAll();
+            who = null;
+        } else {
+            PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
+            if (!target.exists()) {
+                return notFound(source, playerInput);
+            }
+            summary = EconomyCore.audit().scanPlayer(target.uuid());
+            who = target.name();
+        }
+        if (who == null) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.scan.done",
+                    summary.spamSignals(), summary.roundTripSignals(),
+                    summary.oversizedSignals(), summary.newAccountSignals())
+                    .withStyle(ChatFormatting.GREEN), true);
+        } else {
+            source.sendSuccess(() -> Component.translatable("admin.audit.scan.player.done", who,
+                    summary.spamSignals(), summary.roundTripSignals(),
+                    summary.oversizedSignals(), summary.newAccountSignals())
+                    .withStyle(ChatFormatting.GREEN), true);
+        }
+        return 1;
+    }
+
+    private static void sendAuditRows(CommandSourceStack source, String titleKey,
+                                      Object[] titleArgs, List<AuditEventRow> rows) {
+        source.sendSuccess(() -> Component.translatable(titleKey, titleArgs)
+                .withStyle(ChatFormatting.GOLD), false);
+        if (rows.isEmpty()) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.empty")
+                    .withStyle(ChatFormatting.GRAY), false);
+            return;
+        }
+        for (AuditEventRow row : rows) {
+            ChatFormatting severityColor = switch (row.severity()) {
+                case CRITICAL -> ChatFormatting.DARK_RED;
+                case SUSPICIOUS -> ChatFormatting.RED;
+                case WARNING -> ChatFormatting.YELLOW;
+                default -> ChatFormatting.GRAY;
+            };
+            String playerName = row.playerId() == null
+                    ? "-" : PlayerResolver.resolve(source.getServer(),
+                    row.playerId().toString()).name();
+            MutableComponent line = Component.literal(formatTimestamp(row.createdAt()))
+                    .withStyle(ChatFormatting.DARK_GRAY);
+            line.append(Component.literal(" [" + row.severity().name().charAt(0) + "] ")
+                    .withStyle(severityColor));
+            line.append(Component.literal(row.eventType()).withStyle(ChatFormatting.AQUA));
+            line.append(Component.literal(" " + playerName).withStyle(ChatFormatting.WHITE));
+            if (row.amountMinor() != null) {
+                line.append(Component.literal(" " + EconomyCore.formatter().format(row.amountMinor()))
+                        .withStyle(ChatFormatting.GREEN));
+            }
+            if (row.details() != null && !row.details().isBlank()) {
+                line.append(Component.literal(" " + row.details()).withStyle(ChatFormatting.GRAY));
+            }
+            source.sendSuccess(() -> line, false);
+        }
     }
 
     // ---------------------------------------------------------------- milestone

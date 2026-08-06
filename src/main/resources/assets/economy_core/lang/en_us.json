@@ -83,6 +83,14 @@
   "admin.reload.done": "Config economy-core.toml reloaded.",
   "admin.reload.failed": "Failed to reload the config.",
 
+  "admin.audit.list.title": "Audit: last %d events:",
+  "admin.audit.player.title": "Audit of %s: last %d events:",
+  "admin.audit.signals.title": "Audit: %d suspicious signals:",
+  "admin.audit.empty": "No audit events.",
+  "admin.audit.scan.done": "Scan done: spam %d, roundtrip %d, oversized %d, new accounts %d.",
+  "admin.audit.scan.player.done": "Scan of %s done: spam %d, roundtrip %d, oversized %d, new accounts %d.",
+  "admin.audit.scan.disabled": "Signal scanning is disabled by the audit config.",
+
   "admin.milestone.list.title": "Milestones (%d):",
   "admin.milestone.list.row": " (%s, %s, %s)",
   "admin.milestone.claims.title": "Milestones of player %s (%d):",

@@ -83,6 +83,14 @@
   "admin.reload.done": "Конфиг economy-core.toml перечитан.",
   "admin.reload.failed": "Не удалось перечитать конфиг.",
 
+  "admin.audit.list.title": "Аудит: последние %d событий:",
+  "admin.audit.player.title": "Аудит игрока %s: последние %d событий:",
+  "admin.audit.signals.title": "Аудит: %d подозрительных сигналов:",
+  "admin.audit.empty": "Событий аудита нет.",
+  "admin.audit.scan.done": "Сканирование завершено: спам %d, рондатрип %d, оверсайз %d, новые аккаунты %d.",
+  "admin.audit.scan.player.done": "Сканирование %s завершено: спам %d, рондатрип %d, оверсайз %d, новые аккаунты %d.",
+  "admin.audit.scan.disabled": "Сканирование сигналов отключено конфигом аудита.",
+
   "admin.milestone.list.title": "Милстоуны (%d):",
   "admin.milestone.list.row": " (%s, %s, %s)",
   "admin.milestone.claims.title": "Милстоуны игрока %s (%d):",

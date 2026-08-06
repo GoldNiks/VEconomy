@@ -11,6 +11,8 @@ import com.valorcraft.veconomy.activity.WeeklyFundService;
 import com.valorcraft.veconomy.activity.WeeklyPeriodRepository;
 import com.valorcraft.veconomy.activity.WeeklyPayoutRepository;
 import com.valorcraft.veconomy.activity.WeeklyTreasuryRepository;
+import com.valorcraft.veconomy.audit.AuditRepository;
+import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.AccountService;
 import com.valorcraft.veconomy.economy.EscrowService;
@@ -40,6 +42,7 @@ public final class TestDb implements AutoCloseable {
     public final DimensionVisitRepository visitRepository;
     public final MilestoneService milestoneService;
     public final WeeklyFundService weeklyFundService;
+    public final AuditService auditService;
     public final WeeklyActivityDayRepository dayRepository;
     public final WeeklyFundPlanRepository planRepository;
     public final EconomySettings settings;
@@ -59,7 +62,9 @@ public final class TestDb implements AutoCloseable {
             TransactionRepository transactions = new TransactionRepository();
             EscrowRepository escrow = new EscrowRepository();
             LedgerService ledger = new LedgerService(database, transactions);
-            AccountService accountService = new AccountService(database, accounts, transactions, ledger, settings);
+            AuditService auditService = new AuditService(database, new AuditRepository(), accounts, transactions);
+            AccountService accountService = new AccountService(database, accounts, transactions,
+                    ledger, auditService, settings);
             TransferService transferService = new TransferService(database, accounts, transactions, ledger, settings);
             EscrowService escrowService = new EscrowService(database, accounts, escrow, accountService, ledger, settings);
 
@@ -72,16 +77,17 @@ public final class TestDb implements AutoCloseable {
             WeeklyActivityDayRepository dayRepository = new WeeklyActivityDayRepository();
             WeeklyFundPlanRepository planRepository = new WeeklyFundPlanRepository();
             ActivityService activityService = new ActivityService(database, activityRepository,
-                    dayRepository, settings);
+                    dayRepository, auditService, settings);
             MilestoneService milestoneService = new MilestoneService(database, milestoneRepository,
-                    accountService, activityService, visitRepository, settings);
+                    accountService, activityService, visitRepository, auditService, settings);
             WeeklyFundService weeklyFundService = new WeeklyFundService(database, activityRepository,
                     dayRepository, periodRepository, treasuryRepository, payoutRepository, planRepository,
-                    accounts, escrow, accountService, settings);
+                    accounts, escrow, accountService, auditService, settings);
 
             return new TestDb(database, accounts, transactions, escrow, ledger,
                     accountService, transferService, escrowService,
                     activityRepository, activityService, visitRepository, milestoneService, weeklyFundService,
+                    auditService,
                     dayRepository, planRepository, settings);
         } catch (Exception e) {
             throw new RuntimeException("Не удалось создать тестовую базу", e);
@@ -93,7 +99,7 @@ public final class TestDb implements AutoCloseable {
                    TransferService transferService, EscrowService escrowService,
                    PlayerActivityRepository activityRepository, ActivityService activityService,
                    DimensionVisitRepository visitRepository, MilestoneService milestoneService,
-                   WeeklyFundService weeklyFundService,
+                   WeeklyFundService weeklyFundService, AuditService auditService,
                    WeeklyActivityDayRepository dayRepository, WeeklyFundPlanRepository planRepository,
                    EconomySettings settings) {
         this.database = database;
@@ -109,6 +115,7 @@ public final class TestDb implements AutoCloseable {
         this.visitRepository = visitRepository;
         this.milestoneService = milestoneService;
         this.weeklyFundService = weeklyFundService;
+        this.auditService = auditService;
         this.dayRepository = dayRepository;
         this.planRepository = planRepository;
         this.settings = settings;

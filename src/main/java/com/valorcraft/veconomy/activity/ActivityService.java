@@ -1,6 +1,9 @@
 package com.valorcraft.veconomy.activity;
 
 import com.valorcraft.veconomy.VEconomyMod;
+import com.valorcraft.veconomy.audit.AuditEventType;
+import com.valorcraft.veconomy.audit.AuditService;
+import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
@@ -24,6 +27,7 @@ public final class ActivityService {
     private final DatabaseManager database;
     private final PlayerActivityRepository repository;
     private final WeeklyActivityDayRepository days;
+    private final AuditService audit;
     private volatile EconomySettings settings;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
     /** Выходы, данные которых ещё не подтверждены в базе (офлайн, повторно записываются).
@@ -32,10 +36,11 @@ public final class ActivityService {
     private final Map<UUID, Session> pendingLogouts = new ConcurrentHashMap<>();
 
     public ActivityService(DatabaseManager database, PlayerActivityRepository repository,
-                           WeeklyActivityDayRepository days, EconomySettings settings) {
+                           WeeklyActivityDayRepository days, AuditService audit, EconomySettings settings) {
         this.database = database;
         this.repository = repository;
         this.days = days;
+        this.audit = audit;
         this.settings = settings;
         WeekId.useZone(WeeklyMath.zoneOf(settings.weeklyFund.timeZone));
     }
@@ -211,7 +216,7 @@ public final class ActivityService {
      */
     public boolean setExcludedFromRewards(UUID playerId, boolean excluded) {
         try {
-            return database.inTransaction(connection -> {
+            database.inTransaction(connection -> {
                 PlayerActivityRow existing = repository.find(connection, playerId).orElse(null);
                 long now = System.currentTimeMillis();
                 PlayerActivityRow row = existing != null
@@ -223,8 +228,14 @@ public final class ActivityService {
                         : new PlayerActivityRow(playerId, now, now, 0L, 0L, 0L,
                                 WeekId.current(), now, "minecraft:overworld", excluded);
                 repository.upsert(connection, database.dialect(), row);
-                return excluded;
+                return null;
             });
+            if (audit != null) {
+                // Запись аудита — отдельная транзакция после подтверждённого изменения.
+                audit.record(AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO, playerId, null,
+                        "excluded=" + excluded);
+            }
+            return excluded;
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка установки флага исключения {}", playerId, e);
             return false;

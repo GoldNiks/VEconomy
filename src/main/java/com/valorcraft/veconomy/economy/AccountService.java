@@ -5,6 +5,9 @@ import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
+import com.valorcraft.veconomy.audit.AuditEventType;
+import com.valorcraft.veconomy.audit.AuditService;
+import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.persistence.AccountRepository;
 import com.valorcraft.veconomy.persistence.AccountRow;
@@ -32,14 +35,17 @@ public final class AccountService {
     private final AccountRepository accounts;
     private final TransactionRepository transactions;
     private final LedgerService ledger;
+    private final AuditService audit;
     private volatile EconomySettings settings;
 
     public AccountService(DatabaseManager database, AccountRepository accounts,
-                          TransactionRepository transactions, LedgerService ledger, EconomySettings settings) {
+                          TransactionRepository transactions, LedgerService ledger,
+                          AuditService audit, EconomySettings settings) {
         this.database = database;
         this.accounts = accounts;
         this.transactions = transactions;
         this.ledger = ledger;
+        this.audit = audit;
         this.settings = settings;
     }
 
@@ -133,21 +139,30 @@ public final class AccountService {
         if (playerId == null) {
             return failed(TransactionResult.Status.INVALID_AMOUNT);
         }
+        TransactionResult result;
         try {
-            return database.inTransaction(connection -> {
+            result = database.inTransaction(connection -> {
                 Optional<AccountRow> account = accounts.find(connection, playerId);
                 if (account.isEmpty()) {
                     return failed(TransactionResult.Status.ACCOUNT_NOT_FOUND);
                 }
                 long now = System.currentTimeMillis();
                 accounts.setStatus(connection, playerId, status, now);
-                VEconomyMod.LOGGER.info("Аккаунт {} {} (причина: {})", playerId, status, reason);
                 return success(null, account.get().balanceMinor(), -1L);
             });
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка смены статуса аккаунта {}", playerId, e);
             return failed(TransactionResult.Status.DATABASE_ERROR);
         }
+        if (result.isSuccess() && audit != null) {
+            // Запись аудита — отдельная транзакция после подтверждённой смены статуса.
+            audit.record(status == AccountStatus.FROZEN
+                            ? AuditEventType.ACCOUNT_FROZEN : AuditEventType.ACCOUNT_UNFROZEN,
+                    AuditSeverity.INFO, playerId, null,
+                    "reason=" + (reason == null ? "" : reason));
+            VEconomyMod.LOGGER.info("Аккаунт {} {} (причина: {})", playerId, status, reason);
+        }
+        return result;
     }
 
     // ---------------------------------------------------------------- operations
