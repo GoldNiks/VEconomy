@@ -201,6 +201,19 @@ public final class MigrationManager {
             );
             CREATE INDEX IF NOT EXISTS idx_audit_player ON audit_events(player_uuid, created_at);
             CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type, created_at);
+            """,
+            // v7 — полный набор сигналов, жизненный цикл событий и actor attribution.
+            // status/resolved_at/resolved_by/resolution_note — обработка подозрительных
+            // событий администратором; idempotency_key защищает от дублей при повторе
+            // записи после сбоя; actor_type фиксирует инициатора события.
+            """
+            ALTER TABLE audit_events ADD COLUMN actor_type VARCHAR(16);
+            ALTER TABLE audit_events ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'OPEN';
+            ALTER TABLE audit_events ADD COLUMN resolved_at BIGINT;
+            ALTER TABLE audit_events ADD COLUMN resolved_by VARCHAR(64);
+            ALTER TABLE audit_events ADD COLUMN resolution_note VARCHAR(1024);
+            ALTER TABLE audit_events ADD COLUMN idempotency_key VARCHAR(64);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_idem ON audit_events(idempotency_key);
             """
     };
 
@@ -369,6 +382,17 @@ public final class MigrationManager {
                 KEY idx_audit_player (player_uuid, created_at),
                 KEY idx_audit_type (event_type, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            // v7 — полный набор сигналов, жизненный цикл и actor attribution (см. SQLite-скрипт).
+            """
+            ALTER TABLE audit_events
+                ADD COLUMN actor_type VARCHAR(16),
+                ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+                ADD COLUMN resolved_at BIGINT,
+                ADD COLUMN resolved_by VARCHAR(64),
+                ADD COLUMN resolution_note VARCHAR(1024),
+                ADD COLUMN idempotency_key VARCHAR(64),
+                ADD UNIQUE KEY uk_audit_idem (idempotency_key);
             """
     };
 

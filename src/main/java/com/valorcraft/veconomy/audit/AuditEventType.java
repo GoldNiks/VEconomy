@@ -20,4 +20,11 @@ public final class AuditEventType {
     public static final String SIGNAL_ROUNDTRIP = "SIGNAL_ROUNDTRIP";
     public static final String SIGNAL_OVERSIZED = "SIGNAL_OVERSIZED";
     public static final String SIGNAL_NEW_ACCOUNT = "SIGNAL_NEW_ACCOUNT";
+
+    // Полный набор сигналов подозрительной активности (этап 3).
+    public static final String SIGNAL_RAPID_FORWARDING = "SIGNAL_RAPID_FORWARDING";
+    public static final String SIGNAL_TRANSFER_LOOP = "SIGNAL_TRANSFER_LOOP";
+    public static final String SIGNAL_HIGH_PAIR_FREQUENCY = "SIGNAL_HIGH_PAIR_FREQUENCY";
+    public static final String SIGNAL_NEW_ACCOUNT_CONCENTRATION = "SIGNAL_NEW_ACCOUNT_CONCENTRATION";
+    public static final String SIGNAL_REPEATED_SHARED_DESTINATION = "SIGNAL_REPEATED_SHARED_DESTINATION";
 }

@@ -18,7 +18,7 @@ class MigrationManagerTest {
     @Test
     void freshDatabaseGetsLatestSchemaVersion() {
         try (TestDb db = TestDb.create()) {
-            assertEquals(6, db.database.schemaVersion());
+            assertEquals(7, db.database.schemaVersion());
         }
     }
 
@@ -68,7 +68,7 @@ class MigrationManagerTest {
                 MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
                 return null;
             });
-            assertEquals(6, db.database.schemaVersion());
+            assertEquals(7, db.database.schemaVersion());
         }
     }
 

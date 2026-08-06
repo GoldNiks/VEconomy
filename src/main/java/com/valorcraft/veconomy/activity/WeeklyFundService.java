@@ -5,6 +5,7 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventType;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.AuditSeverity;
@@ -779,8 +780,8 @@ public final class WeeklyFundService {
                     payments.put(playerId, share);
                     if (audit != null) {
                         // Запись аудита — отдельная транзакция после подтверждённой выплаты.
-                        audit.record(AuditEventType.WEEKLY_PAYOUT, AuditSeverity.INFO, playerId, null,
-                                share,
+                        audit.record(AuditEventType.WEEKLY_PAYOUT, AuditSeverity.INFO, playerId,
+                                null, AuditActorType.SYSTEM, share,
                                 "week=" + paidWeek + ";tx=" + txId);
                     }
                 }

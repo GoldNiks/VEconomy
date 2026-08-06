@@ -11,9 +11,12 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventRow;
+import com.valorcraft.veconomy.audit.AuditEventType;
 import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
+import com.valorcraft.veconomy.audit.ResolutionStatus;
 import com.valorcraft.veconomy.audit.SuspicionScanner;
 import com.valorcraft.veconomy.config.AuditConfig;
 import com.valorcraft.veconomy.config.EconomyConfig;
@@ -146,6 +149,30 @@ public final class EconomyAdminCommand {
                                         .then(Commands.argument("limit", IntegerArgumentType.integer(1, 500))
                                                 .executes(context -> auditSignals(context,
                                                         IntegerArgumentType.getInteger(context, "limit")))))
+                                .then(Commands.literal("suspicious")
+                                        .executes(context -> auditSuspicious(context, null))
+                                        .then(Commands.argument("limit", IntegerArgumentType.integer(1, 500))
+                                                .executes(context -> auditSuspicious(context,
+                                                        IntegerArgumentType.getInteger(context, "limit")))))
+                                .then(Commands.literal("transaction")
+                                        .then(Commands.argument("id", StringArgumentType.word())
+                                                .executes(EconomyAdminCommand::auditEvent)))
+                                .then(Commands.literal("resolve")
+                                        .then(Commands.argument("id", StringArgumentType.word())
+                                                .executes(context -> auditResolve(context,
+                                                        ResolutionStatus.RESOLVED))
+                                                .then(Commands.argument("note", StringArgumentType.greedyString())
+                                                        .executes(context -> auditResolve(context,
+                                                                ResolutionStatus.RESOLVED)))))
+                                .then(Commands.literal("dismiss")
+                                        .then(Commands.argument("id", StringArgumentType.word())
+                                                .executes(context -> auditResolve(context,
+                                                        ResolutionStatus.DISMISSED))
+                                                .then(Commands.argument("note", StringArgumentType.greedyString())
+                                                        .executes(context -> auditResolve(context,
+                                                                ResolutionStatus.DISMISSED)))))
+                                .then(Commands.literal("status")
+                                        .executes(EconomyAdminCommand::auditStatus))
                                 .then(Commands.literal("scan")
                                         .executes(context -> auditScan(context, null))
                                         .then(Commands.argument("player", StringArgumentType.word())
@@ -291,6 +318,9 @@ public final class EconomyAdminCommand {
                         Component.translatable("notify.admin.set",
                                 target.name(), EconomyCore.formatter().format(amount))
                                 .withStyle(ChatFormatting.GOLD));
+                EconomyCore.audit().record(AuditEventType.ADMIN_BALANCE_CHANGE, AuditSeverity.INFO,
+                        target.uuid(), actor, AuditActorType.of(actor), amount,
+                        "reason=" + reason + ";tx=" + result.transactionId());
             }
             case ACCOUNT_NOT_FOUND -> notFound(source, playerInput);
             case ACCOUNT_DISABLED -> source.sendFailure(
@@ -379,8 +409,8 @@ public final class EconomyAdminCommand {
         UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
                 ? p.getUUID() : null;
         TransactionResult result = status == AccountStatus.FROZEN
-                ? EconomyCore.accounts().freeze(target.uuid(), reason)
-                : EconomyCore.accounts().unfreeze(target.uuid(), reason);
+                ? EconomyCore.accounts().freeze(target.uuid(), reason, actor)
+                : EconomyCore.accounts().unfreeze(target.uuid(), reason, actor);
         if (result.isSuccess()) {
             String verb = status == AccountStatus.FROZEN ? "admin.account.frozen" : "admin.account.unfrozen";
             source.sendSuccess(() -> Component.translatable(verb, target.name())
@@ -408,8 +438,10 @@ public final class EconomyAdminCommand {
         if (!target.exists()) {
             return notFound(source, playerInput);
         }
+        UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
+                ? p.getUUID() : null;
         AccountFlagUpdateResult update = EconomyCore.activity().setExcludedFromRewards(
-                target.uuid(), excluded);
+                target.uuid(), excluded, actor);
         if (update.status() != AccountFlagUpdateResult.Status.OK) {
             source.sendFailure(Component.translatable("admin.account.exclude.failed", target.name())
                     .withStyle(ChatFormatting.RED));
@@ -488,13 +520,149 @@ public final class EconomyAdminCommand {
         if (who == null) {
             source.sendSuccess(() -> Component.translatable("admin.audit.scan.done",
                     summary.spamSignals(), summary.roundTripSignals(),
-                    summary.oversizedSignals(), summary.newAccountSignals())
+                    summary.oversizedSignals(), summary.newAccountSignals(),
+                    summary.rapidForwardingSignals(), summary.transferLoopSignals(),
+                    summary.highPairFrequencySignals(), summary.newAccountConcentrationSignals(),
+                    summary.repeatedDestinationSignals())
                     .withStyle(ChatFormatting.GREEN), true);
         } else {
             source.sendSuccess(() -> Component.translatable("admin.audit.scan.player.done", who,
                     summary.spamSignals(), summary.roundTripSignals(),
-                    summary.oversizedSignals(), summary.newAccountSignals())
+                    summary.oversizedSignals(), summary.newAccountSignals(),
+                    summary.rapidForwardingSignals(), summary.transferLoopSignals(),
+                    summary.highPairFrequencySignals(), summary.newAccountConcentrationSignals(),
+                    summary.repeatedDestinationSignals())
                     .withStyle(ChatFormatting.GREEN), true);
+        }
+        return 1;
+    }
+
+    /** Детали одного события аудита ({@code audit transaction <id>}). */
+    private static int auditEvent(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        long id;
+        try {
+            id = Long.parseLong(StringArgumentType.getString(context, "id"));
+        } catch (NumberFormatException e) {
+            source.sendFailure(Component.translatable("admin.audit.event.invalid")
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        Optional<AuditEventRow> row = EconomyCore.audit().event(id);
+        if (row.isEmpty()) {
+            source.sendFailure(Component.translatable("admin.audit.event.notfound", id)
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        AuditEventRow event = row.get();
+        String playerName = event.playerId() == null
+                ? "-" : PlayerResolver.resolve(source.getServer(),
+                event.playerId().toString()).name();
+        String actorName = event.actorId() == null
+                ? "-" : PlayerResolver.resolve(source.getServer(),
+                event.actorId().toString()).name();
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.title", event.id())
+                .withStyle(ChatFormatting.GOLD), false);
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.type",
+                event.eventType()).withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.severity",
+                event.severity().name()).withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.status",
+                event.status()).withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.player",
+                playerName).withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.actor",
+                actorName, event.actorType().name()).withStyle(ChatFormatting.GRAY), false);
+        if (event.amountMinor() != null) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.event.amount",
+                    EconomyCore.formatter().format(event.amountMinor())).withStyle(ChatFormatting.GRAY), false);
+        }
+        source.sendSuccess(() -> Component.translatable("admin.audit.event.time",
+                formatTimestamp(event.createdAt())).withStyle(ChatFormatting.GRAY), false);
+        if (event.resolvedAt() != null) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.event.resolved",
+                    formatTimestamp(event.resolvedAt()), event.resolvedBy() == null ? "-" : event.resolvedBy())
+                    .withStyle(ChatFormatting.GRAY), false);
+        }
+        if (event.resolutionNote() != null && !event.resolutionNote().isBlank()) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.event.note",
+                    event.resolutionNote()).withStyle(ChatFormatting.GRAY), false);
+        }
+        if (event.details() != null && !event.details().isBlank()) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.event.details",
+                    event.details()).withStyle(ChatFormatting.GRAY), false);
+        }
+        return 1;
+    }
+
+    /** Открытые (необработанные) сигналы. */
+    private static int auditSuspicious(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                       Integer limit) {
+        CommandSourceStack source = context.getSource();
+        int effective = limit != null ? limit : AUDIT_LIMIT_DEFAULT;
+        List<AuditEventRow> rows = EconomyCore.audit().openSignals(effective);
+        sendAuditRows(source, "admin.audit.suspicious.title", new Object[]{rows.size()}, rows);
+        return 1;
+    }
+
+    /** Обработать событие: {@code resolve} (подтверждено) или {@code dismiss} (ложное). */
+    private static int auditResolve(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                    ResolutionStatus status) {
+        CommandSourceStack source = context.getSource();
+        long id;
+        try {
+            id = Long.parseLong(StringArgumentType.getString(context, "id"));
+        } catch (NumberFormatException e) {
+            source.sendFailure(Component.translatable("admin.audit.event.invalid")
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        String note;
+        try {
+            note = StringArgumentType.getString(context, "note");
+        } catch (IllegalArgumentException e) {
+            note = null;
+        }
+        String resolvedBy;
+        if (source.getEntity() instanceof net.minecraft.world.entity.player.Player p) {
+            resolvedBy = p.getName().getString();
+        } else {
+            resolvedBy = "console";
+        }
+        boolean done = EconomyCore.audit().resolve(id, status, resolvedBy, note);
+        if (!done) {
+            source.sendFailure(Component.translatable("admin.audit.event.notfound", id)
+                    .withStyle(ChatFormatting.RED));
+            return 1;
+        }
+        String key = status == ResolutionStatus.RESOLVED
+                ? "admin.audit.resolve.done" : "admin.audit.dismiss.done";
+        source.sendSuccess(() -> Component.translatable(key, id).withStyle(ChatFormatting.GREEN), true);
+        return 1;
+    }
+
+    /** Состояние записи аудита: сбои, очередь повтора, счётчики статусов. */
+    private static int auditStatus(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        com.valorcraft.veconomy.audit.AuditService.AuditHealth health = EconomyCore.audit().health();
+        source.sendSuccess(() -> Component.translatable("admin.audit.status.title")
+                .withStyle(ChatFormatting.GOLD), false);
+        source.sendSuccess(() -> Component.translatable("admin.audit.status.events",
+                EconomyCore.audit().count(),
+                EconomyCore.audit().countByStatus(ResolutionStatus.OPEN),
+                EconomyCore.audit().countByStatus(ResolutionStatus.RESOLVED),
+                EconomyCore.audit().countByStatus(ResolutionStatus.DISMISSED))
+                .withStyle(ChatFormatting.GRAY), false);
+        if (health.failedWrites() == 0 && health.pendingRetries() == 0) {
+            source.sendSuccess(() -> Component.translatable("admin.audit.status.ok")
+                    .withStyle(ChatFormatting.GREEN), false);
+        } else {
+            source.sendSuccess(() -> Component.translatable("admin.audit.status.writes",
+                    health.failedWrites(), health.pendingRetries()).withStyle(ChatFormatting.RED), false);
+            if (health.lastError() != null) {
+                source.sendSuccess(() -> Component.translatable("admin.audit.status.error",
+                        health.lastError()).withStyle(ChatFormatting.DARK_RED), false);
+            }
         }
         return 1;
     }
@@ -662,7 +830,9 @@ public final class EconomyAdminCommand {
             return notFound(source, playerInput);
         }
         String milestoneId = StringArgumentType.getString(context, "milestone");
-        if (EconomyCore.milestones().revoke(target.uuid(), milestoneId)) {
+        UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
+                ? p.getUUID() : null;
+        if (EconomyCore.milestones().revoke(target.uuid(), milestoneId, actor)) {
             source.sendSuccess(() -> Component.translatable("admin.milestone.revoked",
                     milestoneId, target.name()).withStyle(ChatFormatting.GREEN), true);
         } else {

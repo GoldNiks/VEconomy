@@ -5,6 +5,7 @@ import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
+import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventType;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.AuditSeverity;
@@ -128,14 +129,27 @@ public final class AccountService {
     }
 
     public TransactionResult freeze(UUID playerId, String reason) {
-        return changeStatus(playerId, AccountStatus.FROZEN, reason);
+        return freeze(playerId, reason, null);
+    }
+
+    public TransactionResult freeze(UUID playerId, String reason, UUID actorId) {
+        return changeStatus(playerId, AccountStatus.FROZEN, reason, actorId);
     }
 
     public TransactionResult unfreeze(UUID playerId, String reason) {
-        return changeStatus(playerId, AccountStatus.ACTIVE, reason);
+        return unfreeze(playerId, reason, null);
+    }
+
+    public TransactionResult unfreeze(UUID playerId, String reason, UUID actorId) {
+        return changeStatus(playerId, AccountStatus.ACTIVE, reason, actorId);
     }
 
     private TransactionResult changeStatus(UUID playerId, AccountStatus status, String reason) {
+        return changeStatus(playerId, status, reason, null);
+    }
+
+    private TransactionResult changeStatus(UUID playerId, AccountStatus status,
+                                           String reason, UUID actorId) {
         if (playerId == null) {
             return failed(TransactionResult.Status.INVALID_AMOUNT);
         }
@@ -158,8 +172,8 @@ public final class AccountService {
             // Запись аудита — отдельная транзакция после подтверждённой смены статуса.
             audit.record(status == AccountStatus.FROZEN
                             ? AuditEventType.ACCOUNT_FROZEN : AuditEventType.ACCOUNT_UNFROZEN,
-                    AuditSeverity.INFO, playerId, null,
-                    "reason=" + (reason == null ? "" : reason));
+                    AuditSeverity.INFO, playerId, actorId, AuditActorType.of(actorId),
+                    null, "reason=" + (reason == null ? "" : reason));
             VEconomyMod.LOGGER.info("Аккаунт {} {} (причина: {})", playerId, status, reason);
         }
         return result;

@@ -1,6 +1,7 @@
 package com.valorcraft.veconomy.activity;
 
 import com.valorcraft.veconomy.VEconomyMod;
+import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventType;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.AuditSeverity;
@@ -211,14 +212,19 @@ public final class ActivityService {
         }
     }
 
+    public AccountFlagUpdateResult setExcludedFromRewards(UUID playerId, boolean excluded) {
+        return setExcludedFromRewards(playerId, excluded, null);
+    }
+
     /**
      * Установить флаг исключения из наград (админ-команда {@code exclude-rewards}/
      * {@code include-rewards}). Работает и для игроков без записи активности:
      * создаётся минимальная запись. Успех возвращается явным результатом: при ошибке
      * базы изменение не применено и {@link AccountFlagUpdateResult.Status#DATABASE_ERROR}
-     * не должен отображаться как успех.
+     * не должен отображаться как успех. {@code actorId} — кто менял флаг (null = консоль).
      */
-    public AccountFlagUpdateResult setExcludedFromRewards(UUID playerId, boolean excluded) {
+    public AccountFlagUpdateResult setExcludedFromRewards(UUID playerId, boolean excluded,
+                                                          UUID actorId) {
         try {
             database.inTransaction(connection -> {
                 PlayerActivityRow existing = repository.find(connection, playerId).orElse(null);
@@ -236,8 +242,8 @@ public final class ActivityService {
             });
             if (audit != null) {
                 // Запись аудита — отдельная транзакция после подтверждённого изменения.
-                audit.record(AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO, playerId, null,
-                        "excluded=" + excluded);
+                audit.record(AuditEventType.EXCLUSION_CHANGED, AuditSeverity.INFO, playerId,
+                        actorId, AuditActorType.of(actorId), null, "excluded=" + excluded);
             }
             return new AccountFlagUpdateResult(AccountFlagUpdateResult.Status.OK, excluded, null);
         } catch (DatabaseException e) {

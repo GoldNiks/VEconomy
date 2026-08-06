@@ -4,6 +4,7 @@ import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventType;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.AuditSeverity;
@@ -232,13 +233,17 @@ public final class MilestoneService {
         return grant(playerId, def.get(), null, "external:" + def.get().id(), idempotencyKey);
     }
 
+    public boolean revoke(UUID playerId, String milestoneId) {
+        return revoke(playerId, milestoneId, null);
+    }
+
     /**
      * Снять отметку о выдаче (чистый revoke). Не удаляет ledger-запись и не трогает
      * баланс; повторное выполнение условия снова сможет выдать milestone.
      *
      * @return true, если отметка существовала и снята
      */
-    public boolean revoke(UUID playerId, String milestoneId) {
+    public boolean revoke(UUID playerId, String milestoneId, UUID actorId) {
         boolean existed;
         try {
             existed = database.inTransaction(connection -> {
@@ -253,8 +258,8 @@ public final class MilestoneService {
         }
         if (existed && audit != null) {
             // Запись аудита — отдельная транзакция после подтверждённого отзыва.
-            audit.record(AuditEventType.MILESTONE_REVOKED, AuditSeverity.INFO, playerId, null,
-                    "milestone=" + milestoneId);
+            audit.record(AuditEventType.MILESTONE_REVOKED, AuditSeverity.INFO, playerId, actorId,
+                    AuditActorType.of(actorId), null, "milestone=" + milestoneId);
         }
         return existed;
     }
@@ -341,6 +346,7 @@ public final class MilestoneService {
         if (result.status() == MilestoneGrantResult.Status.GRANTED && audit != null) {
             // Запись аудита — отдельная транзакция после подтверждённой выдачи.
             audit.record(AuditEventType.MILESTONE_GRANTED, AuditSeverity.INFO, playerId, actorId,
+                    actorId != null ? AuditActorType.PLAYER : AuditActorType.SYSTEM,
                     result.amountMinor(),
                     "milestone=" + def.id() + ";type=" + def.type().name()
                             + ";tx=" + result.transactionId());

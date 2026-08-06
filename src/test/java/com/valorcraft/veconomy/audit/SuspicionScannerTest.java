@@ -62,6 +62,18 @@ class SuspicionScannerTest {
                 + "\"newAccountTransferAmount\":" + newAccountTransferAmount + "}}";
     }
 
+    /** Конфиг с нейтральными (не срабатывающими) порогами + точечные override. */
+    private static String tuned(String overrides) {
+        return "{\"signals\":{\"enabled\":true,\"windowMinutes\":1440,"
+                + "\"transferSpamCount\":100000,\"roundTripExchanges\":100000,"
+                + "\"oversizedTransferAmount\":1000000000,\"newAccountDays\":3650,"
+                + "\"newAccountTransferAmount\":1000000000,\"rapidForwardAmount\":1000000000,"
+                + "\"rapidForwardWindowMinutes\":5,\"transferLoopLength\":100,"
+                + "\"highPairFrequencyExchanges\":100000,\"newAccountConcentrationSources\":5000,"
+                + "\"repeatedDestinationTransfers\":100000,"
+                + overrides + "}}";
+    }
+
     private void writeConfig(String json) throws IOException {
         Files.writeString(configDir.resolve(AuditConfig.FILE_NAME), json, StandardCharsets.UTF_8);
         AuditConfig.load(configDir);
@@ -289,6 +301,133 @@ class SuspicionScannerTest {
             SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
             assertEquals(0, summary.total());
             assertTrue(signals(db).isEmpty());
+        }
+    }
+
+    @Test
+    void rapidForwardingSignalsIntermediateNode() throws IOException {
+        writeConfig(tuned("\"rapidForwardAmount\":500,\"rapidForwardWindowMinutes\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            transfer(db, alice, bob, 1000);   // крупный перевод...
+            transfer(db, bob, carol, 1000);   // ...тут же пересылается дальше
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(1, summary.rapidForwardingSignals());
+            assertEquals(1, summary.total());
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_RAPID_FORWARDING, bob),
+                    "сигнал должен писаться на промежуточный узел");
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_RAPID_FORWARDING, alice));
+            assertFalse(hasSignal(db, AuditEventType.SIGNAL_RAPID_FORWARDING, carol));
+        }
+    }
+
+    @Test
+    void transferLoopSignalsAllCycleMembers() throws IOException {
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            transfer(db, alice, bob, 100);
+            transfer(db, bob, carol, 100);
+            transfer(db, carol, alice, 100);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(3, summary.transferLoopSignals());
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, alice));
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, bob));
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, carol));
+        }
+    }
+
+    @Test
+    void chainWithoutCycleIsNotALoop() throws IOException {
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            transfer(db, alice, bob, 100);
+            transfer(db, bob, carol, 100);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(0, summary.transferLoopSignals());
+            assertEquals(0, summary.total());
+        }
+    }
+
+    @Test
+    void highPairFrequencySignalsOneSide() throws IOException {
+        writeConfig(tuned("\"highPairFrequencyExchanges\":10"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            for (int i = 0; i < 10; i++) {
+                transfer(db, alice, bob, 100);
+            }
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(1, summary.highPairFrequencySignals());
+            assertEquals(1, summary.total());
+            List<AuditEventRow> pairSignals = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_HIGH_PAIR_FREQUENCY.equals(s.eventType()))
+                    .toList();
+            assertEquals(1, pairSignals.size());
+            assertTrue(alice.equals(pairSignals.get(0).playerId())
+                    || bob.equals(pairSignals.get(0).playerId()));
+        }
+    }
+
+    @Test
+    void newAccountConcentrationSignalsFreshRecipient() throws IOException {
+        writeConfig(tuned("\"newAccountConcentrationSources\":5,\"newAccountDays\":3650"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID carol = UUID.randomUUID();
+            for (int i = 0; i < 5; i++) {
+                UUID sender = UUID.randomUUID();
+                fund(db, sender, 100_000);
+                transfer(db, sender, carol, 100);
+            }
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(1, summary.newAccountConcentrationSignals());
+            assertEquals(1, summary.total());
+            assertTrue(hasSignal(db, AuditEventType.SIGNAL_NEW_ACCOUNT_CONCENTRATION, carol));
+        }
+    }
+
+    @Test
+    void repeatedDestinationSignalsSender() throws IOException {
+        writeConfig(tuned("\"repeatedDestinationTransfers\":10"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            for (int i = 0; i < 10; i++) {
+                transfer(db, alice, bob, 100);
+            }
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanAll();
+            assertEquals(1, summary.repeatedDestinationSignals());
+            assertEquals(1, summary.total());
+            List<AuditEventRow> shared = signals(db).stream()
+                    .filter(s -> AuditEventType.SIGNAL_REPEATED_SHARED_DESTINATION.equals(s.eventType()))
+                    .toList();
+            assertEquals(1, shared.size());
+            assertTrue(alice.equals(shared.get(0).playerId()));
+            assertTrue(shared.get(0).details().contains(bob.toString()),
+                    "детали должны содержать получателя: " + shared.get(0).details());
         }
     }
 }

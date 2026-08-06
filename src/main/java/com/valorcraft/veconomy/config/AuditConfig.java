@@ -69,8 +69,23 @@ public final class AuditConfig {
                 Settings.defaults().newAccountDays());
         long newAccountTransferAmount = longRange(signals, "newAccountTransferAmount", 1, Long.MAX_VALUE,
                 Settings.defaults().newAccountTransferAmount());
+        long rapidForwardAmount = longRange(signals, "rapidForwardAmount", 1, Long.MAX_VALUE,
+                Settings.defaults().rapidForwardAmount());
+        int rapidForwardWindowMinutes = intRange(signals, "rapidForwardWindowMinutes", 1, 24 * 60,
+                Settings.defaults().rapidForwardWindowMinutes());
+        int transferLoopLength = intRange(signals, "transferLoopLength", 3, 100,
+                Settings.defaults().transferLoopLength());
+        int highPairFrequencyExchanges = intRange(signals, "highPairFrequencyExchanges", 1, 100_000,
+                Settings.defaults().highPairFrequencyExchanges());
+        int newAccountConcentrationSources = intRange(signals, "newAccountConcentrationSources", 2, 10_000,
+                Settings.defaults().newAccountConcentrationSources());
+        int repeatedDestinationTransfers = intRange(signals, "repeatedDestinationTransfers", 1, 100_000,
+                Settings.defaults().repeatedDestinationTransfers());
         return new Settings(enabled, windowMinutes, transferSpamCount, roundTripExchanges,
-                oversizedTransferAmount, newAccountDays, newAccountTransferAmount);
+                oversizedTransferAmount, newAccountDays, newAccountTransferAmount,
+                rapidForwardAmount, rapidForwardWindowMinutes, transferLoopLength,
+                highPairFrequencyExchanges, newAccountConcentrationSources,
+                repeatedDestinationTransfers);
     }
 
     private static boolean bool(JsonObject object, String field, boolean fallback) {
@@ -128,10 +143,23 @@ public final class AuditConfig {
             /** Возраст аккаунта (дней), с которого перевод считается «от нового аккаунта». */
             int newAccountDays,
             /** Сумма перевода нового аккаунта (мин. единицы) для сигнала NEW_ACCOUNT. */
-            long newAccountTransferAmount) {
+            long newAccountTransferAmount,
+            /** Минимум суммы (мин. единицы) для сигнала RAPID_FORWARDING. */
+            long rapidForwardAmount,
+            /** Окно пересылки (минуты) для сигнала RAPID_FORWARDING. */
+            int rapidForwardWindowMinutes,
+            /** Минимальная длина цикла (участников) для сигнала TRANSFER_LOOP. */
+            int transferLoopLength,
+            /** Минимум обменов пары для сигнала HIGH_PAIR_FREQUENCY. */
+            int highPairFrequencyExchanges,
+            /** Минимум разных отправителей на новый аккаунт для CONCENTRATION. */
+            int newAccountConcentrationSources,
+            /** Минимум переводов одного игрока одному получателю для SHARED_DESTINATION. */
+            int repeatedDestinationTransfers) {
 
         public static Settings defaults() {
-            return new Settings(true, 30, 12, 4, 500_000L, 7, 100_000L);
+            return new Settings(true, 30, 12, 4, 500_000L, 7, 100_000L,
+                    100_000L, 5, 3, 10, 5, 10);
         }
     }
 
@@ -148,7 +176,13 @@ public final class AuditConfig {
                     "roundTripExchanges": 4,
                     "oversizedTransferAmount": 500000,
                     "newAccountDays": 7,
-                    "newAccountTransferAmount": 100000
+                    "newAccountTransferAmount": 100000,
+                    "rapidForwardAmount": 100000,
+                    "rapidForwardWindowMinutes": 5,
+                    "transferLoopLength": 3,
+                    "highPairFrequencyExchanges": 10,
+                    "newAccountConcentrationSources": 5,
+                    "repeatedDestinationTransfers": 10
                   }
                 }
                 """;

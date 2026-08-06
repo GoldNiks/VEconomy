@@ -189,4 +189,98 @@ class AuditServiceTest {
         // Запись аудита — «лучший усилия»: ошибки только логируются, исключение не летит.
         db.auditService.record(AuditEventType.ACCOUNT_FROZEN, AuditSeverity.INFO, player, null, null, "x");
     }
+
+    @Test
+    void actorTypeAttributionTracksPlayerAndConsole() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            UUID actor = UUID.randomUUID();
+            db.accountService.deposit(player, 500,
+                    com.valorcraft.veconomy.api.TransactionContext.of(
+                            com.valorcraft.veconomy.api.TransactionType.ADMIN_DEPOSIT, null, "старт"));
+
+            assertTrue(db.accountService.freeze(player, "нарушение", actor).isSuccess());
+            db.auditService.record(AuditEventType.ACCOUNT_UNFROZEN, AuditSeverity.INFO,
+                    player, null, null, "консоль");
+
+            List<AuditEventRow> rows = db.auditService.byPlayer(player, 10);
+            // Новые сверху: последним записан UNFROZEN (консоль), раньше — FROZEN (игрок).
+            assertEquals(AuditActorType.CONSOLE, rows.get(0).actorType());
+            assertNull(rows.get(0).actorId());
+            assertEquals(AuditActorType.PLAYER, rows.get(1).actorType());
+            assertEquals(actor, rows.get(1).actorId());
+        }
+    }
+
+    @Test
+    void resolveAndDismissDriveLifecycle() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            db.auditService.record(AuditEventType.SIGNAL_TRANSFER_SPAM, AuditSeverity.SUSPICIOUS,
+                    player, null, null, "transfers=50");
+            AuditEventRow signal = db.auditService.signals(10).get(0);
+            assertTrue(signal.open());
+
+            assertTrue(db.auditService.resolve(signal.id(), ResolutionStatus.RESOLVED,
+                    "admin", "проверено"));
+            AuditEventRow resolved = db.auditService.event(signal.id()).orElseThrow();
+            assertEquals(ResolutionStatus.RESOLVED.name(), resolved.status());
+            assertEquals("admin", resolved.resolvedBy());
+            assertTrue(resolved.resolvedAt() > 0);
+            assertTrue(db.auditService.openSignals(10).isEmpty());
+            assertEquals(1, db.auditService.countByStatus(ResolutionStatus.RESOLVED));
+
+            assertTrue(db.auditService.resolve(signal.id(), ResolutionStatus.DISMISSED,
+                    "admin", "ложное срабатывание"));
+            AuditEventRow dismissed = db.auditService.event(signal.id()).orElseThrow();
+            assertEquals(ResolutionStatus.DISMISSED.name(), dismissed.status());
+            assertEquals(1, db.auditService.countByStatus(ResolutionStatus.DISMISSED));
+
+            assertFalse(db.auditService.resolve(999_999L, ResolutionStatus.DISMISSED, "admin", null),
+                    "несуществующее событие нельзя обработать");
+        }
+    }
+
+    @Test
+    void idempotentInsertDoesNotDuplicateRows() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            AuditEventRow row = AuditEventRow.newEvent(AuditEventType.ACCOUNT_FROZEN,
+                    AuditSeverity.INFO, player, null, AuditActorType.CONSOLE, 0L, "ключ-тест");
+            AuditRepository repository = new AuditRepository();
+            db.database.inTransaction(connection -> {
+                repository.insert(connection, db.database.dialect(), row);
+                return null;
+            });
+            long secondInsert = db.database.inTransaction(connection ->
+                    repository.insert(connection, db.database.dialect(), row));
+
+            assertEquals(-1L, secondInsert, "повторная вставка с тем же ключом должна игнорироваться");
+            assertEquals(1, db.auditService.count());
+        }
+    }
+
+    @Test
+    void failedWriteIsQueuedAndFlushedAfterRecovery() {
+        TestDb db = TestDb.create();
+        try {
+            UUID player = UUID.randomUUID();
+            db.database.close();
+
+            AuditService.AuditWriteResult result = db.auditService.record(
+                    AuditEventType.ACCOUNT_FROZEN, AuditSeverity.INFO, player, null, null, "x");
+            assertFalse(result.written());
+            AuditService.AuditHealth health = db.auditService.health();
+            assertEquals(1, health.failedWrites(), "сбой записи должен фиксироваться");
+            assertEquals(1, health.pendingRetries(), "событие не должно быть потеряно");
+
+            db.database.open(db.database.path(), db.settings);
+            int flushed = db.auditService.flushPending();
+            assertEquals(1, flushed);
+            assertEquals(0, db.auditService.health().pendingRetries());
+            assertEquals(1, db.auditService.count(), "отложенное событие должно записаться после восстановления");
+        } finally {
+            db.close();
+        }
+    }
 }

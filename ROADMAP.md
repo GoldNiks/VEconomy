@@ -22,7 +22,7 @@
 | `/money`, `/pay`, `/money history` | DONE | + `/balance`-алиасы, `/money activity` |
 | Админ `balance get/add/remove/set` | DONE | уровень 4, причина обязательна |
 | SQLite и MySQL | DONE | диалект-зависимые миграции, HikariCP |
-| SQL-миграции | DONE | идемпотентные, версии 1–6 |
+| SQL-миграции | DONE | идемпотентные, версии 1–7 |
 | Economy API | DONE | `EconomyApi`, `TransactionContext/Result` |
 | Escrow API | DONE | резерв → завершение/возврат |
 | Чат-уведомления об админ-изменениях | DONE | `notifications.broadcastAdminChanges` |
@@ -58,23 +58,21 @@
 
 ## Аудит и сигналы
 
-> Этап 3 помечен **PARTIAL**: часть обязательных требований завершается отдельным
-> коммитом («complete audit signals and resolution workflow») — полный набор сигналов,
-> работа с подозрительными событиями (resolution), actor attribution, обработка сбоев
-> записи аудита и валидация `veconomy-audit.json`.
+> Этап 3 завершён (коммиты «audit: ...» + «feat: complete audit signals and resolution workflow»):
+> полный набор сигналов, resolution, actor attribution, retry записи и валидация
+> конфига. Остались только расширения 4-го этапа (диагностика).
 
 | Область | Статус | Примечание |
 |---------|--------|------------|
-| Таблица audit-событий | PARTIAL | `audit_events` (миграция v6), `AuditRepository`, `AuditService` |
-| События сервисов | PARTIAL | freeze/unfreeze, exclude-rewards, milestone grant/revoke, weekly payout |
-| Suspicion signals | PARTIAL | спам/рондатрип/оверсайз/новые аккаунты, `veconomy-audit.json`, дедупликация в окне |
-| Команды `/economy admin audit list/player/signals/scan` | PARTIAL | Этап 3 |
-| Полный набор сигналов | NOT IMPLEMENTED | быстрая пересылка, петли, высокая частота пар, концентрация новых аккаунтов, общий получатель |
-| Resolution подозрительных событий | NOT IMPLEMENTED | жизненный цикл OPEN/RESOLVED/DISMISSED, `audit transaction/suspicious/resolve/dismiss` |
-| Actor attribution | PARTIAL | для админ-команд; для weekly — NOT_INITIATED |
-| Сбои записи аудита | NOT IMPLEMENTED | видимые ошибки, retry, идемпотентность |
-| Валидация `veconomy-audit.json` | NOT IMPLEMENTED | при загрузке и перезагрузке |
-| `/economy admin stats` | PARTIAL | supply/игроки/казна/escrow/эмиссия/медиана/переводы есть; нет замороженных/исключённых/сигналов/аггрегата по типам |
+| Таблица audit-событий | DONE | `audit_events` (миграции v6–v7), `AuditRepository`, `AuditService` |
+| События сервисов | DONE | freeze/unfreeze, exclude-rewards, milestone grant/revoke, weekly payout, balance set |
+| Suspicion signals | DONE | 9 эвристик: спам/рондатрип/оверсайз/новые аккаунты/пересылка/петли/частые пары/концентрация/общий получатель |
+| Команды `/economy admin audit ...` | DONE | `list/player/signals/suspicious/transaction/scan/resolve/dismiss/status` |
+| Resolution подозрительных событий | DONE | жизненный цикл OPEN/RESOLVED/DISMISSED, `audit transaction/suspicious/resolve/dismiss` |
+| Actor attribution | DONE | `actor_type` PLAYER/CONSOLE/SYSTEM/INTEGRATION для всех событий |
+| Сбои записи аудита | DONE | `AuditHealth`, retry-очередь с идемпотентными ключами, `audit status` |
+| Валидация `veconomy-audit.json` | DONE | диапазоны полей при загрузке/перезагрузке, откат к последней корректной |
+| `/economy admin stats` | PARTIAL | supply/игроки/казна/escrow/эмиссия/медиана/переводы есть; нет замороженных/исключённых/сигналов/агрегата по типам |
 | `/economy admin diagnostics` | NOT IMPLEMENTED | Этап 4 |
 
 ## Миграция legacy
