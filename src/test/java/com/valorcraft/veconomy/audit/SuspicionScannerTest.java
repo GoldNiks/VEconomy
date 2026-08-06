@@ -16,8 +16,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -997,6 +1000,58 @@ class SuspicionScannerTest {
     }
 
     @Test
+    void zeroGraphBudgetWithPotentialCycleIsLimited() throws IOException {
+        // Прямых переводов РОВНО maxTransfersPerScan — на граф не остаётся ни одной
+        // строки, transfersBetweenLimited не вызывается. У игрока есть минимум два
+        // разных контрагента и ребро между ними: цикл из трёх участников возможен,
+        // но рёбра графа фактически не проверены — сводка обязана быть limited.
+        writeConfig(tuned("\"maxTransfersPerScan\":5,\"transferLoopLength\":3"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            long base = System.currentTimeMillis();
+            // Пять прямых переводов (ровно лимит) двум разным контрагентам:
+            // Alice -> Bob х4, Alice -> Carol х1.
+            for (int i = 0; i < 4; i++) {
+                transferAt(db, alice, bob, 100, base + 1000 + i);
+            }
+            transferAt(db, alice, carol, 100, base + 5000);
+            // Ребро между контрагентами: Bob -> Carol. Оно существует в БД, но граф
+            // по нулевому бюджету не загружается — цикл Alice->Bob->Carol->Alice
+            // остаётся непроверенным.
+            transferAt(db, bob, carol, 100, base + 6000);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(alice);
+            assertTrue(summary.limited(),
+                    "есть потенциальный цикл, но рёбра графа не проверены — скан ограничен");
+        }
+    }
+
+    @Test
+    void zeroGraphBudgetWithSingleCounterpartyIsNotLimited() throws IOException {
+        // Прямых переводов ровно maxBudgetTransfers, но у игрока только ОДИН
+        // контрагент: цикл из трёх участников в принципе невозможен, расширение
+        // графа не требуется — нулевой бюджет сам по себе НЕ помечает сводку.
+        writeConfig(tuned("\"maxTransfersPerScan\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            long base = System.currentTimeMillis();
+            for (int i = 0; i < 5; i++) {
+                transferAt(db, alice, bob, 100, base + 1000 + i);
+            }
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(alice);
+            assertFalse(summary.limited(),
+                    "один контрагент — цикла нет, без бюджета расширение не требуется");
+        }
+    }
+
+    @Test
     void orderedParticipantsKeepsFocalFirstAndSortsRest() {
         // Детерминированный порядок: проверяемый игрок всегда первый, остальные по UUID.
         List<UUID> raw = List.of(
@@ -1019,6 +1074,43 @@ class SuspicionScannerTest {
         }
         // Воспроизводимость между запусками: повторный вызов даёт тот же список.
         assertEquals(ordered, SuspicionScanner.orderedParticipants(rows, focal));
+    }
+
+    @Test
+    void orderedParticipantsDeduplicatesRepeatedCounterparty() {
+        // 600 переводов ОДНОМУ И ТОМУ ЖЕ контрагенту + несколько другим:
+        // каждый UUID обязан появиться ровно один раз — повторный контрагент
+        // не занимает лимит MAX_GRAPH_PARTICIPANTS 500 раз и не вытесняет
+        // остальных участников из графа.
+        UUID focal = UUID.nameUUIDFromBytes("focal".getBytes());
+        UUID repeated = UUID.nameUUIDFromBytes("repeated".getBytes());
+        UUID a = UUID.nameUUIDFromBytes("a".getBytes());
+        UUID b = UUID.nameUUIDFromBytes("b".getBytes());
+        long ts = System.currentTimeMillis();
+        List<TransactionRow> rows = new ArrayList<>();
+        for (int i = 0; i < 600; i++) {
+            rows.add(new TransactionRow("tx-" + i, TransactionType.PLAYER_TRANSFER,
+                    focal, repeated, 100, ts + i, null, "тест", null,
+                    Map.of(), null, null));
+        }
+        rows.add(new TransactionRow("tx-a", TransactionType.PLAYER_TRANSFER,
+                focal, a, 100, ts + 1_000_000, null, "тест", null,
+                Map.of(), null, null));
+        rows.add(new TransactionRow("tx-b", TransactionType.PLAYER_TRANSFER,
+                focal, b, 100, ts + 1_000_001, null, "тест", null,
+                Map.of(), null, null));
+
+        List<UUID> ordered = SuspicionScanner.orderedParticipants(rows, focal);
+        assertEquals(focal, ordered.get(0), "проверяемый игрок всегда первый");
+        assertEquals(4, ordered.size(),
+                "повторный контрагент считается один раз: фокус + 3 уникальных UUID");
+        assertEquals(4, new LinkedHashSet<>(ordered).size(),
+                "исключительный набор уникален");
+        List<UUID> rest = ordered.subList(1, ordered.size());
+        assertTrue(rest.equals(rest.stream().sorted().toList()),
+                "остальные участники отсортированы по UUID");
+        assertEquals(ordered, SuspicionScanner.orderedParticipants(rows, focal),
+                "повторный вызов даёт тот же список (стабильность)");
     }
 
     @Test

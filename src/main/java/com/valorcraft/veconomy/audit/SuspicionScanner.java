@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 
 /**
@@ -139,18 +140,26 @@ if (onlyPlayer != null) {
                 // maxTransfersPerScan, а прямые переводы игрока (уже в local) не выгружаются
                 // повторно: transfersBetweenLimited исключает focalPlayer в SQL.
                 int graphBudget = limit - local.size();
-                com.valorcraft.veconomy.persistence.TransactionRepository.LimitedRows limitedRows =
-                        graphBudget > 0
-                                ? transactions.transfersBetweenLimited(
-                                connection, ordered, onlyPlayer, windowStart, graphBudget)
-                                : new com.valorcraft.veconomy.persistence.TransactionRepository.LimitedRows(List.of(), false);
+                com.valorcraft.veconomy.persistence.TransactionRepository.LimitedRows limitedRows;
+if (graphBudget > 0) {
+                    limitedRows = transactions.transfersBetweenLimited(
+                                    connection, ordered, onlyPlayer, windowStart, graphBudget);
+                } else {
+                    limitedRows = new com.valorcraft.veconomy.persistence.TransactionRepository.LimitedRows(List.of(), false);
+                }
+                // Нулевой бюджет графа сам по себе НЕ «ограничение»: рёбра между
+                // контрагентами нужны только если в графе есть достаточно уникальных
+                // участников для цикла минимальной настроенной длины. Если их меньше —
+                // расширение графа не требуется, анализ полон и ограниченным не числится.
+                boolean graphLimited = graphBudget <= 0
+                        && ordered.size() >= cfg.transferLoopLength();
                 List<TransactionRow> graph = limitedRows.rows();
                 // Участники для загрузки аккаунтов — из ИТОГОВОГО набора (локальные +
                 // рёбра графа), чтобы fresh/counters попали ко всем взаимодействовавшим.
                 Set<UUID> finalParticipants = participantsOf(local);
                 finalParticipants.addAll(participantsOf(graph));
                 return new ScanData(merge(local, graph), finalParticipants,
-                        playerLimited || participantLimited || limitedRows.limited());
+                        playerLimited || participantLimited || limitedRows.limited() || graphLimited);
             });
             transfers = data.merged();
             accountsFor = database.inTransaction(connection ->
@@ -206,14 +215,19 @@ if (onlyPlayer != null) {
     }
 
 /**
-     * Детерминированный порядок участников персонального графа: проверяемый игрок
-     * ВСЕГДА первый, остальные UUID — по возрастанию {@code compareTo}. Произвольный
-     * обход HashSet больше не влияет на граф (и на число SQL-запросов/рёбер). При
-     * превышении {@code MAX_GRAPH_PARTICIPANTS} список усекается в вызывающем коде
-     * (не здесь), а сводка помечается ограниченной. Пакетная видимость — для тестов.
+     * Детерминированный порядок УНИКАЛЬНЫХ участников персонального графа:
+     * проверяемый игрок ВСЕГДА первый, остальные UUID — по возрастанию
+     * {@code compareTo}. Дубликаты схлопываются через {@link TreeSet}: повторный
+     * перевод одному и тому же контрагенту добавляет его ровно один раз, поэтому
+     * {@code MAX_GRAPH_PARTICIPANTS} учитывает только уникальных контрагентов и
+     * повторная активность не вытесняет других участников и не создаёт ложное
+     * «ограничено». Произвольный обход HashSet на состав графа не влияет (и на
+     * число SQL-запросов/рёбер). При превышении {@code MAX_GRAPH_PARTICIPANTS}
+     * список усекается в вызывающем коде (не здесь), а сводка помечается
+     * ограниченной. Пакетная видимость — для тестов.
      */
     static List<UUID> orderedParticipants(List<TransactionRow> rows, UUID focalPlayer) {
-        List<UUID> others = new ArrayList<>();
+        TreeSet<UUID> others = new TreeSet<>();
         for (TransactionRow row : rows) {
             if (row.sourceUuid() != null && !row.sourceUuid().equals(focalPlayer)) {
                 others.add(row.sourceUuid());
@@ -222,7 +236,6 @@ if (onlyPlayer != null) {
                 others.add(row.targetUuid());
             }
         }
-others.sort(null); // естественный порядок UUID (compareTo) — стабильно между прогонами
         List<UUID> ordered = new ArrayList<>(others.size() + 1);
         ordered.add(focalPlayer);
         ordered.addAll(others);
