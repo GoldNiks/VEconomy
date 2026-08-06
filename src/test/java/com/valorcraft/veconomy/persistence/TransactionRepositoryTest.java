@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Репозиторные тесты журнала переводов: SQL-лимит и граф между слайсами участников. */
@@ -176,6 +177,61 @@ class TransactionRepositoryTest {
             List<TransactionRow> uncapped = db.database.inTransaction(connection ->
                     db.transactions.transfersBetween(connection, all, base - 1));
             assertEquals(2, uncapped.size(), "без капа обе пары видны");
+        }
+    }
+
+    @Test
+    void transfersBetweenLimitedExcludesFocalPlayerAndCapsRows() {
+        try (TestDb db = TestDb.create()) {
+            UUID focal = UUID.randomUUID();
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            long base = System.currentTimeMillis();
+            // Прямые переводы FOCAL (уже загружаются персональным запросом) — они
+            // НЕ должны повторно выгружаться графовым запросом и тратить бюджет.
+            insertTransfer(db, focal, alice, 700, base);
+            insertTransfer(db, bob, focal, 700, base + 1);
+            insertTransfer(db, focal, carol, 700, base + 2);
+            // Рёбра остальных участников графа (не участвуют focal).
+            insertTransfer(db, alice, bob, 100, base + 3);
+            insertTransfer(db, bob, carol, 100, base + 4);
+            insertTransfer(db, carol, alice, 100, base + 5);
+            insertTransfer(db, alice, bob, 100, base + 6);
+
+            List<UUID> participants = List.of(focal, alice, bob, carol);
+            TransactionRepository.LimitedRows limited = db.database.inTransaction(connection ->
+                    db.transactions.transfersBetweenLimited(connection, participants,
+                            focal, base - 1, 3));
+            assertEquals(3, limited.rows().size(),
+                    "итоговый список не превышает maxRows (бюджет израсходован точно)");
+            assertTrue(limited.limited(),
+                    "в графе есть больше рёбер чем бюджет — реальное ограничение");
+            // Прямые переводы focal не попадают в графовый результат.
+            assertTrue(limited.rows().stream()
+                            .noneMatch(r -> focal.equals(r.sourceUuid()) || focal.equals(r.targetUuid())),
+                    "переводы focal исключаются: они уже в персональном наборе");
+        }
+    }
+
+    @Test
+    void transfersBetweenLimitedWithoutOverflowIsNotLimited() {
+        try (TestDb db = TestDb.create()) {
+            UUID focal = UUID.randomUUID();
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            long base = System.currentTimeMillis();
+            // Ровно два рёбра вне focal + столько прямых focal, сколько захотим.
+            insertTransfer(db, focal, alice, 700, base);
+            insertTransfer(db, alice, bob, 100, base + 1);
+            insertTransfer(db, bob, alice, 100, base + 2);
+
+            List<UUID> participants = List.of(focal, alice, bob);
+            TransactionRepository.LimitedRows result = db.database.inTransaction(connection ->
+                    db.transactions.transfersBetweenLimited(connection, participants,
+                            focal, base - 1, 5));
+            assertEquals(2, result.rows().size(), "все доступные рёбра графа в бюджете");
+            assertFalse(result.limited(), "бюджета достаточно — «ограничено» не ставится");
         }
     }
 }

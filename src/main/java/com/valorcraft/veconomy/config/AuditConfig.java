@@ -30,6 +30,15 @@ public final class AuditConfig {
     /** Безопасное значение при некорректной настройке (по умолчанию). */
     public static final long DEFAULT_MAX_TRANSFERS_PER_SCAN = 200_000L;
 
+    /**
+     * Максимальная длина цикла перевода, которую РЕАЛЬНО поддерживает алгоритм
+     * поиска циклов (см. {@code SuspicionScanner.MAX_LOOP_DEPTH}). Конфигурация
+     * {@code transferLoopLength} ограничена 3..{@value #MAX_TRANSFER_LOOP_LENGTH}:
+     * значения выше безопасного максимума НЕ отключают поиск циклов молча, а
+     * заменяются на {@value #MAX_TRANSFER_LOOP_LENGTH} с предупреждением в лог.
+     */
+    public static final int MAX_TRANSFER_LOOP_LENGTH = 6;
+
     private static volatile Settings current = Settings.defaults();
 
     private AuditConfig() {}
@@ -84,8 +93,7 @@ public final class AuditConfig {
                 Settings.defaults().rapidForwardAmount());
         int rapidForwardWindowMinutes = intRange(signals, "rapidForwardWindowMinutes", 1, 24 * 60,
                 Settings.defaults().rapidForwardWindowMinutes());
-        int transferLoopLength = intRange(signals, "transferLoopLength", 3, 100,
-                Settings.defaults().transferLoopLength());
+        int transferLoopLength = transferLoopLengthRange(signals);
         int highPairFrequencyExchanges = intRange(signals, "highPairFrequencyExchanges", 1, 100_000,
                 Settings.defaults().highPairFrequencyExchanges());
         int newAccountConcentrationSources = intRange(signals, "newAccountConcentrationSources", 2, 10_000,
@@ -137,6 +145,34 @@ public final class AuditConfig {
             VEconomyMod.LOGGER.warn("maxTransfersPerScan={} вне диапазона [1, {}]; используется "
                             + "безопасное {}", parsed, MAX_TRANSFERS_PER_SCAN, fallback);
             return fallback;
+        }
+        return parsed;
+    }
+
+    /**
+     * Минимальная длина цикла для сигнала TRANSFER_LOOP: алгоритм реально ищет
+     * циклы глубиной не глубже {@value #MAX_TRANSFER_LOOP_LENGTH} (константа
+     * {@code SuspicionScanner.MAX_LOOP_DEPTH}). Значения выше максимума НЕ должны
+     * молча отключать поиск циклов: вместо некорректного значения используется
+     * безопасное {@value #MAX_TRANSFER_LOOP_LENGTH} с предупреждением в лог.
+     * Допустимый диапазон 3..{@value #MAX_TRANSFER_LOOP_LENGTH}.
+     */
+    private static int transferLoopLengthRange(JsonObject signals) {
+        int fallback = Settings.defaults().transferLoopLength();
+        if (!signals.has("transferLoopLength")) {
+            return fallback;
+        }
+        JsonElement value = signals.get("transferLoopLength");
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException("поле \"transferLoopLength\" должно быть числом");
+        }
+        int parsed = value.getAsInt();
+        if (parsed < 3 || parsed > MAX_TRANSFER_LOOP_LENGTH) {
+            int safe = Math.min(Math.max(parsed, 3), MAX_TRANSFER_LOOP_LENGTH);
+            VEconomyMod.LOGGER.warn("transferLoopLength={} вне допустимого диапазона [3, {}]; "
+                            + "используется безопасное значение {} (поиск циклов не отключается)",
+                    parsed, MAX_TRANSFER_LOOP_LENGTH, safe);
+            return safe;
         }
         return parsed;
     }

@@ -291,6 +291,91 @@ public final class TransactionRepository {
         return new ArrayList<>(byId.values());
     }
 
+    /**
+     * Рёбра персонального графа с ЖЁСТКИМ общим лимитом количества строк
+     * ({@code maxRows}) и без повторной выгрузки переводов самого игрока:
+     * в SQL-запросах переводы, где участвует {@code focalPlayer}, исключаются
+     * (условия {@code source_uuid <> ? AND target_uuid <> ?}) — они уже загружены
+     * отдельным персональным запросом и не должны съедать бюджет.
+     * <p>
+     * Каждый пакет по слайсам участников выполняется с {@code LIMIT остаток+1}:
+     * бюджет уменьшается после каждого пакета, при его исчерпании запросы
+     * прекращаются, а результат помечается «ограничено». Дубликаты по
+     * {@code transaction_id} удаляются, итоговый список не превышает {@code maxRows}.
+     */
+    public LimitedRows transfersBetweenLimited(Connection connection, Collection<UUID> participants,
+                                               UUID focalPlayer, long sinceMillis, int maxRows) {
+        if (participants == null || participants.isEmpty() || maxRows <= 0) {
+            return new LimitedRows(List.of(), false);
+        }
+        List<UUID> unique = participants.stream().distinct().toList();
+        Map<String, TransactionRow> byId = new java.util.LinkedHashMap<>();
+        int remaining = maxRows;
+        boolean limited = false;
+        outer:
+        for (int srcStart = 0; srcStart < unique.size(); srcStart += MAX_IN_PARAMETERS) {
+            int srcEnd = Math.min(unique.size(), srcStart + MAX_IN_PARAMETERS);
+            List<UUID> sourceSlice = unique.subList(srcStart, srcEnd);
+            for (int tgtStart = 0; tgtStart < unique.size(); tgtStart += MAX_IN_PARAMETERS) {
+                int tgtEnd = Math.min(unique.size(), tgtStart + MAX_IN_PARAMETERS);
+                List<UUID> targetSlice = unique.subList(tgtStart, tgtEnd);
+                if (remaining <= 0) {
+                    // Бюджет исчерпан — дальнейшие запросы НЕ выполняются; то, что
+                    // просмотрены ещё не все пары слайсов, означает сужение области
+                    // графа (ограничение), а не «всё прочитано».
+                    limited = true;
+                    break outer;
+                }
+                // LIMIT остаток+1: если в этом пакете больше строк, чем осталось
+                // в бюджете — это РЕАЛЬНОЕ превышение (не догадка).
+                String sql = "SELECT * FROM transactions WHERE transaction_type = ? "
+                        + "AND created_at >= ? AND source_uuid IN (" + inPlaceholders(sourceSlice.size())
+                        + ") AND target_uuid IN (" + inPlaceholders(targetSlice.size())
+                        + ") AND source_uuid <> ? AND target_uuid <> ? "
+                        + "ORDER BY created_at DESC, transaction_id DESC LIMIT ?";
+                try (var statement = connection.prepareStatement(sql)) {
+                    int index = 1;
+                    statement.setString(index++, TransactionType.PLAYER_TRANSFER.name());
+                    statement.setLong(index++, sinceMillis);
+                    for (UUID id : sourceSlice) {
+                        statement.setString(index++, id.toString());
+                    }
+                    for (UUID id : targetSlice) {
+                        statement.setString(index++, id.toString());
+                    }
+                    statement.setString(index++, focalPlayer.toString());
+                    statement.setString(index++, focalPlayer.toString());
+                    statement.setInt(index, remaining + 1);
+                    int batchAdded = 0;
+                    try (ResultSet rs = statement.executeQuery()) {
+                        while (rs.next()) {
+                            TransactionRow row = map(rs);
+                            if (byId.containsKey(row.transactionId())) {
+                                continue;
+                            }
+                            if (batchAdded >= remaining) {
+                                // LIMIT = остаток+1: лишняя строка означает, что в графе
+                                // строк больше, чем позволяет бюджет — реальное ограничение.
+                                limited = true;
+                                break outer;
+                            }
+                            byId.put(row.transactionId(), row);
+                            batchAdded++;
+                        }
+                    }
+                    remaining -= batchAdded;
+                } catch (SQLException e) {
+                    throw new DatabaseException("Ошибка чтения лимитированного графа участников", e);
+                }
+            }
+        }
+        return new LimitedRows(new ArrayList<>(byId.values()), limited);
+    }
+
+    /** Результат лимитированного запроса графа: строки и признак «ограничено». */
+    public record LimitedRows(List<TransactionRow> rows, boolean limited) {
+    }
+
     private static String inPlaceholders(int size) {
         StringBuilder sql = new StringBuilder();
         for (int i = 0; i < size; i++) {

@@ -504,7 +504,7 @@ class SuspicionScannerTest {
             assertEquals(1, summary.transferLoopSignals(),
                     "при scanPlayer инцидент пишется только сканируемому игроку");
             assertEquals(1, summary.total());
-            assertTrue(summary.limited(), "персональный граф помечается «ограничено»");
+            assertFalse(summary.limited(), "граф в пределах лимитов — «ограничено» НЕ ставится");
             assertTrue(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, bob));
             assertFalse(hasSignal(db, AuditEventType.SIGNAL_TRANSFER_LOOP, alice),
                     "сканируемый игрок не должен рисовать события остальным участникам");
@@ -943,6 +943,104 @@ class SuspicionScannerTest {
                     "ошибка записи происходит из-за отсутствия таблицы — это НЕ успешный скан");
             assertNotNull(failure.get(), "ошибка записи должна доставляться как failed");
         }
+    }
+
+    @Test
+    void playerScanNeverExceedsMaxTransfersPerScan() throws IOException {
+        // У игрока БОЛЬШЕ maxTransfersPerScan прямых переводов с одним контрагентом:
+        // персональный скан обязан вернуть не более лимита строк, а «повторный» графовый
+        // запрос не должен заново выгружать фокусные переводы (они исключены в SQL).
+        writeConfig(tuned("\"maxTransfersPerScan\":5"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            for (int i = 0; i < 8; i++) {
+                transfer(db, alice, bob, 100);
+            }
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(alice);
+            assertTrue(summary.limited(), "прямых переводов больше лимита — скан ограничен");
+        }
+    }
+
+    @Test
+    void parallelGraphEdgesBudgetedByRemainingRows() throws Exception {
+        // Граф строится в пределах бюджета limit - local.size(): после 3 локальных
+        // переводов (из лимита 4) графовому запросу остаётся бюджет 1 строка. Рёбер
+        // графа без фокального игрока — три: скан обязан не выгрузить их все, а
+        // ограничиться бюджетом и пометить сводку «ограничено».
+        writeConfig(tuned("\"maxTransfersPerScan\":4"));
+        try (TestDb db = TestDb.create(noCooldown())) {
+            UUID alice = UUID.randomUUID();
+            UUID bob = UUID.randomUUID();
+            UUID carol = UUID.randomUUID();
+            UUID dave = UUID.randomUUID();
+            fund(db, alice, 100_000);
+            fund(db, bob, 100_000);
+            fund(db, carol, 100_000);
+            long base = System.currentTimeMillis();
+            // 3 перевода Alice (заполняют локальный бюджет 3 из 4), затем много рёбер
+            // графа, где Alice НЕ участвует: бюджет графа = 4-3 = 1 строка.
+            transferAt(db, alice, bob, 100, base + 1000);
+            transferAt(db, alice, carol, 100, base + 2000);
+            transferAt(db, alice, dave, 100, base + 3000);
+            // Рёбра участников графа (bob/carol/dave) — они в локальном наборе.
+            transferAt(db, bob, carol, 100, base + 4000);
+            transferAt(db, carol, dave, 100, base + 5000);
+            transferAt(db, dave, bob, 100, base + 6000);
+
+            SuspicionScanner.ScanSummary summary = db.auditService.scanPlayer(alice);
+            assertTrue(summary.limited(),
+                    "рёбер графа больше оставшегося бюджета — анализ ограничен бюджетом");
+        }
+    }
+
+    @Test
+    void orderedParticipantsKeepsFocalFirstAndSortsRest() {
+        // Детерминированный порядок: проверяемый игрок всегда первый, остальные по UUID.
+        List<UUID> raw = List.of(
+                UUID.nameUUIDFromBytes("c".getBytes()),
+                UUID.nameUUIDFromBytes("a".getBytes()),
+                UUID.nameUUIDFromBytes("b".getBytes()));
+        UUID focal = UUID.nameUUIDFromBytes("focal".getBytes());
+        List<TransactionRow> rows = raw.stream()
+                .map(u -> new TransactionRow(u + "-tx", TransactionType.PLAYER_TRANSFER,
+                        focal, u, 100, System.currentTimeMillis(), null, "тест", null,
+                        Map.of(), null, null))
+                .toList();
+        List<UUID> ordered = SuspicionScanner.orderedParticipants(rows, focal);
+        assertEquals(focal, ordered.get(0), "проверяемый игрок всегда первый");
+        List<UUID> rest = ordered.subList(1, ordered.size());
+        assertTrue(rest.equals(rest.stream().sorted().toList()),
+                "остальные участники отсортированы по UUID");
+        for (int i = 0; i < rest.size() - 1; i++) {
+            assertTrue(rest.get(i).compareTo(rest.get(i + 1)) < 0);
+        }
+        // Воспроизводимость между запусками: повторный вызов даёт тот же список.
+        assertEquals(ordered, SuspicionScanner.orderedParticipants(rows, focal));
+    }
+
+    @Test
+    void transferLoopLengthRangeIsValidatedByConfig() throws Exception {
+        // Значения в допустимом диапазоне принимаются.
+        writeConfig(tuned("\"transferLoopLength\":3"));
+        assertEquals(3, AuditConfig.settings().transferLoopLength());
+        writeConfig(tuned("\"transferLoopLength\":6"));
+        assertEquals(6, AuditConfig.settings().transferLoopLength(),
+                "максимум 6 — безопасный предел алгоритма");
+    }
+
+    @Test
+    void transferLoopLengthAboveMaxFallsBackSafely() throws Exception {
+        // 7 и 100 выше безопасности алгоритма: циклы НЕ отключаются молча,
+        // а сбрасываются на максимально допустимое значение 6.
+        writeConfig(tuned("\"transferLoopLength\":7"));
+        assertEquals(6, AuditConfig.settings().transferLoopLength(),
+                "7 превышает реальный предел — безопасное значение 6");
+        writeConfig(tuned("\"transferLoopLength\":100"));
+        assertEquals(6, AuditConfig.settings().transferLoopLength(),
+                "100 превышает реальный предел — безопасное значение 6");
     }
 
     @Test

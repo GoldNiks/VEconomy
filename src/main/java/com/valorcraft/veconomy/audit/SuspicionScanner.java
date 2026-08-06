@@ -107,12 +107,12 @@ public final class SuspicionScanner {
         List<TransactionRow> transfers;
         List<AccountRow> accountsFor;
         boolean limited = false;
-        if (onlyPlayer != null) {
+if (onlyPlayer != null) {
             // Персональная выгрузка тоже ограничена ПРЯМО В SQL (LIMIT max+1): история
             // одного игрока не читается целиком, лишние строки для определения «ограничено»
             // в память не попадают. Граф участников по-прежнему ограничен MAX_GRAPH_PARTICIPANTS.
             int limit = scanLimit(cfg.maxTransfersPerScan());
-            transfers = database.inTransaction(connection -> {
+            ScanData data = database.inTransaction(connection -> {
                 List<TransactionRow> local = transactions.transfersSinceForPlayerLimited(
                         connection, onlyPlayer, windowStart, limit + 1);
                 boolean playerLimited = local.size() > limit;
@@ -122,26 +122,42 @@ public final class SuspicionScanner {
                                     + "{} переводов окна (maxTransfersPerScan={})",
                             onlyPlayer, local.size(), cfg.maxTransfersPerScan());
                 }
-                Set<UUID> participants = participantsOf(local);
-                participants.add(onlyPlayer);
-                // Ограниченный граф: рёбра, обе стороны которых входят в круг
-                // участников игрока. Так цикл A→B→C→A виден при scanPlayer(B),
-                // но полная история всех игроков не выгружается. При переполнении
-                // круга граф не расширяется бесконечно — останавливаемся и помечаем
-                // сводку «ограничено».
-                if (participants.size() > MAX_GRAPH_PARTICIPANTS) {
+                // Граф участников формируется детерминированно: проверяемый игрок
+                // всегда первый, остальные UUID сортируются — ни произвольного
+                // обхода HashSet, ни невоспроизводимого порядка между прогонами.
+                List<UUID> ordered = orderedParticipants(local, onlyPlayer);
+                boolean participantLimited = ordered.size() > MAX_GRAPH_PARTICIPANTS;
+                if (participantLimited) {
+                    ordered = ordered.subList(0, MAX_GRAPH_PARTICIPANTS);
                     VEconomyMod.LOGGER.warn("Персональный граф игрока {} ограничен: анализируются "
-                                    + "{} участников (лимит {}) — анализ неполный",
-                            onlyPlayer, participants.size(), MAX_GRAPH_PARTICIPANTS);
+                                    + "{} участников (проверяемый игрок и следующие по UUID будет "
+                                    + "не менее {} в анализе)",
+                            onlyPlayer, ordered.size(), MAX_GRAPH_PARTICIPANTS);
                 }
-                return merge(local, transactions.transfersBetween(
-                        connection, participants, windowStart, MAX_GRAPH_PARTICIPANTS));
+// Дополнительные рёбра графа загружаются ТОЛЬКО в пределах оставшегося
+                // бюджета limit - local.size(): весь итоговый набор никогда не превышает
+                // maxTransfersPerScan, а прямые переводы игрока (уже в local) не выгружаются
+                // повторно: transfersBetweenLimited исключает focalPlayer в SQL.
+                int graphBudget = limit - local.size();
+                com.valorcraft.veconomy.persistence.TransactionRepository.LimitedRows limitedRows =
+                        graphBudget > 0
+                                ? transactions.transfersBetweenLimited(
+                                connection, ordered, onlyPlayer, windowStart, graphBudget)
+                                : new com.valorcraft.veconomy.persistence.TransactionRepository.LimitedRows(List.of(), false);
+                List<TransactionRow> graph = limitedRows.rows();
+                // Участники для загрузки аккаунтов — из ИТОГОВОГО набора (локальные +
+                // рёбра графа), чтобы fresh/counters попали ко всем взаимодействовавшим.
+                Set<UUID> finalParticipants = participantsOf(local);
+                finalParticipants.addAll(participantsOf(graph));
+                return new ScanData(merge(local, graph), finalParticipants,
+                        playerLimited || participantLimited || limitedRows.limited());
             });
-            // Только аккаунты участников проанализированного графа — не все подряд.
-            Set<UUID> graphPlayers = participantsOf(transfers);
+            transfers = data.merged();
             accountsFor = database.inTransaction(connection ->
-                    accounts.findByIds(connection, graphPlayers));
-            limited = true; // персональный граф ограничен по построению
+                    accounts.findByIds(connection, data.participants()));
+            // Персональный скан делается ограниченным ТОЛЬКО если реально ограничен:
+            // число строк, число участников графа или область графа из-за бюджета.
+            limited = data.limited();
         } else {
             // Лимит применяется ПРЯМО В SQL (LIMIT max+1): в память из базы читается
             // не больше max+1 переводов, а не вся история окна. Дополнительная строка
@@ -187,6 +203,34 @@ public final class SuspicionScanner {
             }
         }
         return participants;
+    }
+
+/**
+     * Детерминированный порядок участников персонального графа: проверяемый игрок
+     * ВСЕГДА первый, остальные UUID — по возрастанию {@code compareTo}. Произвольный
+     * обход HashSet больше не влияет на граф (и на число SQL-запросов/рёбер). При
+     * превышении {@code MAX_GRAPH_PARTICIPANTS} список усекается в вызывающем коде
+     * (не здесь), а сводка помечается ограниченной. Пакетная видимость — для тестов.
+     */
+    static List<UUID> orderedParticipants(List<TransactionRow> rows, UUID focalPlayer) {
+        List<UUID> others = new ArrayList<>();
+        for (TransactionRow row : rows) {
+            if (row.sourceUuid() != null && !row.sourceUuid().equals(focalPlayer)) {
+                others.add(row.sourceUuid());
+            }
+            if (row.targetUuid() != null && !row.targetUuid().equals(focalPlayer)) {
+                others.add(row.targetUuid());
+            }
+        }
+others.sort(null); // естественный порядок UUID (compareTo) — стабильно между прогонами
+        List<UUID> ordered = new ArrayList<>(others.size() + 1);
+        ordered.add(focalPlayer);
+        ordered.addAll(others);
+        return ordered;
+    }
+
+    /** Результат персонального скана {@link #scanPlayer}: итоговый набор + участники. */
+    private record ScanData(List<TransactionRow> merged, Set<UUID> participants, boolean limited) {
     }
 
     /**
