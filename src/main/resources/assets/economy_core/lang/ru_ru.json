@@ -160,6 +160,7 @@
   "admin.milestone.reason.unregistered": "advancement не зарегистрирован на сервере",
   "admin.milestone.reason.offline": "игрок офлайн, живой прогресс недоступен",
   "admin.milestone.reason.database": "ошибка базы данных",
+  "admin.milestone.reason.external": "условие внешнего мода недоступно",
 
   "cmd.internal.milestone.granted": "Милстоун %s выдан игроку %s (+%s).",
   "cmd.internal.milestone.already": "Милстоун %s уже получен игроком %s.",

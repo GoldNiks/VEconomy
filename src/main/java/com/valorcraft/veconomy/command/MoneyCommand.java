@@ -8,7 +8,6 @@ import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.activity.ActivityService.ActivityInfo;
 import com.valorcraft.veconomy.activity.WeeklyFundService.NotEligibleReason;
 import com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyPlayerInfo;
-import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
@@ -16,6 +15,7 @@ import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.persistence.TransactionRow;
 import com.valorcraft.veconomy.util.CurrencyParser;
+import com.valorcraft.veconomy.util.MessageService;
 import com.valorcraft.veconomy.util.PlayerResolver;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
@@ -78,14 +78,14 @@ public final class MoneyCommand {
             UUID uuid = player.getUUID();
             long balance = EconomyCore.accounts().getBalance(uuid);
             String formatted = EconomyCore.formatter().format(balance);
-            MutableComponent message = Component.translatable("cmd.balance.self", formatted)
+            MutableComponent message = MessageService.message(source, "cmd.balance.self", formatted)
                     .withStyle(ChatFormatting.GREEN);
             message.append(Component.literal(" (" + EconomyCore.formatter().plural(balance) + ")"));
             source.sendSuccess(() -> message, false);
-            source.sendSuccess(() -> Component.translatable("cmd.balance.hint")
+            source.sendSuccess(() -> MessageService.message(source, "cmd.balance.hint")
                     .withStyle(ChatFormatting.GRAY), false);
         } catch (Exception e) {
-            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "cmd.only.players").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -95,12 +95,12 @@ public final class MoneyCommand {
         String playerInput = StringArgumentType.getString(context, "player");
         PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), playerInput);
         if (!target.exists()) {
-            source.sendFailure(Component.translatable("error.player.notfound", playerInput)
+            source.sendFailure(MessageService.message(source, "error.player.notfound", playerInput)
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
         long balance = EconomyCore.accounts().getBalance(target.uuid());
-        source.sendSuccess(() -> Component.translatable("cmd.balance.other",
+        source.sendSuccess(() -> MessageService.message(source, "cmd.balance.other",
                 target.name(), EconomyCore.formatter().format(balance))
                 .withStyle(ChatFormatting.GREEN), false);
         return 1;
@@ -117,18 +117,18 @@ public final class MoneyCommand {
                         StringArgumentType.getString(context, "amount"),
                         EconomyCore.settings().decimalPlaces);
             } catch (CurrencyParser.InvalidAmount e) {
-                source.sendFailure(Component.translatable("error.invalid.amount").withStyle(ChatFormatting.RED));
+                source.sendFailure(MessageService.message(source, "error.invalid.amount").withStyle(ChatFormatting.RED));
                 return 1;
             }
 
             PlayerResolver.Resolved target = PlayerResolver.resolve(source.getServer(), targetInput);
             if (!target.exists()) {
-                source.sendFailure(Component.translatable("error.player.notfound", targetInput)
+                source.sendFailure(MessageService.message(source, "error.player.notfound", targetInput)
                         .withStyle(ChatFormatting.RED));
                 return 1;
             }
             if (sender.getUUID().equals(target.uuid())) {
-                source.sendFailure(Component.translatable("cmd.pay.self").withStyle(ChatFormatting.RED));
+                source.sendFailure(MessageService.message(source, "cmd.pay.self").withStyle(ChatFormatting.RED));
                 return 1;
             }
 
@@ -139,37 +139,37 @@ public final class MoneyCommand {
 
             switch (result.status()) {
                 case SUCCESS -> {
-                    source.sendSuccess(() -> Component.translatable("cmd.pay.sent",
+                    source.sendSuccess(() -> MessageService.message(source, "cmd.pay.sent",
                             EconomyCore.formatter().format(amountMinor), target.name())
                             .withStyle(ChatFormatting.GREEN), false);
                     if (target.player() != null) {
-                        target.player().sendSystemMessage(Component.translatable("cmd.pay.received",
+                        target.player().sendSystemMessage(MessageService.message(target.player(), "cmd.pay.received",
                                 EconomyCore.formatter().format(amountMinor), sender.getGameProfile().getName())
                                 .withStyle(ChatFormatting.GREEN));
                     }
                 }
-                case DUPLICATE_OPERATION -> source.sendSuccess(() -> Component.translatable("cmd.pay.sent",
+                case DUPLICATE_OPERATION -> source.sendSuccess(() -> MessageService.message(source, "cmd.pay.sent",
                         EconomyCore.formatter().format(amountMinor), target.name())
                         .withStyle(ChatFormatting.GREEN), false);
                 case INSUFFICIENT_FUNDS -> source.sendFailure(
-                        Component.translatable("error.insufficient").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "error.insufficient").withStyle(ChatFormatting.RED));
                 case COOLDOWN_ACTIVE -> source.sendFailure(
-                        Component.translatable("cmd.pay.cooldown").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "cmd.pay.cooldown").withStyle(ChatFormatting.RED));
                 case LIMIT_EXCEEDED -> source.sendFailure(
-                        Component.translatable("error.limit").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "error.limit").withStyle(ChatFormatting.RED));
                 case ACCOUNT_DISABLED -> source.sendFailure(
-                        Component.translatable("error.frozen").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "error.frozen").withStyle(ChatFormatting.RED));
                 case TRANSFERS_DISABLED -> source.sendFailure(
-                        Component.translatable("cmd.pay.disabled").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "cmd.pay.disabled").withStyle(ChatFormatting.RED));
                 case INVALID_AMOUNT -> source.sendFailure(
-                        Component.translatable("error.invalid.amount").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "error.invalid.amount").withStyle(ChatFormatting.RED));
                 case RECIPIENT_NOT_FOUND, ACCOUNT_NOT_FOUND -> source.sendFailure(
-                        Component.translatable("error.player.notfound", targetInput).withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "error.player.notfound", targetInput).withStyle(ChatFormatting.RED));
                 default -> source.sendFailure(
-                        Component.translatable("error.internal").withStyle(ChatFormatting.RED));
+                        MessageService.message(source, "error.internal").withStyle(ChatFormatting.RED));
             }
         } catch (Exception e) {
-            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "cmd.only.players").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -179,26 +179,26 @@ public final class MoneyCommand {
         try {
             ServerPlayer player = source.getPlayerOrException();
             ActivityInfo info = EconomyCore.activity().info(player.getUUID()).orElse(null);
-            source.sendSuccess(() -> Component.translatable("cmd.activity.title")
+            source.sendSuccess(() -> MessageService.message(source, "cmd.activity.title")
                     .withStyle(ChatFormatting.GOLD), false);
             if (info == null) {
-                source.sendSuccess(() -> Component.translatable("cmd.activity.empty")
+                source.sendSuccess(() -> MessageService.message(source, "cmd.activity.empty")
                         .withStyle(ChatFormatting.GRAY), false);
                 return 1;
             }
-            source.sendSuccess(() -> Component.translatable("cmd.activity.online",
+            source.sendSuccess(() -> MessageService.message(source, "cmd.activity.online",
                     formatDuration(info.totalOnlineSeconds())), false);
-            source.sendSuccess(() -> Component.translatable("cmd.activity.active",
+            source.sendSuccess(() -> MessageService.message(source, "cmd.activity.active",
                     formatDuration(info.totalActiveSeconds())), false);
-            source.sendSuccess(() -> Component.translatable("cmd.activity.afk",
+            source.sendSuccess(() -> MessageService.message(source, "cmd.activity.afk",
                     formatDuration(info.totalAfkSeconds())), false);
-            source.sendSuccess(() -> Component.translatable("cmd.activity.week",
+            source.sendSuccess(() -> MessageService.message(source, "cmd.activity.week",
                     info.currentWeekId(), formatDuration(info.weeklyActiveSeconds())), false);
             String state = info.afkNow() ? "cmd.activity.state.afk" : "cmd.activity.state.active";
-            source.sendSuccess(() -> Component.translatable(state)
+            source.sendSuccess(() -> MessageService.message(source, state)
                     .withStyle(info.afkNow() ? ChatFormatting.RED : ChatFormatting.GREEN), false);
         } catch (Exception e) {
-            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "cmd.only.players").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -223,35 +223,35 @@ public final class MoneyCommand {
     }
 
     /** Длительность в локализованных единицах (для команд игрока). */
-    private static MutableComponent localizedDuration(long totalSeconds) {
+    private static String localizedDuration(CommandSourceStack source, long totalSeconds) {
         long days = totalSeconds / 86400;
         long hours = (totalSeconds % 86400) / 3600;
         long minutes = (totalSeconds % 3600) / 60;
         long seconds = totalSeconds % 60;
-        MutableComponent component = Component.empty();
+        StringBuilder builder = new StringBuilder();
         boolean any = false;
         if (days > 0) {
-            component.append(Component.translatable("cmd.duration.days", days));
+            builder.append(MessageService.text(source, "cmd.duration.days", days));
             any = true;
         }
         if (hours > 0) {
             if (any) {
-                component.append(Component.literal(" "));
+                builder.append(" ");
             }
-            component.append(Component.translatable("cmd.duration.hours", hours));
+            builder.append(MessageService.text(source, "cmd.duration.hours", hours));
             any = true;
         }
         if (minutes > 0) {
             if (any) {
-                component.append(Component.literal(" "));
+                builder.append(" ");
             }
-            component.append(Component.translatable("cmd.duration.minutes", minutes));
+            builder.append(MessageService.text(source, "cmd.duration.minutes", minutes));
             any = true;
         }
         if (!any) {
-            component.append(Component.translatable("cmd.duration.seconds", seconds));
+            builder.append(MessageService.text(source, "cmd.duration.seconds", seconds));
         }
-        return component;
+        return builder.toString();
     }
 
     private static int weekly(CommandContext<CommandSourceStack> context) {
@@ -260,72 +260,72 @@ public final class MoneyCommand {
             ServerPlayer player = source.getPlayerOrException();
             WeeklyPlayerInfo info = EconomyCore.weeklyFund().playerWeekly(player.getUUID());
             long untilEnd = Math.max(0, info.weekEndMillis() - System.currentTimeMillis());
-            source.sendSuccess(() -> Component.translatable("cmd.weekly.title")
+            source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.title")
                     .withStyle(ChatFormatting.GOLD), false);
             if (info.eligible()) {
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.activeTime",
-                        localizedDuration(info.activeSeconds())), false);
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.activeDays",
+                source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.activeTime",
+                        localizedDuration(source, info.activeSeconds())), false);
+                source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.activeDays",
                         info.activeDays()), false);
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.share",
+                source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.share",
                         EconomyCore.formatter().format(info.projectedShare()))
                         .withStyle(ChatFormatting.AQUA), false);
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.untilEnd",
-                        localizedDuration(untilEnd)), false);
+                source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.untilEnd",
+                        localizedDuration(source, untilEnd)), false);
             } else {
                 if (info.reason() != NotEligibleReason.FORECAST_UNAVAILABLE) {
-                    source.sendSuccess(() -> Component.translatable("cmd.weekly.notEligible")
+                    source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.notEligible")
                             .withStyle(ChatFormatting.RED), false);
                 }
-                source.sendSuccess(() -> reasonLine(info), false);
+                source.sendSuccess(() -> reasonLine(source, info), false);
             }
             if (info.lastWeekAccrued() > 0) {
-                source.sendSuccess(() -> Component.translatable("cmd.weekly.lastWeek",
+                source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.lastWeek",
                         EconomyCore.formatter().format(info.lastWeekAccrued()))
                         .withStyle(ChatFormatting.DARK_GRAY), false);
                 long autoPayoutAt = info.lastWeekAutoPayoutAt();
                 if (autoPayoutAt > 0 && autoPayoutAt > System.currentTimeMillis()) {
-                    source.sendSuccess(() -> Component.translatable("cmd.weekly.payoutSoon",
-                            localizedDuration(autoPayoutAt - System.currentTimeMillis()))
+                    source.sendSuccess(() -> MessageService.message(source, "cmd.weekly.payoutSoon",
+                            localizedDuration(source, autoPayoutAt - System.currentTimeMillis()))
                             .withStyle(ChatFormatting.GRAY), false);
                 }
             }
         } catch (Exception e) {
-            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "cmd.only.players").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
 
     /** Конкретная причина неучастия: сколько именно не хватает до ближайшего порога. */
-    private static MutableComponent reasonLine(WeeklyPlayerInfo info) {
+    private static MutableComponent reasonLine(CommandSourceStack source, WeeklyPlayerInfo info) {
         EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
         return switch (info.reason()) {
-            case MIN_ACTIVE_SECONDS -> Component.translatable("cmd.weekly.reason.minActive",
-                    localizedDuration(Math.max(0, cfg.minActiveSeconds - info.activeSeconds())))
+            case MIN_ACTIVE_SECONDS -> MessageService.message(source, "cmd.weekly.reason.minActive",
+                    localizedDuration(source, Math.max(0, cfg.minActiveSeconds - info.activeSeconds())))
                     .withStyle(ChatFormatting.GRAY);
-            case MIN_ACTIVE_DAYS -> Component.translatable(
+            case MIN_ACTIVE_DAYS -> MessageService.message(source,
                     minDaysKey(Math.max(0, cfg.minActiveDays - info.activeDays())),
                     Math.max(0, cfg.minActiveDays - info.activeDays())).withStyle(ChatFormatting.GRAY);
             case NO_POINTS -> {
                 if (!cfg.timePointLevels.isEmpty()) {
                     long missing = cfg.timePointLevels.get(0).activeSeconds() - info.activeSeconds();
                     if (missing > 0) {
-                        yield Component.translatable("cmd.weekly.reason.noPoints",
-                                localizedDuration(missing)).withStyle(ChatFormatting.GRAY);
+                        yield MessageService.message(source, "cmd.weekly.reason.noPoints",
+                                localizedDuration(source, missing)).withStyle(ChatFormatting.GRAY);
                     }
                 }
-                yield Component.translatable("cmd.weekly.reason.noPointsNone")
+                yield MessageService.message(source, "cmd.weekly.reason.noPointsNone")
                         .withStyle(ChatFormatting.GRAY);
             }
-            case FORECAST_UNAVAILABLE -> Component.translatable("cmd.weekly.reason.unavailable")
+            case FORECAST_UNAVAILABLE -> MessageService.message(source, "cmd.weekly.reason.unavailable")
                     .withStyle(ChatFormatting.GRAY);
-            case WEEKLY_FUND_DISABLED -> Component.translatable("cmd.weekly.reason.disabled")
+            case WEEKLY_FUND_DISABLED -> MessageService.message(source, "cmd.weekly.reason.disabled")
                     .withStyle(ChatFormatting.GRAY);
-            case EXCLUDED -> Component.translatable("cmd.weekly.reason.excluded")
+            case EXCLUDED -> MessageService.message(source, "cmd.weekly.reason.excluded")
                     .withStyle(ChatFormatting.GRAY);
-            case ACCOUNT_FROZEN -> Component.translatable("cmd.weekly.reason.frozen")
+            case ACCOUNT_FROZEN -> MessageService.message(source, "cmd.weekly.reason.frozen")
                     .withStyle(ChatFormatting.GRAY);
-            case MIN_ACCOUNT_AGE -> Component.translatable("cmd.weekly.reason.minAge")
+            case MIN_ACCOUNT_AGE -> MessageService.message(source, "cmd.weekly.reason.minAge")
                     .withStyle(ChatFormatting.GRAY);
         };
     }
@@ -353,25 +353,25 @@ public final class MoneyCommand {
             int currentPage = Math.max(1, Math.min(page, totalPages));
             List<TransactionRow> rows = EconomyCore.ledger().history(uuid, currentPage, HISTORY_PAGE_SIZE);
 
-            source.sendSuccess(() -> Component.translatable("cmd.history.title", currentPage, totalPages)
+            source.sendSuccess(() -> MessageService.message(source, "cmd.history.title", currentPage, totalPages)
                     .withStyle(ChatFormatting.GOLD), false);
 
             if (rows.isEmpty()) {
-                source.sendSuccess(() -> Component.translatable("cmd.history.empty")
+                source.sendSuccess(() -> MessageService.message(source, "cmd.history.empty")
                         .withStyle(ChatFormatting.GRAY), false);
                 return 1;
             }
 
             for (TransactionRow row : rows) {
-                source.sendSuccess(() -> formatHistoryLine(uuid, row), false);
+                source.sendSuccess(() -> formatHistoryLine(source, uuid, row), false);
             }
         } catch (Exception e) {
-            source.sendFailure(Component.translatable("cmd.only.players").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "cmd.only.players").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
 
-    private static Component formatHistoryLine(UUID viewerUuid, TransactionRow row) {
+    private static Component formatHistoryLine(CommandSourceStack source, UUID viewerUuid, TransactionRow row) {
         boolean incoming = row.targetUuid() != null && row.targetUuid().equals(viewerUuid)
                 && (row.sourceUuid() == null || !row.sourceUuid().equals(viewerUuid));
         String sign = incoming ? "+" : "-";
@@ -380,7 +380,7 @@ public final class MoneyCommand {
         MutableComponent line = Component.empty();
         line.append(Component.literal(TIME.format(Instant.ofEpochMilli(row.createdAt())) + " ")
                 .withStyle(ChatFormatting.DARK_GRAY));
-        line.append(Component.translatable("type." + row.type().name()).withStyle(ChatFormatting.AQUA));
+        line.append(MessageService.message(source, "type." + row.type().name()).withStyle(ChatFormatting.AQUA));
         line.append(Component.literal(" " + sign + EconomyCore.formatter().format(row.amountMinor()))
                 .withStyle(color));
         String counterparty = counterparty(row, viewerUuid);

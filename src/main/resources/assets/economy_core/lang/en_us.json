@@ -160,6 +160,7 @@
   "admin.milestone.reason.unregistered": "advancement is not registered on the server",
   "admin.milestone.reason.offline": "player is offline, live progress unavailable",
   "admin.milestone.reason.database": "database error",
+  "admin.milestone.reason.external": "external mod condition unavailable",
 
   "cmd.internal.milestone.granted": "Milestone %s granted to %s (+%s).",
   "cmd.internal.milestone.already": "Milestone %s is already claimed by %s.",

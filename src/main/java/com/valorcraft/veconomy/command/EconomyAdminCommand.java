@@ -24,6 +24,7 @@ import com.valorcraft.veconomy.economy.TreasuryService;
 import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.persistence.TransactionRow;
 import com.valorcraft.veconomy.util.CurrencyParser;
+import com.valorcraft.veconomy.util.MessageService;
 import com.valorcraft.veconomy.util.PlayerResolver;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
@@ -211,12 +212,12 @@ public final class EconomyAdminCommand {
         }
         Optional<BalanceSnapshot> account = EconomyCore.accounts().getAccount(target.uuid());
         if (account.isEmpty()) {
-            source.sendFailure(Component.translatable("admin.balance.none", target.name())
+            source.sendFailure(MessageService.message(source, "admin.balance.none", target.name())
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
         BalanceSnapshot snapshot = account.get();
-        MutableComponent message = Component.translatable("admin.balance.get",
+        MutableComponent message = MessageService.message(source, "admin.balance.get",
                 target.name(), EconomyCore.formatter().format(snapshot.balanceMinor()))
                 .withStyle(ChatFormatting.GREEN);
         message.append(Component.literal(" (" + snapshot.status().name() + ")").withStyle(ChatFormatting.GRAY));
@@ -251,7 +252,7 @@ public final class EconomyAdminCommand {
             return notFound(source, playerInput);
         }
         if (target.uuid().equals(TreasuryService.TREASURY_UUID)) {
-            source.sendFailure(Component.translatable("admin.balance.treasury").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "admin.balance.treasury").withStyle(ChatFormatting.RED));
             return 1;
         }
         UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
@@ -266,26 +267,24 @@ public final class EconomyAdminCommand {
         switch (result.status()) {
             case SUCCESS -> {
                 String verb = add ? "admin.balance.added" : "admin.balance.removed";
-                source.sendSuccess(() -> Component.translatable(verb, target.name(),
+                source.sendSuccess(() -> MessageService.message(source, verb, target.name(),
                         EconomyCore.formatter().format(amount),
                         EconomyCore.formatter().format(EconomyCore.accounts().getBalance(target.uuid())))
                         .withStyle(ChatFormatting.GREEN), true);
-                broadcastAdminChange(source,
-                        Component.translatable(add ? "notify.admin.added" : "notify.admin.removed",
-                                EconomyCore.formatter().format(amount), target.name())
-                                .withStyle(ChatFormatting.GOLD));
+                broadcastAdminChange(source, add ? "notify.admin.added" : "notify.admin.removed",
+                        EconomyCore.formatter().format(amount), target.name());
             }
             case INSUFFICIENT_FUNDS -> source.sendFailure(
-                    Component.translatable("error.insufficient").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.insufficient").withStyle(ChatFormatting.RED));
             case LIMIT_EXCEEDED -> source.sendFailure(
-                    Component.translatable("error.limit").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.limit").withStyle(ChatFormatting.RED));
             case ACCOUNT_DISABLED -> source.sendFailure(
-                    Component.translatable("error.frozen").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.frozen").withStyle(ChatFormatting.RED));
             case NO_CHANGES -> source.sendSuccess(() ->
-                    Component.translatable("admin.balance.none", target.name())
+                    MessageService.message(source, "admin.balance.none", target.name())
                             .withStyle(ChatFormatting.YELLOW), false);
             default -> source.sendFailure(
-                    Component.translatable("error.internal").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.internal").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -309,7 +308,7 @@ public final class EconomyAdminCommand {
             return notFound(source, playerInput);
         }
         if (target.uuid().equals(TreasuryService.TREASURY_UUID)) {
-            source.sendFailure(Component.translatable("admin.balance.treasury").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "admin.balance.treasury").withStyle(ChatFormatting.RED));
             return 1;
         }
         UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
@@ -318,25 +317,23 @@ public final class EconomyAdminCommand {
                 TransactionContext.of(TransactionType.ADMIN_SET_ADJUSTMENT, actor, reason));
         switch (result.status()) {
             case SUCCESS -> {
-                source.sendSuccess(() -> Component.translatable("admin.balance.set",
+                source.sendSuccess(() -> MessageService.message(source, "admin.balance.set",
                         target.name(), EconomyCore.formatter().format(amount)).withStyle(ChatFormatting.GREEN), true);
-                broadcastAdminChange(source,
-                        Component.translatable("notify.admin.set",
-                                target.name(), EconomyCore.formatter().format(amount))
-                                .withStyle(ChatFormatting.GOLD));
+                broadcastAdminChange(source, "notify.admin.set",
+                        target.name(), EconomyCore.formatter().format(amount));
                 // Событие ADMIN_BALANCE_CHANGE пишется в AccountService в той же
                 // транзакции, что и изменение баланса (op/old/new/delta/tx/reason).
             }
             case ACCOUNT_NOT_FOUND -> notFound(source, playerInput);
             case ACCOUNT_DISABLED -> source.sendFailure(
-                    Component.translatable("error.frozen").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.frozen").withStyle(ChatFormatting.RED));
             case LIMIT_EXCEEDED -> source.sendFailure(
-                    Component.translatable("error.limit").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.limit").withStyle(ChatFormatting.RED));
 case NO_CHANGES -> source.sendSuccess(() ->
-                    Component.translatable("admin.balance.nochange", target.name())
+                    MessageService.message(source, "admin.balance.nochange", target.name())
                             .withStyle(ChatFormatting.YELLOW), false);
             default -> source.sendFailure(
-                    Component.translatable("error.internal").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "error.internal").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -353,13 +350,13 @@ case NO_CHANGES -> source.sendSuccess(() ->
         Optional<BalanceSnapshot> account = EconomyCore.accounts().getAccount(target.uuid());
         RewardExclusionStatus exclusion = EconomyCore.activity().excludedFromRewards(target.uuid());
         if (account.isEmpty() && exclusion != RewardExclusionStatus.EXCLUDED) {
-            source.sendFailure(Component.translatable("admin.balance.none", target.name())
+            source.sendFailure(MessageService.message(source, "admin.balance.none", target.name())
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
-        source.sendSuccess(() -> Component.translatable("admin.account.info.title", target.name())
+        source.sendSuccess(() -> MessageService.message(source, "admin.account.info.title", target.name())
                 .withStyle(ChatFormatting.GOLD), false);
-        source.sendSuccess(() -> Component.translatable("admin.account.info.uuid",
+        source.sendSuccess(() -> MessageService.message(source, "admin.account.info.uuid",
                 target.uuid()).withStyle(ChatFormatting.YELLOW), false);
         String balance = account.isPresent()
                 ? EconomyCore.formatter().format(account.get().balanceMinor()) : "—";
@@ -371,27 +368,27 @@ case NO_CHANGES -> source.sendSuccess(() ->
         };
         String frozen = account.isPresent() && account.get().status() == AccountStatus.FROZEN
                 ? "admin.yes" : "admin.no";
-        source.sendSuccess(() -> Component.translatable("admin.account.info.balance", balance)
+        source.sendSuccess(() -> MessageService.message(source, "admin.account.info.balance", balance)
                 .withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.account.info.status", status)
+        source.sendSuccess(() -> MessageService.message(source, "admin.account.info.status", status)
                 .withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.account.info.frozen",
-                Component.translatable(frozen)).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.account.info.excluded",
-                Component.translatable(excludedText)).withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> MessageService.message(source, "admin.account.info.frozen",
+                MessageService.message(source, frozen)).withStyle(ChatFormatting.YELLOW), false);
+        source.sendSuccess(() -> MessageService.message(source, "admin.account.info.excluded",
+                MessageService.message(source, excludedText)).withStyle(ChatFormatting.YELLOW), false);
         if (account.isPresent()) {
-            source.sendSuccess(() -> Component.translatable("admin.account.info.created",
+            source.sendSuccess(() -> MessageService.message(source, "admin.account.info.created",
                     formatTimestamp(account.get().createdAt())).withStyle(ChatFormatting.GRAY), false);
-            source.sendSuccess(() -> Component.translatable("admin.account.info.updated",
+            source.sendSuccess(() -> MessageService.message(source, "admin.account.info.updated",
                     formatTimestamp(account.get().updatedAt())).withStyle(ChatFormatting.GRAY), false);
         }
         EconomyCore.activity().info(target.uuid()).ifPresent(activityInfo -> {
-            source.sendSuccess(() -> Component.translatable("admin.account.info.online",
+            source.sendSuccess(() -> MessageService.message(source, "admin.account.info.online",
                     formatDuration(activityInfo.totalOnlineSeconds())).withStyle(ChatFormatting.GRAY), false);
-            source.sendSuccess(() -> Component.translatable("admin.account.info.active",
+            source.sendSuccess(() -> MessageService.message(source, "admin.account.info.active",
                     formatDuration(activityInfo.totalActiveSeconds())).withStyle(ChatFormatting.GRAY), false);
             if (activityInfo.lastDimension() != null) {
-                source.sendSuccess(() -> Component.translatable("admin.account.info.dimension",
+                source.sendSuccess(() -> MessageService.message(source, "admin.account.info.dimension",
                         activityInfo.lastDimension()).withStyle(ChatFormatting.GRAY), false);
             }
         });
@@ -411,7 +408,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
             return notFound(source, playerInput);
         }
         if (target.uuid().equals(TreasuryService.TREASURY_UUID)) {
-            source.sendFailure(Component.translatable("admin.balance.treasury").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "admin.balance.treasury").withStyle(ChatFormatting.RED));
             return 1;
         }
         UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
@@ -421,23 +418,21 @@ case NO_CHANGES -> source.sendSuccess(() ->
                 : EconomyCore.accounts().unfreeze(target.uuid(), reason, actor);
         if (result.isSuccess()) {
             String verb = status == AccountStatus.FROZEN ? "admin.account.frozen" : "admin.account.unfrozen";
-            source.sendSuccess(() -> Component.translatable(verb, target.name())
+            source.sendSuccess(() -> MessageService.message(source, verb, target.name())
                     .withStyle(ChatFormatting.GREEN), true);
             if (EconomyCore.settings().broadcastAdminChanges
                     && source.getServer() != null && source.getServer().getPlayerList() != null) {
-                source.getServer().getPlayerList().broadcastSystemMessage(
-                        Component.translatable(status == AccountStatus.FROZEN
-                                ? "notify.admin.frozen" : "notify.admin.unfrozen", target.name())
-                                .withStyle(ChatFormatting.GOLD), false);
+                broadcastAdminChange(source, status == AccountStatus.FROZEN
+                        ? "notify.admin.frozen" : "notify.admin.unfrozen", target.name());
             }
         } else if (result.status() == TransactionResult.Status.ACCOUNT_NOT_FOUND) {
             return notFound(source, playerInput);
         } else if (result.status() == TransactionResult.Status.NO_CHANGES) {
             source.sendSuccess(() ->
-                    Component.translatable("admin.account.status.nochange", target.name())
+                    MessageService.message(source, "admin.account.status.nochange", target.name())
                             .withStyle(ChatFormatting.YELLOW), false);
         } else {
-            source.sendFailure(Component.translatable("error.internal").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "error.internal").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -457,21 +452,20 @@ case NO_CHANGES -> source.sendSuccess(() ->
         switch (update.status()) {
             case SUCCESS -> {
                 String verb = excluded ? "admin.account.excluded" : "admin.account.included";
-                source.sendSuccess(() -> Component.translatable(verb, target.name())
+                source.sendSuccess(() -> MessageService.message(source, verb, target.name())
                         .withStyle(ChatFormatting.GREEN), true);
                 if (EconomyCore.settings().broadcastAdminChanges
                         && source.getServer() != null && source.getServer().getPlayerList() != null) {
-                    source.getServer().getPlayerList().broadcastSystemMessage(
-                            Component.translatable(excluded ? "notify.admin.excluded" : "notify.admin.included",
-                                    target.name()).withStyle(ChatFormatting.GOLD), false);
+                    broadcastAdminChange(source, excluded ? "notify.admin.excluded" : "notify.admin.included",
+                            target.name());
                 }
             }
             case NO_CHANGES -> source.sendSuccess(() ->
-                    Component.translatable("admin.account.exclude.nochange", target.name())
+                    MessageService.message(source, "admin.account.exclude.nochange", target.name())
                             .withStyle(ChatFormatting.YELLOW), false);
             case PLAYER_NOT_FOUND -> notFound(source, playerInput);
             case DATABASE_ERROR -> source.sendFailure(
-                    Component.translatable("admin.account.exclude.failed", target.name())
+                    MessageService.message(source, "admin.account.exclude.failed", target.name())
                             .withStyle(ChatFormatting.RED));
         }
         return 1;
@@ -523,7 +517,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
                                  String playerInput) {
         CommandSourceStack source = context.getSource();
         if (!AuditConfig.settings().enabled()) {
-            source.sendFailure(Component.translatable("admin.audit.scan.disabled")
+            source.sendFailure(MessageService.message(source, "admin.audit.scan.disabled")
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
@@ -542,15 +536,15 @@ case NO_CHANGES -> source.sendSuccess(() ->
             accept = service.scanPlayerAsync(target.uuid(), scanOutcome(source, who));
         }
         if (accept == AuditService.ScanAccept.BUSY) {
-            source.sendFailure(Component.translatable("admin.audit.scan.busy")
+            source.sendFailure(MessageService.message(source, "admin.audit.scan.busy")
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
         if (who == null) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.scan.started")
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.scan.started")
                     .withStyle(ChatFormatting.GREEN), true);
         } else {
-            source.sendSuccess(() -> Component.translatable("admin.audit.scan.player.started", who)
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.scan.player.started", who)
                     .withStyle(ChatFormatting.GREEN), true);
         }
         return 1;
@@ -570,12 +564,12 @@ case NO_CHANGES -> source.sendSuccess(() ->
                 Object[] args = who == null ? numbers
                         : java.util.stream.Stream.concat(java.util.stream.Stream.of(who),
                         java.util.Arrays.stream(numbers)).toArray();
-                MutableComponent done = Component.translatable(who == null
+                MutableComponent done = MessageService.message(source, who == null
                         ? "admin.audit.scan.done" : "admin.audit.scan.player.done", args)
                         .withStyle(ChatFormatting.GREEN);
                 if (summary.limited()) {
                     done.append(Component.literal(" ")
-                            .append(Component.translatable("admin.audit.scan.limited")
+                            .append(MessageService.message(source, "admin.audit.scan.limited")
                                     .withStyle(ChatFormatting.YELLOW)));
                 }
                 source.sendSuccess(() -> done, true);
@@ -583,7 +577,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
 
             @Override
             public void failed(String error) {
-                source.sendFailure(Component.translatable("admin.audit.scan.failed", error)
+                source.sendFailure(MessageService.message(source, "admin.audit.scan.failed", error)
                         .withStyle(ChatFormatting.RED));
             }
         };
@@ -595,7 +589,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         long id = IntegerArgumentType.getInteger(context, "id");
         Optional<AuditEventRow> row = EconomyCore.audit().event(id);
         if (row.isEmpty()) {
-            source.sendFailure(Component.translatable("admin.audit.event.notfound", id)
+            source.sendFailure(MessageService.message(source, "admin.audit.event.notfound", id)
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
@@ -606,39 +600,39 @@ case NO_CHANGES -> source.sendSuccess(() ->
         String actorName = event.actorId() == null
                 ? "CONSOLE" : PlayerResolver.resolve(source.getServer(),
                 event.actorId().toString()).name();
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.title", event.id())
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.title", event.id())
                 .withStyle(ChatFormatting.GOLD), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.type",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.type",
                 event.eventType()).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.severity",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.severity",
                 event.severity().name()).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.status",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.status",
                 event.status()).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.player",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.player",
                 playerName).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.actor",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.actor",
                 actorName, event.actorType().name()).withStyle(ChatFormatting.GRAY), false);
         if (event.counterpartyUuid() != null) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.event.counterparty",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.counterparty",
                     displayName(source, event.counterpartyUuid())).withStyle(ChatFormatting.GRAY), false);
         }
         if (event.amountMinor() != null) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.event.amount",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.amount",
                     EconomyCore.formatter().format(event.amountMinor())).withStyle(ChatFormatting.GRAY), false);
         }
-        source.sendSuccess(() -> Component.translatable("admin.audit.event.time",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.time",
                 formatTimestamp(event.createdAt())).withStyle(ChatFormatting.GRAY), false);
         if (event.resolvedAt() != null) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.event.resolved",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.resolved",
                     formatTimestamp(event.resolvedAt()), event.resolvedBy() == null ? "-" : event.resolvedBy())
                     .withStyle(ChatFormatting.GRAY), false);
         }
         if (event.resolutionNote() != null && !event.resolutionNote().isBlank()) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.event.note",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.note",
                     event.resolutionNote()).withStyle(ChatFormatting.GRAY), false);
         }
         if (event.details() != null && !event.details().isBlank()) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.event.details",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.details",
                     event.details()).withStyle(ChatFormatting.GRAY), false);
         }
         return 1;
@@ -650,48 +644,48 @@ case NO_CHANGES -> source.sendSuccess(() ->
         String id = StringArgumentType.getString(context, "id");
         Optional<TransactionRow> row = EconomyCore.ledger().find(id);
         if (row.isEmpty()) {
-            source.sendFailure(Component.translatable("admin.audit.tx.notfound", id)
+            source.sendFailure(MessageService.message(source, "admin.audit.tx.notfound", id)
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
         TransactionRow tx = row.get();
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.title", tx.transactionId())
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.title", tx.transactionId())
                 .withStyle(ChatFormatting.GOLD), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.type",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.type",
                 tx.type().name()).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.amount",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.amount",
                 EconomyCore.formatter().format(tx.amountMinor())).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.from",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.from",
                 displayName(source, tx.sourceUuid())).withStyle(ChatFormatting.GRAY), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.to",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.to",
                 displayName(source, tx.targetUuid())).withStyle(ChatFormatting.GRAY), false);
         String actorName = tx.actorUuid() == null
                 ? "CONSOLE" : displayName(source, tx.actorUuid());
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.actor",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.actor",
                 actorName).withStyle(ChatFormatting.GRAY), false);
         if (tx.sourceBalanceAfter() != null || tx.targetBalanceAfter() != null) {
             String balances = (tx.sourceBalanceAfter() == null ? "-"
                     : EconomyCore.formatter().format(tx.sourceBalanceAfter()))
                     + " -> " + (tx.targetBalanceAfter() == null ? "-"
                     : EconomyCore.formatter().format(tx.targetBalanceAfter()));
-            source.sendSuccess(() -> Component.translatable("admin.audit.tx.after",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.after",
                     balances).withStyle(ChatFormatting.GRAY), false);
         }
-        source.sendSuccess(() -> Component.translatable("admin.audit.tx.time",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.time",
                 formatTimestamp(tx.createdAt())).withStyle(ChatFormatting.GRAY), false);
         if (tx.reason() != null && !tx.reason().isBlank()) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.tx.reason",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.reason",
                     tx.reason()).withStyle(ChatFormatting.GRAY), false);
         }
         if (tx.idempotencyKey() != null && !tx.idempotencyKey().isBlank()) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.tx.idem",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.idem",
                     tx.idempotencyKey()).withStyle(ChatFormatting.GRAY), false);
         }
         if (tx.metadata() != null && !tx.metadata().isEmpty()) {
             // Чувствительные ключи (token/secret/password/ip/address/authorization/session)
             // показываются с замаскированным значением, остальные — как есть.
             // Только безопасная текстовая разметка «key=value; …» — никаких сырых JSON-блоков.
-            source.sendSuccess(() -> Component.translatable("admin.audit.tx.metadata",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.tx.metadata",
                     safeMetadata(tx.metadata()).entrySet().stream()
                             .map(e -> e.getKey() + "=" + e.getValue())
                             .collect(java.util.stream.Collectors.joining("; ")))
@@ -750,7 +744,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         try {
             id = Long.parseLong(StringArgumentType.getString(context, "id"));
         } catch (NumberFormatException e) {
-            source.sendFailure(Component.translatable("admin.audit.event.invalid")
+            source.sendFailure(MessageService.message(source, "admin.audit.event.invalid")
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
@@ -769,29 +763,29 @@ case NO_CHANGES -> source.sendSuccess(() ->
         ResolveResult result = EconomyCore.audit().resolve(id, status, resolvedBy, note);
         switch (result.status()) {
             case NOT_FOUND -> {
-                source.sendFailure(Component.translatable("admin.audit.event.notfound", id)
+                source.sendFailure(MessageService.message(source, "admin.audit.event.notfound", id)
                         .withStyle(ChatFormatting.RED));
                 return 1;
             }
             case NOT_SUSPICIOUS -> {
-                source.sendFailure(Component.translatable("admin.audit.resolve.nosignal", id)
+                source.sendFailure(MessageService.message(source, "admin.audit.resolve.nosignal", id)
                         .withStyle(ChatFormatting.RED));
                 return 1;
             }
             case ALREADY_REVIEWED -> {
-                source.sendFailure(Component.translatable("admin.audit.resolve.already", id)
+                source.sendFailure(MessageService.message(source, "admin.audit.resolve.already", id)
                         .withStyle(ChatFormatting.YELLOW));
                 return 1;
             }
             case DATABASE_ERROR -> {
-                source.sendFailure(Component.translatable("error.internal")
+                source.sendFailure(MessageService.message(source, "error.internal")
                         .withStyle(ChatFormatting.RED));
                 return 1;
             }
             case SUCCESS -> {
                 String key = status == ResolutionStatus.RESOLVED
                         ? "admin.audit.resolve.done" : "admin.audit.dismiss.done";
-                source.sendSuccess(() -> Component.translatable(key, id)
+                source.sendSuccess(() -> MessageService.message(source, key, id)
                         .withStyle(ChatFormatting.GREEN), true);
             }
         }
@@ -802,22 +796,22 @@ case NO_CHANGES -> source.sendSuccess(() ->
     private static int auditStatus(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
         com.valorcraft.veconomy.audit.AuditService.AuditHealth health = EconomyCore.audit().health();
-        source.sendSuccess(() -> Component.translatable("admin.audit.status.title")
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.status.title")
                 .withStyle(ChatFormatting.GOLD), false);
-        source.sendSuccess(() -> Component.translatable("admin.audit.status.events",
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.status.events",
                 EconomyCore.audit().count(),
                 EconomyCore.audit().countByStatus(ResolutionStatus.OPEN),
                 EconomyCore.audit().countByStatus(ResolutionStatus.RESOLVED),
                 EconomyCore.audit().countByStatus(ResolutionStatus.DISMISSED))
                 .withStyle(ChatFormatting.GRAY), false);
         if (health.failedWrites() == 0 && health.pendingRetries() == 0) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.status.ok")
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.status.ok")
                     .withStyle(ChatFormatting.GREEN), false);
         } else {
-            source.sendSuccess(() -> Component.translatable("admin.audit.status.writes",
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.status.writes",
                     health.failedWrites(), health.pendingRetries()).withStyle(ChatFormatting.RED), false);
             if (health.lastError() != null) {
-                source.sendSuccess(() -> Component.translatable("admin.audit.status.error",
+                source.sendSuccess(() -> MessageService.message(source, "admin.audit.status.error",
                         health.lastError()).withStyle(ChatFormatting.DARK_RED), false);
             }
         }
@@ -826,10 +820,10 @@ case NO_CHANGES -> source.sendSuccess(() ->
 
     private static void sendAuditRows(CommandSourceStack source, String titleKey,
                                       Object[] titleArgs, List<AuditEventRow> rows) {
-        source.sendSuccess(() -> Component.translatable(titleKey, titleArgs)
+        source.sendSuccess(() -> MessageService.message(source, titleKey, titleArgs)
                 .withStyle(ChatFormatting.GOLD), false);
         if (rows.isEmpty()) {
-            source.sendSuccess(() -> Component.translatable("admin.audit.empty")
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.empty")
                     .withStyle(ChatFormatting.GRAY), false);
             return;
         }
@@ -883,13 +877,13 @@ case NO_CHANGES -> source.sendSuccess(() ->
     private static int milestoneList(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
         var definitions = EconomyCore.milestones().definitions();
-        source.sendSuccess(() -> Component.translatable("admin.milestone.list.title",
+        source.sendSuccess(() -> MessageService.message(source, "admin.milestone.list.title",
                 definitions.size()).withStyle(ChatFormatting.GOLD), false);
         for (com.valorcraft.veconomy.activity.MilestoneDefinition def : definitions) {
             String amount = EconomyCore.formatter().format(def.amountMinor());
             source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
                     .append(Component.literal(def.id()).withStyle(ChatFormatting.AQUA))
-                    .append(Component.translatable("admin.milestone.list.row",
+                    .append(MessageService.message(source, "admin.milestone.list.row",
                             def.type().name().toLowerCase(java.util.Locale.ROOT), amount,
                             def.enabled() ? "+" : "-")), false);
         }
@@ -904,10 +898,10 @@ case NO_CHANGES -> source.sendSuccess(() ->
             return notFound(source, playerInput);
         }
         var claims = EconomyCore.milestones().claims(target.uuid());
-        source.sendSuccess(() -> Component.translatable("admin.milestone.claims.title",
+        source.sendSuccess(() -> MessageService.message(source, "admin.milestone.claims.title",
                 target.name(), claims.size()).withStyle(ChatFormatting.GOLD), false);
         if (claims.isEmpty()) {
-            source.sendSuccess(() -> Component.translatable("admin.milestone.claims.empty")
+            source.sendSuccess(() -> MessageService.message(source, "admin.milestone.claims.empty")
                     .withStyle(ChatFormatting.GRAY), false);
             return 1;
         }
@@ -917,7 +911,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
             source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
                     .append(Component.literal(claim.milestoneId()).withStyle(ChatFormatting.AQUA))
-                    .append(Component.translatable("admin.milestone.claims.row",
+                    .append(MessageService.message(source, "admin.milestone.claims.row",
                             EconomyCore.formatter().format(claim.amountMinor()), when)), false);
         }
         return 1;
@@ -933,7 +927,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         String milestoneId = StringArgumentType.getString(context, "milestone");
         var def = EconomyCore.milestones().definition(milestoneId);
         if (def.isEmpty()) {
-            source.sendFailure(Component.translatable("admin.milestone.notfound", milestoneId)
+            source.sendFailure(MessageService.message(source, "admin.milestone.notfound", milestoneId)
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
@@ -942,15 +936,15 @@ case NO_CHANGES -> source.sendSuccess(() ->
         com.valorcraft.veconomy.activity.MilestoneCheckResult result =
                 EconomyCore.milestones().checkMilestone(target.uuid(), def.get(), ctx);
         switch (result.status()) {
-            case MET -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.met",
+            case MET -> source.sendSuccess(() -> MessageService.message(source, "admin.milestone.check.met",
                     milestoneId, target.name()).withStyle(ChatFormatting.GREEN), false);
-            case NOT_MET -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.notmet",
+            case NOT_MET -> source.sendSuccess(() -> MessageService.message(source, "admin.milestone.check.notmet",
                     milestoneId, target.name()).withStyle(ChatFormatting.YELLOW), false);
-            case BAD_CONFIG -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.badconfig",
+            case BAD_CONFIG -> source.sendSuccess(() -> MessageService.message(source, "admin.milestone.check.badconfig",
                     milestoneId, target.name(),
                     result.reasonKey() == null ? "admin.milestone.reason.badConfig" : result.reasonKey())
                     .withStyle(ChatFormatting.RED), false);
-            default -> source.sendSuccess(() -> Component.translatable("admin.milestone.check.unavailable",
+            default -> source.sendSuccess(() -> MessageService.message(source, "admin.milestone.check.unavailable",
                     milestoneId, target.name(),
                     result.reasonKey() == null ? "error.internal" : result.reasonKey())
                     .withStyle(ChatFormatting.GRAY), false);
@@ -969,7 +963,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         String milestoneId = StringArgumentType.getString(context, "milestone");
         var def = EconomyCore.milestones().definition(milestoneId);
         if (def.isEmpty()) {
-            source.sendFailure(Component.translatable("admin.milestone.notfound", milestoneId)
+            source.sendFailure(MessageService.message(source, "admin.milestone.notfound", milestoneId)
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
@@ -995,10 +989,10 @@ case NO_CHANGES -> source.sendSuccess(() ->
         UUID actor = source.getEntity() instanceof net.minecraft.world.entity.player.Player p
                 ? p.getUUID() : null;
         if (EconomyCore.milestones().revoke(target.uuid(), milestoneId, actor)) {
-            source.sendSuccess(() -> Component.translatable("admin.milestone.revoked",
+            source.sendSuccess(() -> MessageService.message(source, "admin.milestone.revoked",
                     milestoneId, target.name()).withStyle(ChatFormatting.GREEN), true);
         } else {
-            source.sendFailure(Component.translatable("admin.milestone.revoke.missing",
+            source.sendFailure(MessageService.message(source, "admin.milestone.revoke.missing",
                     milestoneId, target.name()).withStyle(ChatFormatting.RED));
         }
         return 1;
@@ -1010,7 +1004,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         switch (result.status()) {
             case GRANTED -> {
                 String amount = EconomyCore.formatter().format(result.amountMinor());
-                source.sendSuccess(() -> Component.translatable("admin.milestone.granted",
+                source.sendSuccess(() -> MessageService.message(source, "admin.milestone.granted",
                         milestoneId, playerName, amount).withStyle(ChatFormatting.GREEN), true);
                 return;
             }
@@ -1026,33 +1020,33 @@ case NO_CHANGES -> source.sendSuccess(() ->
             default -> key = "error.internal";
         }
         String finalKey = key;
-        source.sendFailure(Component.translatable(finalKey, milestoneId, playerName)
+        source.sendFailure(MessageService.message(source, finalKey, milestoneId, playerName)
                 .withStyle(ChatFormatting.RED));
     }
 
     private static int stats(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
         EconomyStatistics.Stats stats = EconomyCore.statistics().compute();
-        MutableComponent header = Component.translatable("admin.stats.title").withStyle(ChatFormatting.GOLD);
+        MutableComponent header = MessageService.message(source, "admin.stats.title").withStyle(ChatFormatting.GOLD);
         source.sendSuccess(() -> header, false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.supply",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.supply",
                 EconomyCore.formatter().format(stats.totalMoneySupply())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.players",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.players",
                 EconomyCore.formatter().format(stats.playerMoney())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.treasury",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.treasury",
                 EconomyCore.formatter().format(stats.treasuryBalance())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.escrow",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.escrow",
                 EconomyCore.formatter().format(stats.escrowBalance())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.accounts",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.accounts",
                 stats.accountCount()).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.median",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.median",
                 EconomyCore.formatter().format(stats.medianBalance())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.max",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.max",
                 EconomyCore.formatter().format(stats.maxBalance())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.transfers",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.transfers",
                 stats.transferCount(), EconomyCore.formatter().format(stats.transferVolume()))
                 .withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.stats.emission",
+        source.sendSuccess(() -> MessageService.message(source, "admin.stats.emission",
                 EconomyCore.formatter().format(stats.emissionDay()),
                 EconomyCore.formatter().format(stats.emissionWeek()),
                 EconomyCore.formatter().format(stats.emissionTotal())).withStyle(ChatFormatting.YELLOW), false);
@@ -1067,9 +1061,9 @@ case NO_CHANGES -> source.sendSuccess(() ->
             if (net.minecraftforge.fml.ModList.get().isLoaded("ftbquests")) {
                 com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.reloadRewards();
             }
-            source.sendSuccess(() -> Component.translatable("admin.reload.done").withStyle(ChatFormatting.GREEN), true);
+            source.sendSuccess(() -> MessageService.message(source, "admin.reload.done").withStyle(ChatFormatting.GREEN), true);
         } catch (Exception e) {
-            source.sendFailure(Component.translatable("admin.reload.failed").withStyle(ChatFormatting.RED));
+            source.sendFailure(MessageService.message(source, "admin.reload.failed").withStyle(ChatFormatting.RED));
         }
         return 1;
     }
@@ -1078,35 +1072,35 @@ case NO_CHANGES -> source.sendSuccess(() ->
         CommandSourceStack source = context.getSource();
         com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyStatus status =
                 EconomyCore.weeklyFund().status();
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.header",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.header",
                 status.currentWeek()).withStyle(ChatFormatting.GOLD), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.target",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.target",
                 status.targetWeek()).withStyle(ChatFormatting.YELLOW), false);
         String enabled = status.enabled() ? "admin.yes" : "admin.no";
         String autoPayout = status.autoPayout() ? "admin.yes" : "admin.no";
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.enabled",
-                Component.translatable(enabled)), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.autopayout",
-                Component.translatable(autoPayout), status.payoutDelayHours()), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.fund",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.enabled",
+                MessageService.message(source, enabled)), false);
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.autopayout",
+                MessageService.message(source, autoPayout), status.payoutDelayHours()), false);
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.fund",
                 EconomyCore.formatter().format(status.fundAmount())).withStyle(ChatFormatting.YELLOW), false);
         if (status.distributedWeek() != null) {
-            source.sendSuccess(() -> Component.translatable("admin.weekly.status.distributed",
+            source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.distributed",
                     status.distributedWeek()).withStyle(ChatFormatting.YELLOW), false);
         } else {
-            source.sendSuccess(() -> Component.translatable("admin.weekly.status.init")
+            source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.init")
                     .withStyle(ChatFormatting.GRAY), false);
         }
         if (status.weekDistributed()) {
-            source.sendSuccess(() -> Component.translatable("admin.weekly.status.already")
+            source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.already")
                     .withStyle(ChatFormatting.GRAY), false);
         }
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.eligible",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.eligible",
                 status.eligiblePlayers(), status.totalPoints(),
                 formatDuration(status.totalCountedSeconds())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.total",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.total",
                 EconomyCore.formatter().format(status.totalShare())).withStyle(ChatFormatting.YELLOW), false);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.status.payout",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.status.payout",
                 status.payoutStatus(),
                 status.autoPayoutAt() == null ? "-" : formatTimestamp(status.autoPayoutAt()))
                 .withStyle(ChatFormatting.GRAY), false);
@@ -1122,11 +1116,11 @@ case NO_CHANGES -> source.sendSuccess(() ->
         com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyStatus status =
                 EconomyCore.weeklyFund().status();
         String shownWeek = weekId != null ? weekId : status.targetWeek();
-        source.sendSuccess(() -> Component.translatable("admin.weekly.preview.header",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.preview.header",
                 shownWeek,
                 EconomyCore.formatter().format(status.fundAmount())).withStyle(ChatFormatting.GOLD), false);
         if (allocations.isEmpty()) {
-            source.sendSuccess(() -> Component.translatable("admin.weekly.preview.empty")
+            source.sendSuccess(() -> MessageService.message(source, "admin.weekly.preview.empty")
                     .withStyle(ChatFormatting.GRAY), false);
             return 1;
         }
@@ -1140,18 +1134,18 @@ case NO_CHANGES -> source.sendSuccess(() ->
             String name = PlayerResolver.resolve(source.getServer(), allocation.playerId().toString()).name();
             MutableComponent line = Component.literal(name).withStyle(ChatFormatting.AQUA);
             line.append(Component.literal(" — ").withStyle(ChatFormatting.DARK_GRAY));
-            line.append(Component.translatable("admin.weekly.preview.row",
+            line.append(MessageService.message(source, "admin.weekly.preview.row",
                     EconomyCore.formatter().format(allocation.share()),
                     formatDuration(allocation.countedSeconds()), allocation.points(),
                     allocation.activeDays()));
             source.sendSuccess(() -> line, false);
         }
         if (allocations.size() > PREVIEW_LINES) {
-            source.sendSuccess(() -> Component.translatable("admin.weekly.preview.more",
+            source.sendSuccess(() -> MessageService.message(source, "admin.weekly.preview.more",
                     allocations.size() - PREVIEW_LINES).withStyle(ChatFormatting.GRAY), false);
         }
         long finalTotal = totalShare;
-        source.sendSuccess(() -> Component.translatable("admin.weekly.preview.total",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.preview.total",
                 allocations.size(), EconomyCore.formatter().format(finalTotal),
                 EconomyCore.formatter().format(Math.max(0, status.fundAmount() - finalTotal)))
                 .withStyle(ChatFormatting.YELLOW), false);
@@ -1163,10 +1157,10 @@ case NO_CHANGES -> source.sendSuccess(() ->
         EconomySettings.WeeklyFund cfg = EconomyCore.settings().weeklyFund;
         com.valorcraft.veconomy.activity.WeeklyFundService.WeeklyStatus status =
                 EconomyCore.weeklyFund().status();
-        source.sendSuccess(() -> Component.translatable("admin.weekly.run.prompt",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.run.prompt",
                 status.targetWeek(),
                 EconomyCore.formatter().format(status.totalShare())).withStyle(ChatFormatting.GOLD), true);
-        source.sendSuccess(() -> Component.translatable("admin.weekly.run.hint")
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.run.hint")
                 .withStyle(ChatFormatting.GRAY), false);
         return 1;
     }
@@ -1178,18 +1172,18 @@ case NO_CHANGES -> source.sendSuccess(() ->
                 ? EconomyCore.weeklyFund().runNow()
                 : EconomyCore.weeklyFund().runNow(weekId);
         if (payments.isEmpty()) {
-            source.sendFailure(Component.translatable("admin.weekly.run.empty")
+            source.sendFailure(MessageService.message(source, "admin.weekly.run.empty")
                     .withStyle(ChatFormatting.RED));
             return 1;
         }
         long total = payments.values().stream().mapToLong(Long::longValue).sum();
-        source.sendSuccess(() -> Component.translatable("admin.weekly.run.done",
+        source.sendSuccess(() -> MessageService.message(source, "admin.weekly.run.done",
                 payments.size(), EconomyCore.formatter().format(total)).withStyle(ChatFormatting.GREEN), true);
         if (EconomyCore.settings().weeklyFund.notify && source.getServer() != null) {
             for (net.minecraft.server.level.ServerPlayer player : source.getServer().getPlayerList().getPlayers()) {
                 Long amount = payments.get(player.getUUID());
                 if (amount != null) {
-                    player.sendSystemMessage(Component.translatable("notify.weekly.reward",
+                    player.sendSystemMessage(MessageService.message(player, "notify.weekly.reward",
                             EconomyCore.formatter().format(amount)).withStyle(ChatFormatting.GOLD));
                 }
             }
@@ -1225,26 +1219,31 @@ case NO_CHANGES -> source.sendSuccess(() ->
     }
 
     private static int invalidAmount(CommandSourceStack source) {
-        source.sendFailure(Component.translatable("error.invalid.amount").withStyle(ChatFormatting.RED));
+        source.sendFailure(MessageService.message(source, "error.invalid.amount").withStyle(ChatFormatting.RED));
         return 1;
     }
 
-    /** Разослать уведомление об административном изменении, если включено в конфиге. */
-    private static void broadcastAdminChange(CommandSourceStack source, Component message) {
+    /** Разослать уведомление об административном изменении, если включено в конфиге.
+     *  Локализуется отдельно для каждого получателя. */
+    private static void broadcastAdminChange(CommandSourceStack source, String key, Object... args) {
         if (EconomyCore.settings().broadcastAdminChanges
                 && source.getServer() != null
                 && source.getServer().getPlayerList() != null) {
-            source.getServer().getPlayerList().broadcastSystemMessage(message, false);
+            for (net.minecraft.server.level.ServerPlayer player
+                    : source.getServer().getPlayerList().getPlayers()) {
+                player.sendSystemMessage(MessageService.message(player, key, args)
+                        .withStyle(ChatFormatting.GOLD));
+            }
         }
     }
 
     private static int invalidReason(CommandSourceStack source) {
-        source.sendFailure(Component.translatable("error.reason.required").withStyle(ChatFormatting.RED));
+        source.sendFailure(MessageService.message(source, "error.reason.required").withStyle(ChatFormatting.RED));
         return 1;
     }
 
     private static int notFound(CommandSourceStack source, String input) {
-        source.sendFailure(Component.translatable("error.player.notfound", input).withStyle(ChatFormatting.RED));
+        source.sendFailure(MessageService.message(source, "error.player.notfound", input).withStyle(ChatFormatting.RED));
         return 1;
     }
 }

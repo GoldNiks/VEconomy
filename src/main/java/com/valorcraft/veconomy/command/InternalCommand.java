@@ -5,10 +5,10 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.activity.MilestoneService;
 import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
+import com.valorcraft.veconomy.util.MessageService;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
-import net.minecraft.network.chat.Component;
 
 import java.util.UUID;
 
@@ -38,7 +38,7 @@ public final class InternalCommand {
         try {
             playerId = UUID.fromString(StringArgumentType.getString(context, "uuid"));
         } catch (IllegalArgumentException e) {
-            source.sendFailure(Component.translatable("error.player.notfound",
+            source.sendFailure(MessageService.message(source, "error.player.notfound",
                     StringArgumentType.getString(context, "uuid")).withStyle(ChatFormatting.RED));
             return 1;
         }
@@ -50,30 +50,30 @@ public final class InternalCommand {
                 .map(a -> a.lastKnownName() != null ? a.lastKnownName() : a.playerId().toString())
                 .orElse(playerId.toString());
         switch (result.status()) {
-            case GRANTED -> source.sendSuccess(() -> Component.translatable("cmd.internal.milestone.granted",
+            case GRANTED -> source.sendSuccess(() -> MessageService.message(source, "cmd.internal.milestone.granted",
                     milestoneId, playerName, EconomyCore.formatter().format(result.amountMinor()))
                     .withStyle(ChatFormatting.GREEN), true);
             case ALREADY_CLAIMED -> source.sendSuccess(() ->
-                    Component.translatable("cmd.internal.milestone.already", milestoneId, playerName)
+                    MessageService.message(source, "cmd.internal.milestone.already", milestoneId, playerName)
                             .withStyle(ChatFormatting.YELLOW), true);
             case NOT_FOUND -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.notfound", milestoneId)
+                    MessageService.message(source, "cmd.internal.milestone.notfound", milestoneId)
                             .withStyle(ChatFormatting.RED));
             case EXTERNAL_ONLY -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.externalonly", milestoneId)
+                    MessageService.message(source, "cmd.internal.milestone.externalonly", milestoneId)
                             .withStyle(ChatFormatting.RED));
             case INVALID_KEY -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.invalidkey").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "cmd.internal.milestone.invalidkey").withStyle(ChatFormatting.RED));
             case DUPLICATE_OPERATION -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.duplicate").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "cmd.internal.milestone.duplicate").withStyle(ChatFormatting.RED));
             case MILESTONES_DISABLED, DISABLED -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.disabled").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "cmd.internal.milestone.disabled").withStyle(ChatFormatting.RED));
             case LIMIT_EXCEEDED -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.limit").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "cmd.internal.milestone.limit").withStyle(ChatFormatting.RED));
             case ACCOUNT_FROZEN -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.frozen").withStyle(ChatFormatting.RED));
+                    MessageService.message(source, "cmd.internal.milestone.frozen").withStyle(ChatFormatting.RED));
             default -> source.sendFailure(
-                    Component.translatable("cmd.internal.milestone.error", milestoneId, result.status())
+                    MessageService.message(source, "cmd.internal.milestone.error", milestoneId, result.status())
                             .withStyle(ChatFormatting.RED));
         }
         return 1;

@@ -6,6 +6,7 @@ import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.economy.TreasuryService;
+import com.valorcraft.veconomy.util.MessageService;
 import dev.architectury.event.EventResult;
 import dev.ftb.mods.ftbquests.events.CustomRewardEvent;
 import dev.ftb.mods.ftbquests.events.ObjectCompletedEvent;
@@ -14,7 +15,6 @@ import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.TeamData;
 import dev.ftb.mods.ftbquests.quest.reward.CustomReward;
 import net.minecraft.ChatFormatting;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.fml.ModList;
 
@@ -91,7 +91,7 @@ public final class FTBQuestsIntegration {
         TransactionResult result = EconomyCore.api().deposit(playerId, amountMinor, context);
 
         if (result.status() == TransactionResult.Status.SUCCESS) {
-            player.sendSystemMessage(Component.translatable(
+            player.sendSystemMessage(MessageService.message(player,
                     "notify.quest.reward", EconomyCore.formatter().format(amountMinor))
                     .withStyle(ChatFormatting.GREEN));
         }
@@ -165,7 +165,7 @@ public final class FTBQuestsIntegration {
         }
         ServerPlayer player = server.getPlayerList().getPlayer(member);
         if (player != null) {
-            player.sendSystemMessage(Component.translatable(
+            player.sendSystemMessage(MessageService.message(player,
                     "notify.quest.reward", EconomyCore.formatter().format(amount))
                     .withStyle(ChatFormatting.GREEN));
         }
