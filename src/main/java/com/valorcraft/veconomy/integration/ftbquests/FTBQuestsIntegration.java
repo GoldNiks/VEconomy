@@ -14,7 +14,6 @@ import dev.ftb.mods.ftbquests.quest.Chapter;
 import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.TeamData;
 import dev.ftb.mods.ftbquests.quest.reward.CustomReward;
-import net.minecraft.ChatFormatting;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.fml.ModList;
 
@@ -91,9 +90,9 @@ public final class FTBQuestsIntegration {
         TransactionResult result = EconomyCore.api().deposit(playerId, amountMinor, context);
 
         if (result.status() == TransactionResult.Status.SUCCESS) {
-            player.sendSystemMessage(MessageService.message(player,
-                    "notify.quest.reward", EconomyCore.formatter().format(amountMinor))
-                    .withStyle(ChatFormatting.GREEN));
+            player.sendSystemMessage(com.valorcraft.veconomy.ui.EconomyComponents.reward(
+                    MessageService.text(player, "notify.quest.reward"),
+                    EconomyCore.formatter().format(amountMinor)));
         }
         return EventResult.pass();
     }
@@ -165,9 +164,9 @@ public final class FTBQuestsIntegration {
         }
         ServerPlayer player = server.getPlayerList().getPlayer(member);
         if (player != null) {
-            player.sendSystemMessage(MessageService.message(player,
-                    "notify.quest.reward", EconomyCore.formatter().format(amount))
-                    .withStyle(ChatFormatting.GREEN));
+            player.sendSystemMessage(com.valorcraft.veconomy.ui.EconomyComponents.reward(
+                    MessageService.text(player, "notify.quest.reward"),
+                    EconomyCore.formatter().format(amount)));
         }
     }
 

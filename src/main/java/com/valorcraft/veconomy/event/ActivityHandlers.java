@@ -6,7 +6,7 @@ import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.config.EconomySettings.MilestoneReward;
 import com.valorcraft.veconomy.util.MessageService;
 import com.valorcraft.veconomy.util.ServerHolder;
-import net.minecraft.ChatFormatting;
+import com.valorcraft.veconomy.ui.EconomyComponents;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
@@ -197,9 +197,9 @@ public final class ActivityHandlers {
             List<MilestoneReward> granted = EconomyCore.milestones().checkPlayer(player.getUUID());
             if (settings.milestones.notify) {
                 for (MilestoneReward reward : granted) {
-                    player.sendSystemMessage(MessageService.message(player, "notify.milestone.reward",
-                            EconomyCore.formatter().format(reward.amountMinor()))
-                            .withStyle(ChatFormatting.GOLD));
+                    player.sendSystemMessage(EconomyComponents.reward(
+                            MessageService.text(player, "notify.milestone.reward"),
+                            EconomyCore.formatter().format(reward.amountMinor())));
                 }
             }
         }
@@ -217,9 +217,9 @@ public final class ActivityHandlers {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             Long amount = payments.get(player.getUUID());
             if (amount != null) {
-                player.sendSystemMessage(MessageService.message(player, "notify.weekly.reward",
-                        EconomyCore.formatter().format(amount))
-                        .withStyle(ChatFormatting.GOLD));
+                player.sendSystemMessage(EconomyComponents.reward(
+                        MessageService.text(player, "notify.weekly.reward"),
+                        EconomyCore.formatter().format(amount)));
             }
         }
     }

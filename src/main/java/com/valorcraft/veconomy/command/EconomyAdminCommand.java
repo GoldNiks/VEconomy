@@ -267,8 +267,8 @@ public final class EconomyAdminCommand {
         switch (result.status()) {
             case SUCCESS -> {
                 String verb = add ? "admin.balance.added" : "admin.balance.removed";
-                source.sendSuccess(() -> MessageService.message(source, verb, target.name(),
-                        EconomyCore.formatter().format(amount),
+                source.sendSuccess(() -> MessageService.message(source, verb,
+                        EconomyCore.formatter().format(amount), target.name(),
                         EconomyCore.formatter().format(EconomyCore.accounts().getBalance(target.uuid())))
                         .withStyle(ChatFormatting.GREEN), true);
                 broadcastAdminChange(source, add ? "notify.admin.added" : "notify.admin.removed",
@@ -281,7 +281,8 @@ public final class EconomyAdminCommand {
             case ACCOUNT_DISABLED -> source.sendFailure(
                     MessageService.message(source, "error.frozen").withStyle(ChatFormatting.RED));
             case NO_CHANGES -> source.sendSuccess(() ->
-                    MessageService.message(source, "admin.balance.none", target.name())
+                    MessageService.message(source, add ? "admin.balance.add.nochange"
+                            : "admin.balance.remove.nochange", target.name())
                             .withStyle(ChatFormatting.YELLOW), false);
             default -> source.sendFailure(
                     MessageService.message(source, "error.internal").withStyle(ChatFormatting.RED));
@@ -942,11 +943,13 @@ case NO_CHANGES -> source.sendSuccess(() ->
                     milestoneId, target.name()).withStyle(ChatFormatting.YELLOW), false);
             case BAD_CONFIG -> source.sendSuccess(() -> MessageService.message(source, "admin.milestone.check.badconfig",
                     milestoneId, target.name(),
-                    result.reasonKey() == null ? "admin.milestone.reason.badConfig" : result.reasonKey())
+                    MessageService.text(source, result.reasonKey() == null
+                            ? "admin.milestone.reason.badConfig" : result.reasonKey()))
                     .withStyle(ChatFormatting.RED), false);
             default -> source.sendSuccess(() -> MessageService.message(source, "admin.milestone.check.unavailable",
                     milestoneId, target.name(),
-                    result.reasonKey() == null ? "error.internal" : result.reasonKey())
+                    MessageService.text(source, result.reasonKey() == null
+                            ? "error.internal" : result.reasonKey()))
                     .withStyle(ChatFormatting.GRAY), false);
         }
         return 1;
@@ -1183,8 +1186,9 @@ case NO_CHANGES -> source.sendSuccess(() ->
             for (net.minecraft.server.level.ServerPlayer player : source.getServer().getPlayerList().getPlayers()) {
                 Long amount = payments.get(player.getUUID());
                 if (amount != null) {
-                    player.sendSystemMessage(MessageService.message(player, "notify.weekly.reward",
-                            EconomyCore.formatter().format(amount)).withStyle(ChatFormatting.GOLD));
+                    player.sendSystemMessage(com.valorcraft.veconomy.ui.EconomyComponents.reward(
+                            MessageService.text(player, "notify.weekly.reward"),
+                            EconomyCore.formatter().format(amount)));
                 }
             }
         }

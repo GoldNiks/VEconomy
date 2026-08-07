@@ -34,8 +34,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * Выбор языка: у игрока берётся {@code ServerPlayer#getLanguage()} (client
  * information), для консоли/не-игрока используется {@link #DEFAULT_LOCALE}.
  * Неизвестный язык и отсутствие ключа в запрошенном языке проваливаются на
- * {@link #DEFAULT_LOCALE}; если ключа нет и там — возвращается пустой текст
- * (сырой ключ игроку не показывается), в лог пишется WARN/ERROR.
+ * {@link #DEFAULT_LOCALE}; если ключа нет и там — возвращается нейтральный
+ * видимый текст (сырой ключ игроку не показывается), в лог пишется WARN/ERROR.
  * <p>
  * Форматирование: {@link String#format(Locale, String, Object...)} с
  * CSS-плейсхолдерами {@code %s}, {@code %d}, позиционными ({@code %1$s}),
@@ -139,6 +139,25 @@ public final class MessageService {
         return DEFAULT_LOCALE;
     }
 
+    // ---------------------------------------------------------------- test hooks
+
+    /** Видимый текст вместо пустой строки, если сообщение не найдено ни в одном языке. */
+    static final String MISSING_RU = "Не удалось отобразить сообщение.";
+    static final String MISSING_EN = "Unable to display the message.";
+
+    /**
+     * Заменить языковую таблицу временной (только для тестов). Не трогает ресурсы.
+     */
+    static void installTable(String locale, Map<String, String> table) {
+        LANGUAGES.put(locale, new ConcurrentHashMap<>(table));
+    }
+
+    /** Сбросить временные таблицы и кэш предупреждений (только для тестов). */
+    static void resetTables() {
+        LANGUAGES.clear();
+        WARNED_MISSING.clear();
+    }
+
     // ---------------------------------------------------------------- rendering
 
     /** Локализованное сообщение (MutableComponent со стилизуемым текстом). */
@@ -161,6 +180,11 @@ public final class MessageService {
         return plainText(locale(source), key, args);
     }
 
+    /** Текстовое сообщение на языке конкретного игрока. */
+    public static String text(ServerPlayer player, String key, Object... args) {
+        return plainText(locale(player), key, args);
+    }
+
     /** Текстовое сообщение для явной локали. Прочее: {@link #plainText}. */
     public static String text(String locale, String key, Object... args) {
         return plainText(locale, key, args);
@@ -176,7 +200,9 @@ public final class MessageService {
         String normalized = normalizeLocale(locale);
         String raw = lookup(normalized, key);
         if (raw == null) {
-            return "";
+            // Ключ не найден ни в выбранном языке, ни в ru_ru: игроку пустая строка
+            // не отправляется. Возвращаем понятный нейтральный текст по языку (фиг =).
+            return EN_LOCALE.equals(normalized) ? MISSING_EN : MISSING_RU;
         }
         Object[] flat = args == null ? new Object[0] : Arrays.stream(args)
                 .map(arg -> toFlatArg(arg, normalized)).toArray();

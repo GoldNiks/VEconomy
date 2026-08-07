@@ -3,8 +3,11 @@ package com.valorcraft.veconomy.util;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.LiteralContents;
 import net.minecraft.network.chat.contents.TranslatableContents;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -12,6 +15,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MessageServiceTest {
+
+    @AfterEach
+    void resetLocalizedTables() {
+        MessageService.resetTables();
+    }
 
     // ---------------------------------------------------------------- normalizeLocale
 
@@ -53,7 +61,15 @@ class MessageServiceTest {
 
     @Test
     void escapesPercentAndUsesNumericArgs() {
-        assertEquals("Баланс: ⛃100%", MessageService.text("ru_ru", "cmd.balance.other", "Steve", "⛃100%"));
+        assertEquals("Баланс игрока Steve: ⛃100%",
+                MessageService.text("ru_ru", "cmd.balance.other", "Steve", "⛃100%"));
+        assertEquals("История операций (страница 30 из 5)",
+                MessageService.text("ru_ru", "cmd.history.title", 30, 5));
+        MessageService.installTable("ru_ru", Map.of(
+                "tpl.percent", "Прогресс: %%",
+                "tpl.pos", "%2$d после %1$s"));
+        assertEquals("Прогресс: %", MessageService.text("ru_ru", "tpl.percent"));
+        assertEquals("7 после 5", MessageService.text("ru_ru", "tpl.pos", "5", 7));
     }
 
     @Test
@@ -68,13 +84,16 @@ class MessageServiceTest {
     }
 
     @Test
-    void missingKeyReturnsEmptyText() {
-        assertEquals("", MessageService.text("ru_ru", "no.such.key.anywhere"));
+    void missingKeyReturnsVisibleFallbackText() {
+        assertEquals("Не удалось отобразить сообщение.", MessageService.text("ru_ru", "no.such.key.anywhere"));
+        assertEquals("Unable to display the message.", MessageService.text("en_us", "no.such.key.anywhere"));
     }
 
     @Test
     void missingKeyInPrimaryFallsBackToRussian() {
-        assertEquals("Ваш баланс: ⛃5", MessageService.text("en_us", "cmd.balance.self", "⛃5"));
+        MessageService.installTable("en_us", Map.of("unrelated.key", "x"));
+        assertEquals("Ваш баланс: ⛃5",
+                MessageService.text("en_us", "cmd.balance.self", "⛃5"));
     }
 
     // ---------------------------------------------------------------- nested components
