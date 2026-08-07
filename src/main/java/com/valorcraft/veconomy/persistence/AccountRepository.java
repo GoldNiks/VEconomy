@@ -11,7 +11,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /** Репозиторий аккаунтов (таблица {@code accounts}). */
-public final class AccountRepository {
+public class AccountRepository {
 
     public Optional<AccountRow> find(Connection connection, UUID playerId) {
         try (var statement = connection.prepareStatement(

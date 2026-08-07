@@ -326,9 +326,10 @@ class EscrowServiceTest {
         UUID actor = UUID.randomUUID();
         TransactionContext settleCtx = new TransactionContext(TransactionType.ESCROW_CAPTURE, actor,
                 "расчёт лота", "settle-1", Map.of("auction", "auction-42"));
-        assertTrue(db.escrowService.settleMoney("sale-1",
-                List.of(new EscrowCredit(buyer, 950, "seller"), new EscrowCredit(treasury, 50, "commission")),
-                settleCtx).isSuccess());
+        List<EscrowCredit> credits = List.of(
+                new EscrowCredit(buyer, 950, "seller"), new EscrowCredit(treasury, 50, "commission"));
+        String expectedHash = EscrowService.settlementHash(credits);
+        assertTrue(db.escrowService.settleMoney("sale-1", credits, settleCtx).isSuccess());
 
         var buyerLeg = db.ledger.history(buyer, 1, 100).stream()
                 .filter(row -> row.type() == TransactionType.ESCROW_CAPTURE).findFirst().orElseThrow();
@@ -337,6 +338,7 @@ class EscrowServiceTest {
         assertEquals("расчёт лота", buyerLeg.reason());
         assertEquals("seller", buyerLeg.metadata().get("role"));
         assertEquals("sale-1", buyerLeg.metadata().get("referenceId"));
+        assertEquals(expectedHash, buyerLeg.metadata().get("settlementHash"));
         assertEquals("auction-42", buyerLeg.metadata().get("auction"));
         assertTrue(buyerLeg.idempotencyKey().startsWith("sale-1|"), "ключ ноги привязан к расчёту");
 
@@ -344,6 +346,8 @@ class EscrowServiceTest {
                 .filter(row -> row.type() == TransactionType.FEE).findFirst().orElseThrow();
         assertEquals(50, feeLeg.amountMinor());
         assertEquals("commission", feeLeg.metadata().get("role"));
+        assertEquals("sale-1", feeLeg.metadata().get("referenceId"));
+        assertEquals(expectedHash, feeLeg.metadata().get("settlementHash"));
         assertEquals(actor, feeLeg.actorUuid());
         assertEquals("расчёт лота", feeLeg.reason());
         assertTrue(feeLeg.idempotencyKey().startsWith("sale-1|"));
@@ -399,6 +403,67 @@ class EscrowServiceTest {
             assertTrue(release.isSuccess());
             assertEquals(1300, small.accountService.getBalance(accountOwner));
             assertEquals(0, small.escrowService.sumReserved());
+        }
+    }
+
+    @Test
+    void releaseFaultAfterTransitionRollsBackAndKeepsEscrowReserved() throws Exception {
+        Path dir = Files.createTempDirectory("veconomy-release-fault");
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(dir.resolve("test.db"), EconomySettings.defaults());
+        FaultyAccountRepository accounts = new FaultyAccountRepository();
+        TransactionRepository transactions = new TransactionRepository();
+        EscrowRepository escrowRepo = new EscrowRepository();
+        LedgerService ledger = new LedgerService(manager, transactions);
+        AccountService accountService = new AccountService(manager, accounts, transactions,
+                ledger, null, EconomySettings.defaults());
+        EscrowService service = new EscrowService(manager, accounts, escrowRepo,
+                accountService, ledger, EconomySettings.defaults());
+        UUID accountOwner = UUID.randomUUID();
+        try {
+            accountService.deposit(accountOwner, 1000, ctx(TransactionType.ADMIN_DEPOSIT, "старт"));
+            assertTrue(service.reserveMoney(accountOwner, 400, "lot-fault",
+                    ctx(TransactionType.ESCROW_RESERVE, "лот")).isSuccess());
+            assertEquals(600, accountService.getBalance(accountOwner));
+
+            // Проигранный optimistic-lock во время release: updateBalance возвращает false.
+            accounts.failNextBalanceUpdate();
+            EscrowResult failed = service.releaseMoney("lot-fault",
+                    ctx(TransactionType.ESCROW_RELEASE, "отмена"));
+            assertEquals(EscrowResult.Status.DATABASE_ERROR, failed.status());
+            // Вся транзакция откатилась: escrow всё ещё RESERVED, деньги владельцу не начислены.
+            assertEquals(EscrowState.RESERVED, service.findEscrow("lot-fault").snapshot().state());
+            assertEquals(600, accountService.getBalance(accountOwner));
+            assertEquals(400, service.sumReserved());
+
+            // Повторный корректный release возвращает деньги ровно один раз.
+            assertTrue(service.releaseMoney("lot-fault",
+                    ctx(TransactionType.ESCROW_RELEASE, "повтор")).isSuccess());
+            assertEquals(1000, accountService.getBalance(accountOwner));
+            assertEquals(0, service.sumReserved());
+            assertEquals(EscrowState.RELEASED, service.findEscrow("lot-fault").snapshot().state());
+        } finally {
+            manager.close();
+        }
+    }
+
+    /** Аккаунт-репозиторий с инъекцией сбоя: следующий {@code updateBalance} возвращает false
+     *  (имитация проигранного optimistic-lock). */
+    private static final class FaultyAccountRepository extends AccountRepository {
+        private final java.util.concurrent.atomic.AtomicInteger failNext = new java.util.concurrent.atomic.AtomicInteger();
+
+        void failNextBalanceUpdate() {
+            failNext.incrementAndGet();
+        }
+
+        @Override
+        public boolean updateBalance(java.sql.Connection connection, UUID playerId, long newBalance,
+                                     int expectedVersion, long now) {
+            if (failNext.get() > 0) {
+                failNext.decrementAndGet();
+                return false;
+            }
+            return super.updateBalance(connection, playerId, newBalance, expectedVersion, now);
         }
     }
 

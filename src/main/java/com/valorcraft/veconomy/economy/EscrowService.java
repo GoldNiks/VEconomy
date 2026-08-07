@@ -44,6 +44,19 @@ import static com.valorcraft.veconomy.api.EscrowResult.success;
  */
 public final class EscrowService {
 
+    /**
+     * Сигнал прервать транзакцию возврата средств: после перехода {@code RESERVED→RELEASED}
+     * любая ошибка ({@code accounts.updateBalance}, ledger) обязана откатить ВСЮ транзакцию,
+     * иначе зарезервированные деньги пропадут (escrow RELEASED, баланс не увеличен).
+     */
+    private static final class ReleaseAbort extends RuntimeException {
+        final EscrowResult.Status status;
+
+        ReleaseAbort(EscrowResult.Status status) {
+            this.status = status;
+        }
+    }
+
     /** Сигнал прервать транзакцию расчёта при сбое ноги (откат всех частей). */
     private static final class SettleAbort extends RuntimeException {
         final EscrowResult.Status status;
@@ -106,7 +119,31 @@ public final class EscrowService {
                 long newBalance = owner.balanceMinor() - amount;
                 long now = System.currentTimeMillis();
                 if (!accounts.updateBalance(connection, ownerId, newBalance, owner.version(), now)) {
-                    return failed(EscrowResult.Status.DATABASE_ERROR);
+                    // Проигранный optimistic-lock: параллельная операция уже изменила строку
+                    // владельца. Перечитываем escrow ТЕКУЩИМ чтением (в MySQL — FOR UPDATE):
+                    // если параллельный reserve того же referenceId уже создал запись — это
+                    // идемпотентный повтор, а не ошибка БД.
+                    EscrowRow raced = escrow.find(connection, referenceId, database.dialect())
+                            .orElse(null);
+                    if (raced != null) {
+                        return classifyRepeat(raced, ownerId, amount);
+                    }
+                    // Строки нет — гонка с другой операцией того же владельца (перевод/начисление):
+                    // повторяем списание со свежей версией и балансом.
+                    AccountRow fresh = accounts.find(connection, ownerId).orElse(null);
+                    if (fresh == null) {
+                        return failed(EscrowResult.Status.NOT_FOUND);
+                    }
+                    if (fresh.status() == AccountStatus.FROZEN) {
+                        return failed(EscrowResult.Status.ACCOUNT_DISABLED);
+                    }
+                    if (fresh.balanceMinor() < amount) {
+                        return failed(EscrowResult.Status.INSUFFICIENT_FUNDS);
+                    }
+                    newBalance = fresh.balanceMinor() - amount;
+                    if (!accounts.updateBalance(connection, ownerId, newBalance, fresh.version(), now)) {
+                        return failed(EscrowResult.Status.DATABASE_ERROR);
+                    }
                 }
                 escrow.insert(connection, new EscrowRow(referenceId, ownerId, amount,
                         EscrowState.RESERVED, now, now, context.metadata()));
@@ -260,6 +297,7 @@ public final class EscrowService {
         }
         Map<String, String> metadata = new java.util.HashMap<>(context.metadata());
         metadata.put("referenceId", referenceId);
+        metadata.put("settlementHash", settlementHash);
         if (credit.role() != null && !credit.role().isBlank()) {
             metadata.put("role", credit.role());
         }
@@ -320,7 +358,11 @@ public final class EscrowService {
                 context);
     }
 
-        /** Вернуть зарезервированные средства владельцу. Повтор уже возвращённой записи — идемпотентный. */
+    /**
+     * Вернуть зарезервированные средства владельцу. Повтор уже возвращённой записи — идемпотентный.
+     * Переход {@code RESERVED→RELEASED}, зачисление владельцу и ledger-запись — одна транзакция:
+     * любой сбой после перехода откатывает её целиком (escrow остаётся {@code RESERVED}).
+     */
     public EscrowResult releaseMoney(String referenceId, TransactionContext context) {
         if (referenceId == null || referenceId.isBlank()) {
             return failed(EscrowResult.Status.INVALID_AMOUNT);
@@ -360,8 +402,10 @@ public final class EscrowService {
                             ? failed(EscrowResult.Status.ALREADY_RELEASED)
                             : failed(EscrowResult.Status.WRONG_STATE);
                 }
+                // После перехода RESERVED→RELEASED сбой НЕ должен коммититься: бросаем abort,
+                // и вся транзакция откатывается (escrow возвращается в RESERVED).
                 if (!accounts.updateBalance(connection, reservation.ownerUuid(), newBalance, owner.version(), now)) {
-                    return failed(EscrowResult.Status.DATABASE_ERROR);
+                    throw new ReleaseAbort(EscrowResult.Status.DATABASE_ERROR);
                 }
                 ledger.record(connection, new TransactionRow(
                         null, TransactionType.ESCROW_RELEASE, null, reservation.ownerUuid(),
@@ -369,6 +413,8 @@ public final class EscrowService {
                         context.idempotencyKey(), context.metadata(), null, newBalance));
                 return success(reservation.amountMinor(), referenceId);
             });
+        } catch (ReleaseAbort abort) {
+            return failed(abort.status);
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка возврата эскроу {}", referenceId, e);
             return failed(EscrowResult.Status.DATABASE_ERROR);

@@ -295,6 +295,9 @@ class MySqlIntegrationTest {
             CountDownLatch ready = new CountDownLatch(threads);
             CountDownLatch start = new CountDownLatch(1);
             AtomicInteger successes = new AtomicInteger();
+            AtomicInteger alreadyReserved = new AtomicInteger();
+            AtomicInteger databaseErrors = new AtomicInteger();
+            AtomicInteger conflicts = new AtomicInteger();
             ExecutorService pool = Executors.newFixedThreadPool(threads);
             for (int t = 0; t < threads; t++) {
                 pool.execute(() -> {
@@ -307,8 +310,12 @@ class MySqlIntegrationTest {
                     }
                     EscrowResult result = stack.escrowService.reserveMoney(owner, 1000, "reserve-race-1",
                             TransactionContext.of(TransactionType.ESCROW_RESERVE, null, "лот"));
-                    if (result.status() == EscrowResult.Status.SUCCESS) {
-                        successes.incrementAndGet();
+                    switch (result.status()) {
+                        case SUCCESS -> successes.incrementAndGet();
+                        case ALREADY_RESERVED -> alreadyReserved.incrementAndGet();
+                        case DATABASE_ERROR -> databaseErrors.incrementAndGet();
+                        case CONFLICT -> conflicts.incrementAndGet();
+                        default -> { }
                     }
                 });
             }
@@ -318,6 +325,10 @@ class MySqlIntegrationTest {
             assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS));
 
             assertEquals(1, successes.get(), "ровно один поток резервирует средства");
+            assertEquals(threads - 1, alreadyReserved.get(),
+                    "проигравшие optimistic-lock перечитывают escrow и возвращают ALREADY_RESERVED");
+            assertEquals(0, databaseErrors.get(), "повтор того же резервирования не должен давать DATABASE_ERROR");
+            assertEquals(0, conflicts.get(), "тот же владелец и сумма — не CONFLICT");
             assertEquals(4000, stack.accountService.getBalance(owner), "баланс списан ровно один раз");
             long reserveRows = manager.inTransaction(c ->
                     countTypeForSource(c, TransactionType.ESCROW_RESERVE.name(), owner.toString()));
