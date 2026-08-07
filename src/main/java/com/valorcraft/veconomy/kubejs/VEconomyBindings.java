@@ -2,6 +2,7 @@ package com.valorcraft.veconomy.kubejs;
 
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.api.EscrowApi;
+import com.valorcraft.veconomy.api.EscrowLookupResult;
 import com.valorcraft.veconomy.api.EscrowResult;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
@@ -184,12 +185,15 @@ public final class VEconomyBindings {
         if (!EconomyCore.isStarted()) {
             return null;
         }
-        return escrow().findEscrow(referenceId)
-                .map(s -> s.referenceId() + "|" + s.state() + "|" + s.amount()
-                        + "|" + s.settlement().stream()
-                        .map(c -> c.recipientId() + ":" + c.amount() + ":" + c.role())
-                        .reduce("", (a, b) -> a.isEmpty() ? b : a + "," + b))
-                .orElse(null);
+        EscrowLookupResult result = escrow().findEscrow(referenceId);
+        if (result.status() != EscrowLookupResult.Status.FOUND) {
+            return null;
+        }
+        var snapshot = result.snapshot();
+        return snapshot.referenceId() + "|" + snapshot.state() + "|" + snapshot.amount()
+                + "|" + snapshot.settlement().stream()
+                .map(c -> c.recipientId() + ":" + c.amount() + ":" + c.role())
+                .reduce("", (a, b) -> a.isEmpty() ? b : a + "," + b);
     }
 
     /** Успешно ли закончился статус операции (SUCCESS). */

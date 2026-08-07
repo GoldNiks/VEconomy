@@ -4,8 +4,8 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.EconomyApi;
 import com.valorcraft.veconomy.api.EscrowApi;
 import com.valorcraft.veconomy.api.EscrowCredit;
+import com.valorcraft.veconomy.api.EscrowLookupResult;
 import com.valorcraft.veconomy.api.EscrowResult;
-import com.valorcraft.veconomy.api.EscrowSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.activity.ActivityService;
@@ -165,7 +165,7 @@ public final class EconomyCore {
             }
 
             @Override
-            public Optional<EscrowSnapshot> findEscrow(String referenceId) {
+            public EscrowLookupResult findEscrow(String referenceId) {
                 return escrowService.findEscrow(referenceId);
             }
 

@@ -3,7 +3,9 @@ package com.valorcraft.veconomy.persistence;
 import com.valorcraft.veconomy.audit.AuditEventRow;
 import com.valorcraft.veconomy.audit.AuditRepository;
 import com.valorcraft.veconomy.api.EscrowCredit;
+import com.valorcraft.veconomy.api.EscrowLookupResult;
 import com.valorcraft.veconomy.api.EscrowResult;
+import com.valorcraft.veconomy.api.EscrowState;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.config.EconomySettings;
@@ -277,6 +279,134 @@ class MySqlIntegrationTest {
         }
     }
 
+    @Test
+    void concurrentReserveOnSameReferenceIdExactlyOnce() throws Exception {
+        EconomySettings settings = mysqlSettings();
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(Path.of("mysql-it-reserve"), settings);
+        try {
+            EconomyStack stack = new EconomyStack(manager, settings);
+            UUID owner = UUID.randomUUID();
+            stack.accountService.deposit(owner, 5000,
+                    TransactionContext.of(TransactionType.ADMIN_DEPOSIT, null, "сед"));
+            assertEquals(5000, stack.accountService.getBalance(owner));
+
+            int threads = 8;
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger successes = new AtomicInteger();
+            ExecutorService pool = Executors.newFixedThreadPool(threads);
+            for (int t = 0; t < threads; t++) {
+                pool.execute(() -> {
+                    ready.countDown();
+                    try {
+                        start.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    EscrowResult result = stack.escrowService.reserveMoney(owner, 1000, "reserve-race-1",
+                            TransactionContext.of(TransactionType.ESCROW_RESERVE, null, "лот"));
+                    if (result.status() == EscrowResult.Status.SUCCESS) {
+                        successes.incrementAndGet();
+                    }
+                });
+            }
+            assertTrue(ready.await(30, TimeUnit.SECONDS));
+            start.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS));
+
+            assertEquals(1, successes.get(), "ровно один поток резервирует средства");
+            assertEquals(4000, stack.accountService.getBalance(owner), "баланс списан ровно один раз");
+            long reserveRows = manager.inTransaction(c ->
+                    countTypeForSource(c, TransactionType.ESCROW_RESERVE.name(), owner.toString()));
+            assertEquals(1, reserveRows, "ровно одна ledger-запись резервирования");
+            EscrowLookupResult lookup = stack.escrowService.findEscrow("reserve-race-1");
+            assertEquals(EscrowLookupResult.Status.FOUND, lookup.status());
+            assertEquals(EscrowState.RESERVED, lookup.snapshot().state());
+            assertEquals(1000, lookup.snapshot().amount());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void settleVsReleaseRaceSingleFinalTransition() throws Exception {
+        EconomySettings settings = mysqlSettings();
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(Path.of("mysql-it-settle-release"), settings);
+        try {
+            EconomyStack stack = new EconomyStack(manager, settings);
+            UUID owner = UUID.randomUUID();
+            UUID buyer = UUID.randomUUID();
+            UUID treasury = stack.escrowService.treasuryUuid();
+            stack.accountService.deposit(owner, 5000,
+                    TransactionContext.of(TransactionType.ADMIN_DEPOSIT, null, "сед"));
+            EscrowResult reserve = stack.escrowService.reserveMoney(owner, 1000, "race-2",
+                    TransactionContext.of(TransactionType.ESCROW_RESERVE, null, "лот"));
+            assertTrue(reserve.isSuccess());
+            List<EscrowCredit> credits = List.of(
+                    new EscrowCredit(buyer, 950, "seller"),
+                    new EscrowCredit(treasury, 50, "commission"));
+
+            int threads = 8;
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger settleSuccess = new AtomicInteger();
+            AtomicInteger releaseSuccess = new AtomicInteger();
+            ExecutorService pool = Executors.newFixedThreadPool(threads);
+            for (int t = 0; t < threads; t++) {
+                boolean doSettle = t % 2 == 0;
+                pool.execute(() -> {
+                    ready.countDown();
+                    try {
+                        start.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    EscrowResult result = doSettle
+                            ? stack.escrowService.settleMoney("race-2", credits,
+                                    TransactionContext.of(TransactionType.ESCROW_CAPTURE, null, "расчёт"))
+                            : stack.escrowService.releaseMoney("race-2",
+                                    TransactionContext.of(TransactionType.ESCROW_RELEASE, null, "отмена"));
+                    if (result.status() == EscrowResult.Status.SUCCESS) {
+                        if (doSettle) {
+                            settleSuccess.incrementAndGet();
+                        } else {
+                            releaseSuccess.incrementAndGet();
+                        }
+                    }
+                });
+            }
+            assertTrue(ready.await(30, TimeUnit.SECONDS));
+            start.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS));
+
+            assertEquals(1, settleSuccess.get() + releaseSuccess.get(),
+                    "ровно один финальный переход (settle ИЛИ release)");
+            EscrowLookupResult finalLookup = stack.escrowService.findEscrow("race-2");
+            assertEquals(EscrowLookupResult.Status.FOUND, finalLookup.status());
+            if (settleSuccess.get() == 1) {
+                assertEquals(EscrowState.CAPTURED, finalLookup.snapshot().state());
+                assertEquals(950, stack.accountService.getBalance(buyer),
+                        "покупатель получает долю ровно один раз");
+                assertEquals(50, stack.accountService.getBalance(treasury));
+                assertEquals(4000, stack.accountService.getBalance(owner));
+            } else {
+                assertEquals(EscrowState.RELEASED, finalLookup.snapshot().state());
+                assertEquals(5000, stack.accountService.getBalance(owner),
+                        "владелец получает все средства обратно ровно один раз");
+                assertEquals(0, stack.accountService.getBalance(buyer));
+                assertEquals(0, stack.accountService.getBalance(treasury));
+            }
+        } finally {
+            manager.close();
+        }
+    }
+
     // ------------------------------------------------------------ helpers
 
     private static boolean columnExists(Connection c, String table, String column) throws SQLException {
@@ -324,6 +454,20 @@ class MySqlIntegrationTest {
             hex.append(Character.forDigit(b & 0xF, 16));
         }
         return hex.toString();
+    }
+
+    /** Число ledger-записей заданного типа для конкретного источника (owner). */
+    private static long countTypeForSource(Connection c, String type, String sourceUuid) {
+        try (var statement = c.prepareStatement(
+                "SELECT COUNT(*) FROM transactions WHERE transaction_type = ? AND source_uuid = ?")) {
+            statement.setString(1, type);
+            statement.setString(2, sourceUuid);
+            try (ResultSet rs = statement.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка подсчёта ledger-записей", e);
+        }
     }
 
     /** Минимальный стек сервисов (как в TestDb) поверх управляемого соединения MySQL. */

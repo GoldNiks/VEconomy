@@ -25,6 +25,8 @@ public record EscrowResult(Status status, long reservedAmount, String referenceI
         ALREADY_RESERVED,
         /** Повторный settle с тем же распределением — идемпотентный повтор. */
         ALREADY_SETTLED,
+        /** Повторный release уже возвращённой записи — идемпотентный повтор. */
+        ALREADY_RELEASED,
         /** Псевдоним DUPLICATE устарел, см. {@link #ALREADY_RESERVED}/{@link #CONFLICT}. */
         DUPLICATE,
         /** Аккаунт заморожен. */
@@ -39,10 +41,10 @@ public record EscrowResult(Status status, long reservedAmount, String referenceI
         return status == Status.SUCCESS;
     }
 
-    /** Идемпотентный повтор (reserve/settle) — «совместимый» успех: состояние уже таким и было. */
+    /** Идемпотентный повтор (reserve/settle/release) — «совместимый» успех: состояние уже таким и было. */
     public boolean isSuccessOrIdempotent() {
         return switch (status) {
-            case SUCCESS, ALREADY_RESERVED, ALREADY_SETTLED -> true;
+            case SUCCESS, ALREADY_RESERVED, ALREADY_SETTLED, ALREADY_RELEASED -> true;
             default -> false;
         };
     }

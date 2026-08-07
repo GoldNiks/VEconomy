@@ -2,16 +2,25 @@ package com.valorcraft.veconomy.economy;
 
 import com.valorcraft.veconomy.TestDb;
 import com.valorcraft.veconomy.api.EscrowCredit;
+import com.valorcraft.veconomy.api.EscrowLookupResult;
 import com.valorcraft.veconomy.api.EscrowResult;
 import com.valorcraft.veconomy.api.EscrowSnapshot;
 import com.valorcraft.veconomy.api.EscrowState;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.config.EconomySettings;
+import com.valorcraft.veconomy.persistence.AccountRepository;
+import com.valorcraft.veconomy.persistence.DatabaseManager;
+import com.valorcraft.veconomy.persistence.EscrowRepository;
+import com.valorcraft.veconomy.persistence.TransactionRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -165,7 +174,9 @@ class EscrowServiceTest {
     @Test
     void findEscrowReturnsSnapshotWithSettlement() {
         db.escrowService.reserveMoney(owner, 1000, "sale-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
-        EscrowSnapshot reserved = db.escrowService.findEscrow("sale-1").orElseThrow();
+        EscrowLookupResult reservedLookup = db.escrowService.findEscrow("sale-1");
+        assertEquals(EscrowLookupResult.Status.FOUND, reservedLookup.status());
+        EscrowSnapshot reserved = reservedLookup.snapshot();
         assertEquals(EscrowState.RESERVED, reserved.state());
         assertEquals(1000, reserved.amount());
         assertEquals(0, reserved.settlement().size());
@@ -175,10 +186,190 @@ class EscrowServiceTest {
                 List.of(new EscrowCredit(buyer, 950, "seller"), new EscrowCredit(treasury, 50, "commission")),
                 ctx(TransactionType.ESCROW_CAPTURE, "расчёт"));
         assertTrue(result.isSuccess());
-        EscrowSnapshot settled = db.escrowService.findEscrow("sale-1").orElseThrow();
+        EscrowLookupResult settledLookup = db.escrowService.findEscrow("sale-1");
+        assertEquals(EscrowLookupResult.Status.FOUND, settledLookup.status());
+        EscrowSnapshot settled = settledLookup.snapshot();
         assertEquals(EscrowState.CAPTURED, settled.state());
         assertEquals(2, settled.settlement().size());
         assertEquals(1000, settled.settlement().stream().mapToLong(EscrowCredit::amount).sum());
+    }
+
+    @Test
+    void findEscrowMissingReferenceIsNotFound() {
+        assertEquals(EscrowLookupResult.Status.NOT_FOUND, db.escrowService.findEscrow("нет-такой").status());
+        assertEquals(EscrowLookupResult.Status.NOT_FOUND, db.escrowService.findEscrow("  ").status());
+        assertEquals(EscrowLookupResult.Status.NOT_FOUND, db.escrowService.findEscrow(null).status());
+    }
+
+    @Test
+    void findEscrowAfterDatabaseFailureIsDatabaseError() {
+        assertTrue(db.escrowService.reserveMoney(owner, 100, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "лот")).isSuccess());
+        db.close();
+        assertEquals(EscrowLookupResult.Status.DATABASE_ERROR, db.escrowService.findEscrow("lot-1").status());
+    }
+
+    @Test
+    void lookupRecoversAfterTransientDatabaseFailure() throws Exception {
+        Path dir = Files.createTempDirectory("veconomy-reopen");
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(dir.resolve("test.db"), EconomySettings.defaults());
+        AccountRepository accounts = new AccountRepository();
+        TransactionRepository transactions = new TransactionRepository();
+        EscrowRepository escrowRepo = new EscrowRepository();
+        LedgerService ledger = new LedgerService(manager, transactions);
+        AccountService accountService = new AccountService(manager, accounts, transactions,
+                ledger, null, EconomySettings.defaults());
+        EscrowService service = new EscrowService(manager, accounts, escrowRepo,
+                accountService, ledger, EconomySettings.defaults());
+        UUID accountOwner = UUID.randomUUID();
+        try {
+            accountService.deposit(accountOwner, 1000, ctx(TransactionType.ADMIN_DEPOSIT, "старт"));
+            assertTrue(service.reserveMoney(accountOwner, 100, "lot-recover",
+                    ctx(TransactionType.ESCROW_RESERVE, "лот")).isSuccess());
+
+            manager.close();
+            assertEquals(EscrowLookupResult.Status.DATABASE_ERROR,
+                    service.findEscrow("lot-recover").status(),
+                    "временная ошибка чтения — явный DATABASE_ERROR, а не «записи нет»");
+
+            manager.open(dir.resolve("test.db"), EconomySettings.defaults());
+            EscrowLookupResult recovered = service.findEscrow("lot-recover");
+            assertEquals(EscrowLookupResult.Status.FOUND, recovered.status(),
+                    "после восстановления соединения чтение снова работает");
+            assertEquals(EscrowState.RESERVED, recovered.snapshot().state());
+            assertEquals(100, recovered.snapshot().amount());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void captureToDifferentRecipientAfterCaptureConflicts() {
+        db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        assertTrue(db.escrowService.captureMoney("lot-1", buyer, ctx(TransactionType.ESCROW_CAPTURE, "покупка")).isSuccess());
+        UUID other = UUID.randomUUID();
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.captureMoney("lot-1", other, ctx(TransactionType.ESCROW_CAPTURE, "другой")).status());
+        assertEquals(400, db.accountService.getBalance(buyer));
+        assertEquals(0, db.accountService.getBalance(other));
+    }
+
+    @Test
+    void captureAfterSplitSettleConflicts() {
+        db.escrowService.reserveMoney(owner, 1000, "sale-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        UUID treasury = EscrowService.treasuryUuid();
+        assertTrue(db.escrowService.settleMoney("sale-1",
+                List.of(new EscrowCredit(buyer, 950, "seller"), new EscrowCredit(treasury, 50, "commission")),
+                ctx(TransactionType.ESCROW_CAPTURE, "расчёт")).isSuccess());
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.captureMoney("sale-1", buyer, ctx(TransactionType.ESCROW_CAPTURE, "после сплита")).status());
+        assertEquals(950, db.accountService.getBalance(buyer));
+    }
+
+    @Test
+    void settleAfterCaptureWithDifferentDistributionConflicts() {
+        db.escrowService.reserveMoney(owner, 1000, "sale-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        assertTrue(db.escrowService.captureMoney("sale-1", buyer, ctx(TransactionType.ESCROW_CAPTURE, "покупка")).isSuccess());
+        UUID treasury = EscrowService.treasuryUuid();
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.settleMoney("sale-1",
+                        List.of(new EscrowCredit(buyer, 950, "seller"), new EscrowCredit(treasury, 50, "commission")),
+                        ctx(TransactionType.ESCROW_CAPTURE, "другой расчёт")).status());
+        assertEquals(1000, db.accountService.getBalance(buyer));
+        assertEquals(0, db.accountService.getBalance(treasury));
+    }
+
+    @Test
+    void reserveAfterCaptureIsSettledIdempotent() {
+        db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        assertTrue(db.escrowService.captureMoney("lot-1", buyer, ctx(TransactionType.ESCROW_CAPTURE, "покупка")).isSuccess());
+        assertEquals(EscrowResult.Status.ALREADY_SETTLED,
+                db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "повтор")).status());
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.reserveMoney(owner, 500, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "другая сумма")).status());
+        assertEquals(600, db.accountService.getBalance(owner));
+    }
+
+    @Test
+    void reserveAfterReleaseIsReleasedIdempotent() {
+        db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        assertTrue(db.escrowService.releaseMoney("lot-1", ctx(TransactionType.ESCROW_RELEASE, "отмена")).isSuccess());
+        assertEquals(EscrowResult.Status.ALREADY_RELEASED,
+                db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "повтор")).status());
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.reserveMoney(owner, 500, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "другая сумма")).status());
+        assertEquals(1000, db.accountService.getBalance(owner));
+    }
+
+    @Test
+    void repeatedReleaseIsIdempotent() {
+        db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        assertTrue(db.escrowService.releaseMoney("lot-1", ctx(TransactionType.ESCROW_RELEASE, "отмена")).isSuccess());
+        EscrowResult second = db.escrowService.releaseMoney("lot-1", ctx(TransactionType.ESCROW_RELEASE, "повтор"));
+        assertEquals(EscrowResult.Status.ALREADY_RELEASED, second.status());
+        assertEquals(1000, db.accountService.getBalance(owner), "повтор не возвращает деньги повторно");
+    }
+
+    @Test
+    void settleAfterReleaseRejected() {
+        db.escrowService.reserveMoney(owner, 400, "lot-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        db.escrowService.releaseMoney("lot-1", ctx(TransactionType.ESCROW_RELEASE, "отмена"));
+        assertEquals(EscrowResult.Status.WRONG_STATE,
+                db.escrowService.settleMoney("lot-1", List.of(new EscrowCredit(buyer, 400, "seller")),
+                        ctx(TransactionType.ESCROW_CAPTURE, "расчёт")).status());
+    }
+
+    @Test
+    void settleLegsKeepContextAndMarkCommissionAsFee() {
+        db.escrowService.reserveMoney(owner, 1000, "sale-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        UUID treasury = EscrowService.treasuryUuid();
+        UUID actor = UUID.randomUUID();
+        TransactionContext settleCtx = new TransactionContext(TransactionType.ESCROW_CAPTURE, actor,
+                "расчёт лота", "settle-1", Map.of("auction", "auction-42"));
+        assertTrue(db.escrowService.settleMoney("sale-1",
+                List.of(new EscrowCredit(buyer, 950, "seller"), new EscrowCredit(treasury, 50, "commission")),
+                settleCtx).isSuccess());
+
+        var buyerLeg = db.ledger.history(buyer, 1, 100).stream()
+                .filter(row -> row.type() == TransactionType.ESCROW_CAPTURE).findFirst().orElseThrow();
+        assertEquals(950, buyerLeg.amountMinor());
+        assertEquals(actor, buyerLeg.actorUuid());
+        assertEquals("расчёт лота", buyerLeg.reason());
+        assertEquals("seller", buyerLeg.metadata().get("role"));
+        assertEquals("sale-1", buyerLeg.metadata().get("referenceId"));
+        assertEquals("auction-42", buyerLeg.metadata().get("auction"));
+        assertTrue(buyerLeg.idempotencyKey().startsWith("sale-1|"), "ключ ноги привязан к расчёту");
+
+        var feeLeg = db.ledger.history(treasury, 1, 100).stream()
+                .filter(row -> row.type() == TransactionType.FEE).findFirst().orElseThrow();
+        assertEquals(50, feeLeg.amountMinor());
+        assertEquals("commission", feeLeg.metadata().get("role"));
+        assertEquals(actor, feeLeg.actorUuid());
+        assertEquals("расчёт лота", feeLeg.reason());
+        assertTrue(feeLeg.idempotencyKey().startsWith("sale-1|"));
+    }
+
+    @Test
+    void duplicateLegsGetDistinctStableIdempotencyKeys() {
+        db.escrowService.reserveMoney(owner, 100, "dupe-1", ctx(TransactionType.ESCROW_RESERVE, "лот"));
+        UUID treasury = EscrowService.treasuryUuid();
+        // Две одинаковые доли одному получателю (recipient+role+amount совпадают) —
+        // без канонического порядкового номера их ключи пересеклись бы.
+        assertTrue(db.escrowService.settleMoney("dupe-1",
+                List.of(new EscrowCredit(treasury, 50, "share"), new EscrowCredit(treasury, 50, "share")),
+                ctx(TransactionType.ESCROW_CAPTURE, "расчёт")).isSuccess());
+        List<com.valorcraft.veconomy.persistence.TransactionRow> legs = db.ledger.history(treasury, 1, 100).stream()
+                .filter(row -> row.type() == TransactionType.ESCROW_CAPTURE || row.type() == TransactionType.FEE)
+                .toList();
+        assertEquals(2, legs.size());
+        String ordinalA = legs.get(0).idempotencyKey().split("\\|")[5];
+        String ordinalB = legs.get(1).idempotencyKey().split("\\|")[5];
+        assertTrue(!ordinalA.equals(ordinalB),
+                "дубли-доли получают разные канонические порядковые номера");
+        assertEquals(java.util.Set.of("0", "1"), java.util.Set.of(ordinalA, ordinalB),
+                "порядковые номера дублей — 0 и 1 (канонический порядок)");
+        assertTrue(!legs.get(0).idempotencyKey().equals(legs.get(1).idempotencyKey()),
+                "ключи дублей-долей не пересекаются");
     }
 
     @Test
@@ -187,5 +378,38 @@ class EscrowServiceTest {
         db.database.inTransaction(connection ->
                 db.escrow.find(connection, "lot-1")).ifPresent(row ->
                 assertEquals(EscrowState.RESERVED, row.state()));
+    }
+
+    @Test
+    void releaseIgnoresMaximumBalanceAndReturnsOwnedFunds() {
+        EconomySettings lowLimit = withMaximumBalance(1000);
+        try (TestDb small = TestDb.create(lowLimit)) {
+            UUID accountOwner = UUID.randomUUID();
+            small.accountService.deposit(accountOwner, 800, ctx(TransactionType.ADMIN_DEPOSIT, "старт"));
+            assertTrue(small.escrowService.reserveMoney(accountOwner, 300, "lot-limit",
+                    ctx(TransactionType.ESCROW_RESERVE, "лот")).isSuccess());
+            assertEquals(500, small.accountService.getBalance(accountOwner));
+            // Пока средства зарезервированы, начисления заполняют баланс ровно до лимита.
+            assertTrue(small.accountService.deposit(accountOwner, 500,
+                    ctx(TransactionType.ADMIN_DEPOSIT, "заполнение")).isSuccess());
+            assertEquals(1000, small.accountService.getBalance(accountOwner));
+            // Возврат ранее принадлежавших владельцу средств НЕ блокируется maximumBalance.
+            EscrowResult release = small.escrowService.releaseMoney("lot-limit",
+                    ctx(TransactionType.ESCROW_RELEASE, "отмена"));
+            assertTrue(release.isSuccess());
+            assertEquals(1300, small.accountService.getBalance(accountOwner));
+            assertEquals(0, small.escrowService.sumReserved());
+        }
+    }
+
+    private static com.valorcraft.veconomy.config.EconomySettings withMaximumBalance(long maximumBalance) {
+        com.valorcraft.veconomy.config.EconomySettings d = EconomySettings.defaults();
+        return new EconomySettings(
+                d.currencyNameSingular, d.currencyNameFew, d.currencyNameMany, d.currencySymbol,
+                d.decimalPlaces, maximumBalance, d.transfersEnabled, d.allowOfflineRecipients,
+                d.minimumTransferAmount, d.maximumTransferAmount, d.transferCooldownSeconds,
+                d.dbType, d.databaseFile, d.busyTimeoutMillis, d.walEnabled,
+                d.mysqlHost, d.mysqlPort, d.mysqlDatabase, d.mysqlUser, d.mysqlPassword, d.mysqlPoolSize,
+                d.broadcastAdminChanges);
     }
 }

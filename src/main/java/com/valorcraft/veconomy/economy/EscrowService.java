@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.EscrowCredit;
+import com.valorcraft.veconomy.api.EscrowLookupResult;
 import com.valorcraft.veconomy.api.EscrowResult;
 import com.valorcraft.veconomy.api.EscrowSnapshot;
 import com.valorcraft.veconomy.api.EscrowState;
@@ -133,11 +134,20 @@ public final class EscrowService {
         }
     }
 
+    /**
+     * Идемпотентный повтор reserve зависит от текущего состояния записи: зарезервирована —
+     * {@code ALREADY_RESERVED}, уже распределена — {@code ALREADY_SETTLED}, уже возвращена —
+     * {@code ALREADY_RELEASED}. Несовпадение владельца/суммы — {@code CONFLICT}.
+     */
     private static EscrowResult classifyRepeat(EscrowRow row, UUID ownerId, long amount) {
-        if (row.ownerUuid().equals(ownerId) && row.amountMinor() == amount) {
-            return failed(EscrowResult.Status.ALREADY_RESERVED);
+        if (!row.ownerUuid().equals(ownerId) || row.amountMinor() != amount) {
+            return failed(EscrowResult.Status.CONFLICT);
         }
-        return failed(EscrowResult.Status.CONFLICT);
+        return switch (row.state()) {
+            case RESERVED -> failed(EscrowResult.Status.ALREADY_RESERVED);
+            case CAPTURED -> failed(EscrowResult.Status.ALREADY_SETTLED);
+            case RELEASED -> failed(EscrowResult.Status.ALREADY_RELEASED);
+        };
     }
 
     /** Атомарно распределить зарезервированные средства между получателями. */
@@ -190,8 +200,17 @@ public final class EscrowService {
                 }
                 // Зачисления получателям в той же транзакции: любой сбой (заморозка, лимит,
                 // ошибка БД) откатывает и смену состояния эскроу (all-or-nothing).
-                for (EscrowCredit credit : credits) {
-                    creditRecipient(connection, reservation.ownerUuid(), credit);
+                // Порядок зачисления — канонический (как в settlementHash): стабильный и
+                // не зависящий от порядка кредитов на входе.
+                List<EscrowCredit> sorted = new ArrayList<>(credits);
+                sorted.sort(Comparator.comparing(EscrowService::creditPart));
+                Map<String, Integer> legOrdinals = new java.util.HashMap<>();
+                for (EscrowCredit credit : sorted) {
+                    String part = creditPart(credit);
+                    int ordinal = legOrdinals.getOrDefault(part, 0);
+                    legOrdinals.put(part, ordinal + 1);
+                    creditRecipient(connection, reservation.ownerUuid(), referenceId, hash,
+                            credit, ordinal, context);
                 }
                 return success(reservation.amountMinor(), referenceId);
             });
@@ -212,9 +231,16 @@ public final class EscrowService {
         return failed(EscrowResult.Status.CONFLICT);
     }
 
-    /** Зачислить долю получателю и записать ногу в журнал (в рамках открытой транзакции).
-     *  Любая ошибка — откат всей транзакции, в том числе условного перехода эскроу. */
-    private void creditRecipient(Connection connection, UUID ownerUuid, EscrowCredit credit) {
+    /**
+     * Зачислить долю получателю и записать ногу в журнал (в рамках открытой транзакции).
+     * Любая ошибка — откат всей транзакции, в том числе условного перехода эскроу.
+     * Контекст операции ({@code actorId}/{@code reason}/{@code metadata}) сохраняется
+     * в каждой ноге; комиссия (получатель — казна или роль {@code commission}) пишется
+     * как {@link TransactionType#FEE}, остальные доли — {@link TransactionType#ESCROW_CAPTURE}.
+     */
+    private void creditRecipient(Connection connection, UUID ownerUuid, String referenceId,
+                                 String settlementHash, EscrowCredit credit, int ordinal,
+                                 TransactionContext context) {
         AccountRow recipient = accountService.createIfMissing(connection, credit.recipientId(), null);
         if (recipient.status() == AccountStatus.FROZEN) {
             throw new SettleAbort(EscrowResult.Status.ACCOUNT_DISABLED);
@@ -232,35 +258,69 @@ public final class EscrowService {
                 recipient.version(), System.currentTimeMillis())) {
             throw new SettleAbort(EscrowResult.Status.DATABASE_ERROR);
         }
-        Map<String, String> metadata = new java.util.HashMap<>();
+        Map<String, String> metadata = new java.util.HashMap<>(context.metadata());
+        metadata.put("referenceId", referenceId);
         if (credit.role() != null && !credit.role().isBlank()) {
             metadata.put("role", credit.role());
         }
         ledger.record(connection, new TransactionRow(
-                null, TransactionType.ESCROW_CAPTURE, ownerUuid, credit.recipientId(),
-                credit.amount(), System.currentTimeMillis(), null, "escrow:settle",
-                null, metadata, null, newRecipientBalance));
+                null, typeForCredit(credit), ownerUuid, credit.recipientId(),
+                credit.amount(), System.currentTimeMillis(), context.actorId(), context.reason(),
+                legIdempotencyKey(referenceId, settlementHash, credit, ordinal),
+                metadata, null, newRecipientBalance));
     }
 
-    /** Передать зарезервированные средства одному получателю (целиком). */
+    private static TransactionType typeForCredit(EscrowCredit credit) {
+        return isCommission(credit) ? TransactionType.FEE : TransactionType.ESCROW_CAPTURE;
+    }
+
+    /** Комиссия: получатель — системная казна или роль {@code commission}. */
+    private static boolean isCommission(EscrowCredit credit) {
+        return treasuryUuid().equals(credit.recipientId())
+                || "commission".equalsIgnoreCase(credit.role());
+    }
+
+    /** Каноническая строка кредита для сортировки и хеша. */
+    private static String creditPart(EscrowCredit credit) {
+        return credit.recipientId() + "|" + (credit.role() == null ? "" : credit.role())
+                + "|" + credit.amount();
+    }
+
+    /**
+     * Стабильный идемпотентный ключ ноги: привязывает запись журнала к расчёту
+     * (referenceId + канонический хеш распределения), получателю, роли, сумме и
+     * каноническому порядковому номеру (для одинаковых дублей-долей).
+     */
+    private static String legIdempotencyKey(String referenceId, String settlementHash,
+                                            EscrowCredit credit, int ordinal) {
+        return referenceId + "|" + settlementHash + "|" + credit.recipientId()
+                + "|" + (credit.role() == null ? "" : credit.role())
+                + "|" + credit.amount() + "|" + ordinal;
+    }
+
+    /**
+     * Передать зарезервированные средства одному получателю (целиком). Делегирует
+     * {@link #settleMoney} с одним кредитом: идемпотентность решает сверка канонического
+     * хеша — повтор тому же получателю {@code ALREADY_SETTLED}, другому получателю или
+     * после иного распределения {@code CONFLICT}.
+     */
     public EscrowResult captureMoney(String referenceId, UUID recipientId, TransactionContext context) {
         if (recipientId == null) {
             return failed(EscrowResult.Status.INVALID_AMOUNT);
         }
-        EscrowSnapshot snapshot = findEscrow(referenceId).orElse(null);
-        if (snapshot == null) {
+        EscrowLookupResult lookup = findEscrow(referenceId);
+        if (lookup.status() == EscrowLookupResult.Status.DATABASE_ERROR) {
+            return failed(EscrowResult.Status.DATABASE_ERROR);
+        }
+        if (lookup.status() == EscrowLookupResult.Status.NOT_FOUND) {
             return failed(EscrowResult.Status.NOT_FOUND);
         }
-        if (snapshot.state() != EscrowState.RESERVED) {
-            return snapshot.state() == EscrowState.CAPTURED
-                    ? failed(EscrowResult.Status.ALREADY_SETTLED)
-                    : failed(EscrowResult.Status.WRONG_STATE);
-        }
         return settleMoney(referenceId,
-                List.of(new EscrowCredit(recipientId, snapshot.amount(), "capture")), context);
+                List.of(new EscrowCredit(recipientId, lookup.snapshot().amount(), "capture")),
+                context);
     }
 
-    /** Вернуть зарезервированные средства владельцу. */
+        /** Вернуть зарезервированные средства владельцу. Повтор уже возвращённой записи — идемпотентный. */
     public EscrowResult releaseMoney(String referenceId, TransactionContext context) {
         if (referenceId == null || referenceId.isBlank()) {
             return failed(EscrowResult.Status.INVALID_AMOUNT);
@@ -271,6 +331,9 @@ public final class EscrowService {
                         .orElse(null);
                 if (reservation == null) {
                     return failed(EscrowResult.Status.NOT_FOUND);
+                }
+                if (reservation.state() == EscrowState.RELEASED) {
+                    return failed(EscrowResult.Status.ALREADY_RELEASED);
                 }
                 if (reservation.state() != EscrowState.RESERVED) {
                     return failed(EscrowResult.Status.WRONG_STATE);
@@ -285,14 +348,21 @@ public final class EscrowService {
                 } catch (ArithmeticException e) {
                     return failed(EscrowResult.Status.LIMIT_EXCEEDED);
                 }
-                if (newBalance > settings.maximumBalance) {
-                    return failed(EscrowResult.Status.LIMIT_EXCEEDED);
-                }
+                // Политика: возврат ранее принадлежавших средств не блокируется
+                // maximumBalance — лимит ограничивает начисления и переводы, а не
+                // возврат собственных денег владельца.
                 long now = System.currentTimeMillis();
+                if (!escrow.release(connection, referenceId, now)) {
+                    // Гонка в MySQL: параллельный release уже перевёл запись — идемпотентный повтор.
+                    EscrowRow current = escrow.find(connection, referenceId, database.dialect())
+                            .orElse(null);
+                    return current != null && current.state() == EscrowState.RELEASED
+                            ? failed(EscrowResult.Status.ALREADY_RELEASED)
+                            : failed(EscrowResult.Status.WRONG_STATE);
+                }
                 if (!accounts.updateBalance(connection, reservation.ownerUuid(), newBalance, owner.version(), now)) {
                     return failed(EscrowResult.Status.DATABASE_ERROR);
                 }
-                escrow.release(connection, referenceId, now);
                 ledger.record(connection, new TransactionRow(
                         null, TransactionType.ESCROW_RELEASE, null, reservation.ownerUuid(),
                         reservation.amountMinor(), now, context.actorId(), context.reason(),
@@ -305,17 +375,24 @@ public final class EscrowService {
         }
     }
 
-    /** Текущий снимок эскроу-записи (включая произведённое распределение). */
-    public Optional<EscrowSnapshot> findEscrow(String referenceId) {
+    /**
+     * Текущий снимок эскроу-записи (включая произведённое распределение). Ошибка базы
+     * данных возвращается как {@link EscrowLookupResult.Status#DATABASE_ERROR}, а не
+     * маскируется под «записи нет».
+     */
+    public EscrowLookupResult findEscrow(String referenceId) {
         if (referenceId == null || referenceId.isBlank()) {
-            return Optional.empty();
+            return EscrowLookupResult.notFound();
         }
         try {
             return database.inTransaction(connection ->
-                    escrow.find(connection, referenceId).map(this::toSnapshot));
+                    escrow.find(connection, referenceId)
+                            .map(this::toSnapshot)
+                            .map(EscrowLookupResult::found)
+                            .orElseGet(EscrowLookupResult::notFound));
         } catch (DatabaseException e) {
             VEconomyMod.LOGGER.error("Ошибка чтения эскроу {}", referenceId, e);
-            return Optional.empty();
+            return EscrowLookupResult.databaseError();
         }
     }
 
@@ -340,7 +417,7 @@ public final class EscrowService {
     public static String settlementHash(List<EscrowCredit> credits) {
         List<String> parts = new ArrayList<>();
         for (EscrowCredit c : credits) {
-            parts.add(c.recipientId() + "|" + (c.role() == null ? "" : c.role()) + "|" + c.amount());
+            parts.add(creditPart(c));
         }
         parts.sort(Comparator.naturalOrder());
         try {
