@@ -12,6 +12,7 @@ import com.valorcraft.veconomy.util.ServerHolder;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -156,6 +157,39 @@ public final class VEconomyBindings {
                 TransactionContext.of(TransactionType.ESCROW_RELEASE, null,
                         reason == null ? "kubejs:escrow:release" : reason));
         return result.status().name();
+    }
+
+    /**
+     * Атомарно распределить зарезервированные средства долей {@code amount}
+     * получателю {@code recipient} (одна доля удобная для аукциона; множественное
+     * распределение — через Java API {@code settleMoney}). Код статуса.
+     */
+    public static String escrowSettle(String referenceId, Object recipient, long amount, String role, String reason) {
+        UUID id = resolve(recipient);
+        if (id == null || !EconomyCore.isStarted()) {
+            return "PLAYER_NOT_FOUND";
+        }
+        EscrowResult result = escrow().settleMoney(referenceId,
+                List.of(new com.valorcraft.veconomy.api.EscrowCredit(id, amount, role)),
+                TransactionContext.of(TransactionType.ESCROW_CAPTURE, null,
+                        reason == null ? "kubejs:escrow:settle" : reason));
+        return result.status().name();
+    }
+
+    /**
+     * Текущее состояние эскроу-записи одной строкой:
+     * {@code referenceId|state|amount|recipientId:amount:role,...}. {@code null}, если нет.
+     */
+    public static String escrowStatus(String referenceId) {
+        if (!EconomyCore.isStarted()) {
+            return null;
+        }
+        return escrow().findEscrow(referenceId)
+                .map(s -> s.referenceId() + "|" + s.state() + "|" + s.amount()
+                        + "|" + s.settlement().stream()
+                        .map(c -> c.recipientId() + ":" + c.amount() + ":" + c.role())
+                        .reduce("", (a, b) -> a.isEmpty() ? b : a + "," + b))
+                .orElse(null);
     }
 
     /** Успешно ли закончился статус операции (SUCCESS). */

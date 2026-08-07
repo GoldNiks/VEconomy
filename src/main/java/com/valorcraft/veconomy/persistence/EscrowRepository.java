@@ -34,8 +34,21 @@ public final class EscrowRepository {
     }
 
     public Optional<EscrowRow> find(Connection connection, String referenceId) {
-        try (var statement = connection.prepareStatement(
-                "SELECT * FROM escrow WHERE reference_id = ?")) {
+        return find(connection, referenceId, null);
+    }
+
+    /**
+     * Найти эскроу-запись. При {@code forUpdate} выполняется блокирующее чтение
+     * ({@code SELECT ... FOR UPDATE}) для MySQL — текущее значение, а не снимок
+     * REPEATABLE READ; для SQLite это обычный SELECT (соединение одно).
+     */
+    public Optional<EscrowRow> find(Connection connection, String referenceId,
+                                    DatabaseManager.Dialect forUpdateDialect) {
+        String sql = "SELECT * FROM escrow WHERE reference_id = ?";
+        if (forUpdateDialect == DatabaseManager.Dialect.MYSQL) {
+            sql += " FOR UPDATE";
+        }
+        try (var statement = connection.prepareStatement(sql)) {
             statement.setString(1, referenceId);
             try (ResultSet rs = statement.executeQuery()) {
                 return rs.next() ? Optional.of(map(rs)) : Optional.empty();
@@ -45,15 +58,34 @@ public final class EscrowRepository {
         }
     }
 
-    public boolean updateState(Connection connection, String referenceId, EscrowState state, long now) {
+    /** Условный переход {@code RESERVED→CAPTURED}: атомарный идемпотентный guard. */
+    public boolean settle(Connection connection, String referenceId, long now, String settledHash, String settledJson) {
         try (var statement = connection.prepareStatement(
-                "UPDATE escrow SET state = ?, updated_at = ? WHERE reference_id = ?")) {
-            statement.setString(1, state.name());
+                "UPDATE escrow SET state = ?, updated_at = ?, settled_hash = ?, settled_json = ? "
+                        + "WHERE reference_id = ? AND state = ?")) {
+            statement.setString(1, EscrowState.CAPTURED.name());
             statement.setLong(2, now);
-            statement.setString(3, referenceId);
+            statement.setString(3, settledHash);
+            statement.setString(4, settledJson);
+            statement.setString(5, referenceId);
+            statement.setString(6, EscrowState.RESERVED.name());
             return statement.executeUpdate() == 1;
         } catch (SQLException e) {
-            throw new DatabaseException("Ошибка обновления эскроу-записи " + referenceId, e);
+            throw new DatabaseException("Ошибка расчёта эскроу-записи " + referenceId, e);
+        }
+    }
+
+    /** Условный переход {@code RESERVED→RELEASED}: атомарный идемпотентный guard. */
+    public boolean release(Connection connection, String referenceId, long now) {
+        try (var statement = connection.prepareStatement(
+                "UPDATE escrow SET state = ?, updated_at = ? WHERE reference_id = ? AND state = ?")) {
+            statement.setString(1, EscrowState.RELEASED.name());
+            statement.setLong(2, now);
+            statement.setString(3, referenceId);
+            statement.setString(4, EscrowState.RESERVED.name());
+            return statement.executeUpdate() == 1;
+        } catch (SQLException e) {
+            throw new DatabaseException("Ошибка возврата эскроу-записи " + referenceId, e);
         }
     }
 
@@ -77,7 +109,9 @@ public final class EscrowRepository {
                 EscrowState.valueOf(rs.getString("state")),
                 rs.getLong("created_at"),
                 rs.getLong("updated_at"),
-                metadataJson != null ? parseMetadata(metadataJson) : Map.of());
+                metadataJson != null ? parseMetadata(metadataJson) : Map.of(),
+                rs.getString("settled_hash"),
+                rs.getString("settled_json"));
     }
 
     private static Map<String, String> parseMetadata(String json) {

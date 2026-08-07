@@ -231,6 +231,13 @@ public final class MigrationManager {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_dedupe
                 ON audit_events(dedupe_key) WHERE dedupe_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_events(severity, created_at);
+            """,
+            // v8 — атомарный расчёт эскроу: хеш и снимок распределения (settlement).
+            // settled_hash — канонический SHA-256 списка кредитов; settled_json —
+            // снимок распределения для findEscrow и проверки идемпотентного повтора.
+            """
+            ALTER TABLE escrow ADD COLUMN settled_hash VARCHAR(64);
+            ALTER TABLE escrow ADD COLUMN settled_json TEXT;
             """
     };
 
@@ -485,6 +492,11 @@ public final class MigrationManager {
             // в массиве (версия 7).
             """
             noop
+            """,
+            // v8 — атомарный расчёт эскроу: хеш и снимок распределения (settlement).
+            """
+            ALTER TABLE escrow ADD COLUMN settled_hash VARCHAR(64);
+            ALTER TABLE escrow ADD COLUMN settled_json TEXT;
             """
     };
 

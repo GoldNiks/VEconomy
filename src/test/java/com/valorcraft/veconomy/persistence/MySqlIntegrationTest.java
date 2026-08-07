@@ -2,7 +2,17 @@ package com.valorcraft.veconomy.persistence;
 
 import com.valorcraft.veconomy.audit.AuditEventRow;
 import com.valorcraft.veconomy.audit.AuditRepository;
+import com.valorcraft.veconomy.api.EscrowCredit;
+import com.valorcraft.veconomy.api.EscrowResult;
+import com.valorcraft.veconomy.api.TransactionContext;
+import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.config.EconomySettings;
+import com.valorcraft.veconomy.economy.AccountService;
+import com.valorcraft.veconomy.economy.EscrowService;
+import com.valorcraft.veconomy.economy.LedgerService;
+import com.valorcraft.veconomy.persistence.AccountRepository;
+import com.valorcraft.veconomy.persistence.EscrowRepository;
+import com.valorcraft.veconomy.persistence.TransactionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.testcontainers.containers.MySQLContainer;
@@ -45,7 +55,7 @@ class MySqlIntegrationTest {
             .withUsername("veconomy")
             .withPassword("veconomy");
 
-    private static final int LATEST_SCHEMA = 7;
+    private static final int LATEST_SCHEMA = 8;
 
     private String url() {
         return "jdbc:mysql://" + MYSQL.getHost() + ":" + MYSQL.getMappedPort(3306)
@@ -206,6 +216,67 @@ class MySqlIntegrationTest {
         }
     }
 
+    @Test
+    void concurrentSettleOnSameEscrowCreditsExactlyOnce() throws Exception {
+        EconomySettings settings = mysqlSettings();
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(Path.of("mysql-it"), settings);
+        try {
+            EconomyStack stack = new EconomyStack(manager, settings);
+            UUID owner = UUID.randomUUID();
+            UUID buyer = UUID.randomUUID();
+            UUID treasury = stack.escrowService.treasuryUuid();
+            stack.accountService.deposit(owner, 5000, TransactionContext.of(TransactionType.ADMIN_DEPOSIT, null, "сед"));
+            assertEquals(5000, stack.accountService.getBalance(owner));
+
+            EscrowResult reserve = stack.escrowService.reserveMoney(owner, 1000, "sale-1",
+                    TransactionContext.of(TransactionType.ESCROW_RESERVE, null, "лот"));
+            assertTrue(reserve.isSuccess());
+
+            List<EscrowCredit> credits = List.of(
+                    new EscrowCredit(buyer, 950, "seller"),
+                    new EscrowCredit(treasury, 50, "commission"));
+
+            int threads = 8;
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger successes = new AtomicInteger();
+            AtomicInteger idempotent = new AtomicInteger();
+            ExecutorService pool = Executors.newFixedThreadPool(threads);
+            for (int t = 0; t < threads; t++) {
+                pool.execute(() -> {
+                    ready.countDown();
+                    try {
+                        start.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    EscrowResult result = stack.escrowService.settleMoney("sale-1", credits,
+                            TransactionContext.of(TransactionType.ESCROW_CAPTURE, null, "расчёт"));
+                    switch (result.status()) {
+                        case SUCCESS -> successes.incrementAndGet();
+                        case ALREADY_SETTLED -> idempotent.incrementAndGet();
+                        default -> { }
+                    }
+                });
+            }
+            assertTrue(ready.await(30, TimeUnit.SECONDS));
+            start.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS));
+
+            assertEquals(1, successes.get(), "ровно один поток выполняет расчёт");
+            assertTrue(idempotent.get() > 0, "остальные повторы должны быть идемпотентными");
+            assertEquals(950, stack.accountService.getBalance(buyer),
+                    "покупатель получает ровно одну долю");
+            assertEquals(50, stack.accountService.getBalance(treasury), "казна получает ровно одну комиссию");
+            assertEquals(0, stack.escrowService.sumReserved());
+        } finally {
+            manager.close();
+        }
+    }
+
     // ------------------------------------------------------------ helpers
 
     private static boolean columnExists(Connection c, String table, String column) throws SQLException {
@@ -253,5 +324,27 @@ class MySqlIntegrationTest {
             hex.append(Character.forDigit(b & 0xF, 16));
         }
         return hex.toString();
+    }
+
+    /** Минимальный стек сервисов (как в TestDb) поверх управляемого соединения MySQL. */
+    private static final class EconomyStack {
+        final DatabaseManager manager;
+        final EconomySettings settings;
+        final AccountRepository accounts = new AccountRepository();
+        final TransactionRepository transactions = new TransactionRepository();
+        final EscrowRepository escrow = new EscrowRepository();
+        final LedgerService ledger;
+        final AccountService accountService;
+        final EscrowService escrowService;
+
+        EconomyStack(DatabaseManager manager, EconomySettings settings) {
+            this.manager = manager;
+            this.settings = settings;
+            this.ledger = new LedgerService(manager, transactions);
+            this.accountService = new AccountService(manager, accounts,
+                    transactions, ledger, null, settings);
+            this.escrowService = new EscrowService(manager, accounts, escrow,
+                    accountService, ledger, settings);
+        }
     }
 }

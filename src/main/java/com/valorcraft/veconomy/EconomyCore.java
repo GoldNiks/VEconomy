@@ -3,7 +3,9 @@ package com.valorcraft.veconomy;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.EconomyApi;
 import com.valorcraft.veconomy.api.EscrowApi;
+import com.valorcraft.veconomy.api.EscrowCredit;
 import com.valorcraft.veconomy.api.EscrowResult;
+import com.valorcraft.veconomy.api.EscrowSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.activity.ActivityService;
@@ -34,6 +36,7 @@ import com.valorcraft.veconomy.persistence.EscrowRepository;
 import com.valorcraft.veconomy.persistence.TransactionRepository;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -145,6 +148,13 @@ public final class EconomyCore {
             }
 
             @Override
+            public EscrowResult settleMoney(String referenceId,
+                                            List<EscrowCredit> credits,
+                                            TransactionContext context) {
+                return escrowService.settleMoney(referenceId, credits, context);
+            }
+
+            @Override
             public EscrowResult captureMoney(String referenceId, UUID recipientId, TransactionContext context) {
                 return escrowService.captureMoney(referenceId, recipientId, context);
             }
@@ -152,6 +162,16 @@ public final class EconomyCore {
             @Override
             public EscrowResult releaseMoney(String referenceId, TransactionContext context) {
                 return escrowService.releaseMoney(referenceId, context);
+            }
+
+            @Override
+            public Optional<EscrowSnapshot> findEscrow(String referenceId) {
+                return escrowService.findEscrow(referenceId);
+            }
+
+            @Override
+            public UUID treasuryUuid() {
+                return EscrowService.treasuryUuid();
             }
         };
 

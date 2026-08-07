@@ -22,7 +22,7 @@ class MigrationManagerTest {
     @Test
     void freshDatabaseGetsLatestSchemaVersion() {
         try (TestDb db = TestDb.create()) {
-            assertEquals(7, db.database.schemaVersion());
+            assertEquals(8, db.database.schemaVersion());
         }
     }
 
@@ -72,7 +72,7 @@ class MigrationManagerTest {
                 MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
                 return null;
             });
-            assertEquals(7, db.database.schemaVersion());
+            assertEquals(8, db.database.schemaVersion());
         }
     }
 
@@ -87,7 +87,7 @@ class MigrationManagerTest {
                 "jdbc:sqlite:" + dbFile.toAbsolutePath())) {
             MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
             insertAuditIgnored(connection, "t1", "window-key");
-            assertEquals(7, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE));
+            assertEquals(8, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE));
 
             // «Сбой»: версия откачена на 6, удалены некоторые объекты v7 (столбец dedupe_key
             // с его индексом и индекс severity), остальные v7-столбцы на месте.
@@ -101,8 +101,8 @@ class MigrationManagerTest {
 
             MigrationManager.migrate(connection, DatabaseManager.Dialect.SQLITE);
 
-            assertEquals(7, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE),
-                    "миграция должна довести схему до v7");
+            assertEquals(8, MigrationManager.readVersion(connection, DatabaseManager.Dialect.SQLITE),
+                    "миграция должна довести схему до v8");
             Set<String> columns = new HashSet<>();
             try (ResultSet rs = connection.getMetaData().getColumns(null, null, "audit_events", null)) {
                 while (rs.next()) {
