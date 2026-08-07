@@ -23,7 +23,7 @@
 - **Учёт активности**: сервер считает время в сети, активное время и AFK
   (`/money activity`). AFK — бездействие дольше `activity.afkTimeoutSeconds`.
 - **Личные милстоуны**: разовые награды за наигранное активное время
-  (например, 1ч → 100, 3ч → 300, 12ч → 1000).
+  (например, 1ч → 10, 3ч → ещё 25, 12ч → ещё 60, 24ч → ещё 125; суммарно 220).
 - **Недельная награда**: раз в ISO-неделю (понедельник, 00:00 в таймзоне фонда)
   закрытый период делится между подходящими игроками по очкам (активное время +
   активные дни); доля одного игрока ограничена, нераздаваемый остаток — в казну.
@@ -88,7 +88,7 @@ gradlew build
 
 - **FTB Quests — награды деньгами.** Два способа:
   - *«Кастомная награда»*: название награды должно быть целиком числом
-    (`500`, `1500,50`). Текст-обёртка не поддерживается — случайная награда
+    (`50`, `25,50`). Текст-обёртка не поддерживается — случайная награда
     с числом в названии не создаст деньги. Не требует мода на клиенте.
     Отключается флагом `customRewardEnabled`.
   - *Автоначисление по главам*: при завершении любого квеста команда получает
@@ -96,10 +96,10 @@ gradlew build
     поровну (остаток от деления — в казну):
 
     ```
-    фонд квеста = 1000
-    1 участник  → 1000
-    2 участника → по 500
-    5 участников → по 200
+    фонд квеста = 100
+    1 участник  → 100
+    2 участника → по 50
+    5 участников → по 20
     ```
 
     Размер команды не увеличивает эмиссию — приглашение альтов не печатает
@@ -111,12 +111,12 @@ gradlew build
       "customRewardEnabled": true,
       "defaultPerQuest": 0,
       "chapters": {
-        "Глава 1": 100,
-        "Глава 2": 200,
-        "Глава 3": 400
+        "Глава 1": 25,
+        "Глава 2": 50,
+        "Глава 3": 75
       },
       "quests": {
-        "1234567890123456": 500
+        "1234567890123456": 50
       }
     }
     ```
@@ -128,11 +128,11 @@ gradlew build
     Тип операции — `QUEST_REWARD`, учитывается в статистике эмиссии.
 - **KubeJS — биндинг `VEconomy`.** Доступен из любых `server_scripts`, например:
 
-  ```js
-  VEconomy.add(player, 500, 'стартовый бонус');
+```js
+  VEconomy.add(player, 50, 'стартовый бонус');
   VEconomy.getBalance(player);          // long в минимальных единицах
-  VEconomy.transfer(from, to, 250, 'торг');
-  VEconomy.escrowReserve(player, 1000, 'auction:42', 'ставка');
+  VEconomy.transfer(from, to, 25, 'торг');
+  VEconomy.escrowReserve(player, 100, 'auction:42', 'ставка');
   VEconomy.escrowCapture('auction:42', winner, 'победа');
   VEconomy.escrowRelease('auction:42', 'отмена');
   VEconomy.format(12345);               // "⛃12,345"
@@ -169,13 +169,13 @@ gradlew build
     nameMany = "монет"        # «5 монет»
     symbol = "⛃"              # символ валюты
     decimalPlaces = 0         # 0 = целые, 2 = ##.##
-    maximumBalance = 9000000000000  # максимум баланса, минимальные единицы
+    maximumBalance = 1000000  # максимум баланса, минимальные единицы
 
 [transfers]
     enabled = true            # переводы игроков разрешены
     allowOfflineRecipients = true
     minimumAmount = 1
-    maximumAmount = 1000000
+    maximumAmount = 100000
     cooldownSeconds = 2
 
 [database]
@@ -192,6 +192,12 @@ gradlew build
     password = ""
     poolSize = 5               # размер пула соединений HikariCP
 
+[milestones]                # личные награды за наигранное активное время
+    enabled = true
+    rewards = [3600, 10, 10800, 25, 43200, 60, 86400, 125]
+                            # пары (секунды активного времени, награда): 1ч→10, 3ч→25, 12ч→60, 24ч→125
+    notify = true           # уведомлять игрока о получении награды
+
 [weeklyFund]                 # недельный фонд: закрытая неделя делится по очкам
     enabled = true
     notify = true            # уведомлять игроков о выплате
@@ -201,10 +207,10 @@ gradlew build
     minActiveSeconds = 7200  # мин. активное время за неделю; 0 — без ограничения
     minActiveDays = 2        # мин. активных дней за неделю; 0 — без ограничения
     minActiveDaySeconds = 1800  # мин. активного времени в день, чтобы день считался активным
-    baseAmountPerEligiblePlayer = 500   # база фонда на одного подходящего игрока
-    minimumFund = 1000       # фонд не меньше этой суммы
-    maximumFund = 5000000    # фонд не больше этой суммы
-    targetSupplyPerEligiblePlayer = 100000  # целевая денежная масса на одного подходящего
+    baseAmountPerEligiblePlayer = 50    # база фонда на одного подходящего игрока
+    minimumFund = 100          # фонд не меньше этой суммы
+    maximumFund = 10000       # фонд не больше этой суммы
+    targetSupplyPerEligiblePlayer = 2000  # целевая денежная масса на одного подходящего
     # Ступени экономического коэффициента: пары (верхняя_граница_%, коэффициент_в_БП;
     # 10000 = 100%). Берётся первая ступень, где supply/цель ниже границы.
     economyCoefficientTiers = [70, 12000, 90, 11000, 110, 10000, 140, 8500, 100000, 7000]
@@ -226,6 +232,31 @@ gradlew build
 [notifications]
     broadcastAdminChanges = true  # оповещать всех игроков об админ-изменениях баланса
 ```
+
+### Смена денежной шкалы (деноминация)
+
+> **Внимание:** значения по умолчанию приведены к новой, более «крупной» монете
+> (1 монета = 1 минимальная единица, `decimalPlaces = 0`):
+>
+> - новые значения применяются только к **новым** конфигурациям
+>   (`economy-core.toml`, `veconomy-milestones.json`, `veconomy-quests.json`
+>   создаются автоматически при первом старте);
+> - **существующий конфиг нужно обновить вручную** — при обновлении мода старые
+>   файлы конфигов не перезаписываются;
+> - **существующие балансы не уменьшаются** — автоматическая деноминация базы
+>   данных не выполняется, счета остаются как есть;
+> - перед удалением тестовой SQLite-базы (`<мир>/economy/valoreconomy.db`)
+>   обязательно сделайте резервную копию файла.
+
+Ориентировочная шкала сумм на новой монете:
+
+| Назначение | Сумма |
+|---|---|
+| Небольшая награда (квест/компенсация) | 10–25 |
+| Обычный milestone (`veconomy-milestones.json`) | 30–75 |
+| Крупная награда (событие/бонус) | 100–250 |
+| Перевод между игроками (`/pay`) | 10–100 |
+| Резервирование для сделки (`escrowReserve`) | 50–500 |
 
 ### Переход на MySQL
 
@@ -254,9 +285,9 @@ long balance = EconomyCore.api().getBalance(uuid);
 TransactionContext ctx = TransactionContext.of(
         TransactionType.SHOP_PURCHASE, actorUuid, "причина", "idempotency:key");
 
-TransactionResult r = EconomyCore.api().deposit(uuid, 500, ctx);
-TransactionResult r2 = EconomyCore.api().withdraw(uuid, 200, ctx);
-TransactionResult r3 = EconomyCore.api().transfer(fromUuid, toUuid, 250, ctx);
+TransactionResult r = EconomyCore.api().deposit(uuid, 50, ctx);
+TransactionResult r2 = EconomyCore.api().withdraw(uuid, 20, ctx);
+TransactionResult r3 = EconomyCore.api().transfer(fromUuid, toUuid, 25, ctx);
 // r.isSuccess(), r.status() — SUCCESS / INSUFFICIENT_FUNDS / LIMIT_EXCEEDED / ...
 
 // Полная информация об аккаунте

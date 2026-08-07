@@ -33,7 +33,7 @@ import java.util.Set;
  *     {
  *       "id": "enter_nether",
  *       "type": "ADVANCEMENT",
- *       "amount": 500,
+ *       "amount": 30,
  *       "enabled": true,
  *       "message": "Добро пожаловать в Незер!",
  *       "requirements": { "advancement": "minecraft:story/enter_the_nether" }
@@ -244,7 +244,7 @@ public final class MilestoneConfig {
                     {
                       "id": "enter_nether",
                       "type": "ADVANCEMENT",
-                      "amount": 500,
+                      "amount": 30,
                       "enabled": true,
                       "message": "Добро пожаловать в Незер!",
                       "requirements": {
@@ -254,7 +254,7 @@ public final class MilestoneConfig {
                     {
                       "id": "visit_moon",
                       "type": "DIMENSION_VISIT",
-                      "amount": 750,
+                      "amount": 75,
                       "enabled": true,
                       "requirements": {
                         "dimension": "ad_astra:moon"
@@ -263,7 +263,7 @@ public final class MilestoneConfig {
                     {
                       "id": "event_bonus",
                       "type": "EXTERNAL",
-                      "amount": 1000,
+                      "amount": 120,
                       "enabled": true,
                       "requirements": {
                         "channel": "events"

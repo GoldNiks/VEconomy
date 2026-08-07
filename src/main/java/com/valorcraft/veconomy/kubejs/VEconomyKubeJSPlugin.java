@@ -10,7 +10,7 @@ import dev.latvian.mods.kubejs.script.BindingsEvent;
  * Добавляет в скрипты биндинг {@code VEconomy} со статическими методами
  * (см. {@link VEconomyBindings}), например:
  * <pre>{@code
- * VEconomy.add(player, 500, 'стартовый бонус')
+ * VEconomy.add(player, 50, 'стартовый бонус')
  * VEconomy.getBalance(player)
  * }</pre>
  */

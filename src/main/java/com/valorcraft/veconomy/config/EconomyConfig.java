@@ -92,7 +92,7 @@ public final class EconomyConfig {
         DECIMAL_PLACES = builder.comment("Количество десятичных знаков при отображении")
                 .defineInRange("decimalPlaces", 0, 0, 10);
         MAXIMUM_BALANCE = builder.comment("Максимальный баланс аккаунта в минимальных единицах")
-                .defineInRange("maximumBalance", 9_000_000_000_000L, 1L, Long.MAX_VALUE);
+                .defineInRange("maximumBalance", 1_000_000L, 1L, Long.MAX_VALUE);
         builder.pop();
 
         builder.comment("Настройки переводов между игроками.").push("transfers");
@@ -102,7 +102,7 @@ public final class EconomyConfig {
         MINIMUM_TRANSFER_AMOUNT = builder.comment("Минимальная сумма перевода, минимальные единицы")
                 .defineInRange("minimumAmount", 1L, 1L, Long.MAX_VALUE);
         MAXIMUM_TRANSFER_AMOUNT = builder.comment("Максимальная сумма одного перевода, минимальные единицы")
-                .defineInRange("maximumAmount", 1_000_000L, 1L, Long.MAX_VALUE);
+                .defineInRange("maximumAmount", 100_000L, 1L, Long.MAX_VALUE);
         TRANSFER_COOLDOWN_SECONDS = builder.comment("Кулдаун между переводами игрока, секунд")
                 .defineInRange("cooldownSeconds", 2, 0, 3600);
         builder.pop();
@@ -156,12 +156,12 @@ public final class EconomyConfig {
 
         builder.comment("Личные милстоуны за наигранное время.",
                 "Список reward — пары (секунды активного времени, награда в минимальных единицах).",
-                "Пример: [3600, 100, 10800, 300, 43200, 1000] = 1ч→100, 3ч→300, 12ч→1000.",
+                "Пример: [3600, 10, 10800, 25, 43200, 60] = 1ч→10, 3ч→25, 12ч→60.",
                 "Каждый порог выплачивается игроку ровно один раз.").push("milestones");
         MILESTONES_ENABLED = builder.comment("Включить награды за время")
                 .define("enabled", true);
         MILESTONE_REWARDS = builder.comment("Пары (секунды, награда)").defineList("rewards",
-                List.of(3600, 100, 10800, 300, 43200, 1000, 86400, 2500),
+                List.of(3600, 10, 10800, 25, 43200, 60, 86400, 125),
                 element -> element instanceof Integer integer && integer > 0);
         MILESTONES_NOTIFY = builder.comment("Уведомлять игрока о получении награды")
                 .define("notify", true);
@@ -202,16 +202,16 @@ public final class EconomyConfig {
                 .defineInRange("minActiveDaySeconds", 1_800L, 0L, 86_400L);
         WEEKLY_FUND_BASE_PER_PLAYER = builder.comment(
                 "Базовая сумма фонда на одного подходящего игрока (минимальные единицы)")
-                .defineInRange("baseAmountPerEligiblePlayer", 500L, 0L, Long.MAX_VALUE);
+                .defineInRange("baseAmountPerEligiblePlayer", 50L, 0L, Long.MAX_VALUE);
         WEEKLY_FUND_MINIMUM_FUND = builder.comment(
                 "Минимальный размер фонда (минимальные единицы)")
-                .defineInRange("minimumFund", 1_000L, 0L, Long.MAX_VALUE);
+                .defineInRange("minimumFund", 100L, 0L, Long.MAX_VALUE);
         WEEKLY_FUND_MAXIMUM_FUND = builder.comment(
                 "Максимальный размер фонда (минимальные единицы)")
-                .defineInRange("maximumFund", 5_000_000L, 0L, Long.MAX_VALUE);
+                .defineInRange("maximumFund", 10_000L, 0L, Long.MAX_VALUE);
         WEEKLY_FUND_TARGET_SUPPLY_PER_PLAYER = builder.comment(
                 "Целевая денежная масса на одного подходящего игрока (минимальные единицы)")
-                .defineInRange("targetSupplyPerEligiblePlayer", 100_000L, 1L, Long.MAX_VALUE);
+                .defineInRange("targetSupplyPerEligiblePlayer", 2_000L, 1L, Long.MAX_VALUE);
         WEEKLY_FUND_ECONOMY_TIERS = builder.comment(
                 "Ступени экономического коэффициента: пары (вверхняя_граница_%, коэфф_в_БП). ",
                 "Порядок важен: берётся первая ступень, где соотношение supply/цель ниже границы.",

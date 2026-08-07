@@ -29,7 +29,7 @@ class MilestoneServiceTest {
 
     private static EconomySettings milestonesEnabled() {
         return withMilestones(new EconomySettings.Milestones(true,
-                List.of(new MilestoneReward(3600, 100), new MilestoneReward(10800, 300)), true));
+                List.of(new MilestoneReward(3600, 10), new MilestoneReward(10800, 25)), true));
     }
 
     private static EconomySettings withMilestones(EconomySettings.Milestones milestones) {
@@ -81,13 +81,13 @@ class MilestoneServiceTest {
     }
 
     private static final String ADVANCEMENT_DEF =
-            def("enter_nether", "ADVANCEMENT", 500,
+            def("enter_nether", "ADVANCEMENT", 30,
                     "{\"advancement\":\"minecraft:story/enter_the_nether\"}");
     private static final String DIMENSION_DEF =
-            def("visit_moon", "DIMENSION_VISIT", 750,
+            def("visit_moon", "DIMENSION_VISIT", 75,
                     "{\"dimension\":\"ad_astra:moon\"}");
     private static final String EXTERNAL_DEF =
-            def("event_bonus", "EXTERNAL", 1000, "{\"channel\":\"events\"}");
+            def("event_bonus", "EXTERNAL", 120, "{\"channel\":\"events\"}");
 
     /** Фейковый контекст проверки: прогресс advancement задаётся вручную. */
     private static final class FakeContext implements MilestoneCheckContext {
@@ -151,10 +151,10 @@ class MilestoneServiceTest {
 
             var granted = db.milestoneService.checkPlayer(player);
             assertEquals(1, granted.size());
-            assertEquals(100, db.accountService.getBalance(player));
+            assertEquals(10, db.accountService.getBalance(player));
 
             db.milestoneService.checkPlayer(player);
-            assertEquals(100, db.accountService.getBalance(player));
+            assertEquals(10, db.accountService.getBalance(player));
         }
     }
 
@@ -166,7 +166,7 @@ class MilestoneServiceTest {
 
             var granted = db.milestoneService.checkPlayer(player);
             assertEquals(2, granted.size());
-            assertEquals(400, db.accountService.getBalance(player));
+            assertEquals(35, db.accountService.getBalance(player));
         }
     }
 
@@ -185,7 +185,7 @@ class MilestoneServiceTest {
     @Test
     void disabledMilestonesPayNothing() {
         try (TestDb db = TestDb.create(withMilestones(new EconomySettings.Milestones(false,
-                List.of(new MilestoneReward(3600, 100)), true)))) {
+                List.of(new MilestoneReward(3600, 10)), true)))) {
             UUID player = UUID.randomUUID();
             setActiveSeconds(db, player, 3600);
 
@@ -208,10 +208,10 @@ class MilestoneServiceTest {
             var result = db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT, context);
             assertEquals(1, result.size());
             assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, result.get(0).status());
-            assertEquals(500, db.accountService.getBalance(player));
+            assertEquals(30, db.accountService.getBalance(player));
 
             db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT, context);
-            assertEquals(500, db.accountService.getBalance(player));
+            assertEquals(30, db.accountService.getBalance(player));
             assertTrue(db.milestoneService.isClaimed(player, "enter_nether"));
         }
     }
@@ -308,7 +308,7 @@ class MilestoneServiceTest {
             var result = db.milestoneService.grantForEvent(player, MilestoneType.DIMENSION_VISIT,
                     new FakeContext(player));
             assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, result.get(0).status());
-            assertEquals(750, db.accountService.getBalance(player));
+            assertEquals(75, db.accountService.getBalance(player));
         }
     }
 
@@ -322,7 +322,7 @@ class MilestoneServiceTest {
 
             db.milestoneService.grantForEvent(player, MilestoneType.DIMENSION_VISIT,
                     new FakeContext(player));
-            assertEquals(750, db.accountService.getBalance(player));
+            assertEquals(75, db.accountService.getBalance(player));
             assertTrue(db.milestoneService.isClaimed(player, "visit_moon"));
         }
     }
@@ -341,7 +341,7 @@ class MilestoneServiceTest {
 
             db.milestoneService.grantForEvent(player, MilestoneType.DIMENSION_VISIT,
                     new FakeContext(player));
-            assertEquals(750, db.accountService.getBalance(player));
+            assertEquals(75, db.accountService.getBalance(player));
         }
     }
 
@@ -369,7 +369,7 @@ class MilestoneServiceTest {
 
             var result = db.milestoneService.grantExternal(player, "event_bonus", "event-2026-01");
             assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, result.status());
-            assertEquals(1000, db.accountService.getBalance(player));
+            assertEquals(120, db.accountService.getBalance(player));
             assertTrue(db.milestoneService.isClaimed(player, "event_bonus"));
         }
     }
@@ -400,7 +400,7 @@ class MilestoneServiceTest {
             var second = db.milestoneService.grantExternal(player, "event_bonus", "key-1");
             assertEquals(MilestoneService.MilestoneGrantResult.Status.ALREADY_CLAIMED,
                     second.status());
-            assertEquals(1000, db.accountService.getBalance(player));
+            assertEquals(120, db.accountService.getBalance(player));
             assertTrue(db.milestoneService.isClaimed(player, "event_bonus"));
         }
     }
@@ -435,7 +435,7 @@ class MilestoneServiceTest {
             var second = db.milestoneService.grantExternal(player, "event_bonus", "key-2");
             assertEquals(MilestoneService.MilestoneGrantResult.Status.ALREADY_CLAIMED,
                     second.status());
-            assertEquals(1000, db.accountService.getBalance(player));
+            assertEquals(120, db.accountService.getBalance(player));
         }
     }
 
@@ -485,11 +485,11 @@ class MilestoneServiceTest {
             db.milestoneService.grantExternal(player, "event_bonus", "key-1");
             assertTrue(db.milestoneService.revoke(player, "event_bonus"));
             assertFalse(db.milestoneService.isClaimed(player, "event_bonus"));
-            assertEquals(1000, db.accountService.getBalance(player));
+            assertEquals(120, db.accountService.getBalance(player));
 
             var regrant = db.milestoneService.grantExternal(player, "event_bonus", "key-2");
             assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, regrant.status());
-            assertEquals(2000, db.accountService.getBalance(player));
+            assertEquals(240, db.accountService.getBalance(player));
         }
     }
 
@@ -513,7 +513,7 @@ class MilestoneServiceTest {
             // Игрок не посещал измерение, но админ выдаёт принудительно.
             var result = db.milestoneService.grant(player, def, null, "admin:test", null);
             assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, result.status());
-            assertEquals(750, db.accountService.getBalance(player));
+            assertEquals(75, db.accountService.getBalance(player));
         }
     }
 

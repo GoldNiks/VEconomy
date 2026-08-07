@@ -20,7 +20,7 @@ class CurrencyFormatterTest {
     @Test
     void formatsWithDecimalPlaces() {
         EconomySettings twoPlaces = new EconomySettings("coin", "coins", "coins", "$", 2,
-                9_000_000_000_000L, true, true, 1, 1_000_000, 2,
+                1_000_000L, true, true, 1, 100_000, 2,
                 "sqlite", "test.db", 5000, true,
                 "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         CurrencyFormatter formatter = new CurrencyFormatter(twoPlaces);
@@ -31,7 +31,7 @@ class CurrencyFormatterTest {
     @Test
     void pluralizationRussian() {
         EconomySettings settings = new EconomySettings("монета", "монеты", "монет", "⛃", 0,
-                9_000_000_000_000L, true, true, 1, 1_000_000, 2,
+                1_000_000L, true, true, 1, 100_000, 2,
                 "sqlite", "test.db", 5000, true,
                 "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         CurrencyFormatter formatter = new CurrencyFormatter(settings);

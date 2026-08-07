@@ -166,7 +166,7 @@ class AuditServiceTest {
         Files.writeString(dir.resolve(MilestoneConfig.FILE_NAME),
                 """
                 {"milestones": [
-                  {"id":"event_bonus","type":"EXTERNAL","amount":1000,"enabled":true,
+                  {"id":"event_bonus","type":"EXTERNAL","amount":120,"enabled":true,
                    "requirements":{"channel":"events"}}
                 ]}
                 """, StandardCharsets.UTF_8);
@@ -183,7 +183,7 @@ class AuditServiceTest {
             List<AuditEventRow> rows = db.auditService.byPlayer(player, 10);
             assertEquals(1, rows.size());
             assertEquals(AuditEventType.MILESTONE_GRANTED, rows.get(0).eventType());
-            assertEquals(1000L, rows.get(0).amountMinor());
+            assertEquals(120L, rows.get(0).amountMinor());
             assertTrue(rows.get(0).details().contains("event_bonus"));
         }
     }

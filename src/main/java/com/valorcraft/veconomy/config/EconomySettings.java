@@ -169,10 +169,10 @@ public final class EconomySettings {
 
         public static Milestones defaults() {
             return new Milestones(true, List.of(
-                    new MilestoneReward(3600, 100),
-                    new MilestoneReward(10800, 300),
-                    new MilestoneReward(43200, 1000),
-                    new MilestoneReward(86400, 2500)), true);
+                    new MilestoneReward(3600, 10),
+                    new MilestoneReward(10800, 25),
+                    new MilestoneReward(43200, 60),
+                    new MilestoneReward(86400, 125)), true);
         }
 
         public final boolean notify;
@@ -324,7 +324,7 @@ public final class EconomySettings {
             return new WeeklyFund(
                     true, true, true, 6,
                     7, 7_200L, 2, 1_800L,
-                    500L, 1_000L, 5_000_000L, 100_000L,
+                    50L, 100L, 10_000L, 2_000L,
                     List.of(
                             new EconomyTier(70, 12000),
                             new EconomyTier(90, 11000),
@@ -361,8 +361,8 @@ public final class EconomySettings {
     public static EconomySettings defaults() {
         return new EconomySettings(
                 "монета", "монеты", "монет", "⛃",
-                0, 9_000_000_000_000L,
-                true, true, 1L, 1_000_000L, 2,
+                0, 1_000_000L,
+                true, true, 1L, 100_000L, 2,
                 "sqlite", "economy/valoreconomy.db", 5000, true,
                 "localhost", 3306, "veconomy", "veconomy", "", 5,
                 true,

@@ -66,7 +66,7 @@ class TransferServiceTest {
     @Test
     void offlineRecipientNotAllowedWhenDisabled() {
         EconomySettings noOffline = new EconomySettings("coin", "coins", "coins", "", 0,
-                9_000_000_000_000L, true, false, 1, 1_000_000, 2,
+                1_000_000L, true, false, 1, 100_000, 2,
                 "sqlite", "test.db", 5000, true,
                 "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         try (TestDb strict = TestDb.create(noOffline)) {
@@ -82,7 +82,8 @@ class TransferServiceTest {
         TransactionResult result = db.transferService.transfer(alice, bob, 100,
                 ctx(TransactionType.PLAYER_TRANSFER, "pay"));
         assertTrue(result.isSuccess());
-        // максимальный баланс по умолчанию 9e12 — доводить не будем, проверяем лимит суммы перевода
+        // максимальный баланс по умолчанию 1e6, а лимит одного перевода 100 000 —
+        // проверяем лимит суммы перевода
         TransactionResult tooBig = db.transferService.transfer(alice, bob, 2_000_000,
                 ctx(TransactionType.PLAYER_TRANSFER, "pay"));
         assertEquals(TransactionResult.Status.LIMIT_EXCEEDED, tooBig.status());
@@ -121,7 +122,7 @@ class TransferServiceTest {
     @Test
     void concurrentTransfersPreserveTotalMoney() throws InterruptedException {
         EconomySettings noCooldown = new EconomySettings("coin", "coins", "coins", "", 0,
-                9_000_000_000_000L, true, true, 1, 1_000_000, 0,
+                1_000_000L, true, true, 1, 100_000, 0,
                 "sqlite", "test.db", 5000, true,
                 "localhost", 3306, "veconomy", "veconomy", "", 5, true);
         try (TestDb busy = TestDb.create(noCooldown)) {
