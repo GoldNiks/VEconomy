@@ -155,6 +155,16 @@ public final class EconomyCore {
             }
 
             @Override
+            public EscrowResult settleAndRollover(String oldReferenceId,
+                                                  List<EscrowCredit> credits,
+                                                  String nextReferenceId,
+                                                  long remainderAmount,
+                                                  TransactionContext context) {
+                return escrowService.settleAndRollover(oldReferenceId, credits,
+                        nextReferenceId, remainderAmount, context);
+            }
+
+            @Override
             public EscrowResult captureMoney(String referenceId, UUID recipientId, TransactionContext context) {
                 return escrowService.captureMoney(referenceId, recipientId, context);
             }

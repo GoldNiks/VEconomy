@@ -22,6 +22,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -169,6 +174,155 @@ class EscrowServiceTest {
         assertEquals(EscrowResult.Status.INVALID_CREDITS, result.status());
         assertEquals(0, db.accountService.getBalance(buyer));
         assertEquals(1000, db.escrowService.sumReserved());
+    }
+
+    @Test
+    void rolloverAtomicallySettlesCreditsRefundAndNextEscrow() {
+        db.accountService.deposit(owner, 2500, ctx(TransactionType.ADMIN_DEPOSIT, "добавка"));
+        UUID treasury = EscrowService.treasuryUuid();
+        assertTrue(db.escrowService.reserveMoney(owner, 3500, "buy:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy")).isSuccess());
+        List<EscrowCredit> credits = List.of(
+                new EscrowCredit(buyer, 1560, "seller"),
+                new EscrowCredit(treasury, 40, "commission"),
+                new EscrowCredit(owner, 150, "buyer-refund"));
+
+        EscrowResult result = db.escrowService.settleAndRollover(
+                "buy:0", credits, "buy:1", 1750,
+                ctx(TransactionType.ESCROW_CAPTURE, "partial fill"));
+
+        assertTrue(result.isSuccess());
+        assertEquals(1560, db.accountService.getBalance(buyer));
+        assertEquals(40, db.accountService.getBalance(treasury));
+        assertEquals(150, db.accountService.getBalance(owner),
+                "только price-improvement refund проходит через обычный balance");
+        EscrowSnapshot old = db.escrowService.findEscrow("buy:0").snapshot();
+        EscrowSnapshot next = db.escrowService.findEscrow("buy:1").snapshot();
+        assertEquals(EscrowState.CAPTURED, old.state());
+        assertEquals(EscrowState.RESERVED, next.state());
+        assertEquals(owner, next.ownerId());
+        assertEquals(1750, next.amount());
+        assertEquals(1750, db.escrowService.sumReserved());
+        assertEquals(1, db.ledger.history(owner, 1, 100).stream()
+                .filter(row -> row.type() == TransactionType.ESCROW_ROLLOVER).count());
+    }
+
+    @Test
+    void rolloverWithZeroRemainderCreatesNoNextEscrow() {
+        db.escrowService.reserveMoney(owner, 1000, "full:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        EscrowResult result = db.escrowService.settleAndRollover("full:0",
+                List.of(new EscrowCredit(buyer, 1000, "seller")), null, 0,
+                ctx(TransactionType.ESCROW_CAPTURE, "full fill"));
+        assertTrue(result.isSuccess());
+        assertEquals(EscrowState.CAPTURED,
+                db.escrowService.findEscrow("full:0").snapshot().state());
+        assertEquals(0, db.escrowService.sumReserved());
+    }
+
+    @Test
+    void rolloverRejectsBrokenInvariant() {
+        db.escrowService.reserveMoney(owner, 1000, "bad:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        EscrowResult result = db.escrowService.settleAndRollover("bad:0",
+                List.of(new EscrowCredit(buyer, 500, "seller")), "bad:1", 400,
+                ctx(TransactionType.ESCROW_CAPTURE, "bad"));
+        assertEquals(EscrowResult.Status.INVALID_CREDITS, result.status());
+        assertEquals(EscrowState.RESERVED,
+                db.escrowService.findEscrow("bad:0").snapshot().state());
+        assertEquals(EscrowLookupResult.Status.NOT_FOUND,
+                db.escrowService.findEscrow("bad:1").status());
+    }
+
+    @Test
+    void rolloverRetryIsIdempotentAndParameterChangesConflict() {
+        db.escrowService.reserveMoney(owner, 1000, "retry:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        List<EscrowCredit> credits = List.of(new EscrowCredit(buyer, 400, "seller"));
+        assertTrue(db.escrowService.settleAndRollover("retry:0", credits, "retry:1", 600,
+                ctx(TransactionType.ESCROW_CAPTURE, "first")).isSuccess());
+        assertEquals(EscrowResult.Status.ALREADY_SETTLED,
+                db.escrowService.settleAndRollover("retry:0", credits, "retry:1", 600,
+                        ctx(TransactionType.ESCROW_CAPTURE, "same")).status());
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.settleAndRollover("retry:0", credits, "retry:1", 500,
+                        ctx(TransactionType.ESCROW_CAPTURE, "other remainder")).status());
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.settleAndRollover("retry:0", credits, "retry:2", 600,
+                        ctx(TransactionType.ESCROW_CAPTURE, "other next")).status());
+        assertEquals(EscrowResult.Status.CONFLICT,
+                db.escrowService.settleAndRollover("retry:0",
+                        List.of(new EscrowCredit(buyer, 300, "seller")), "retry:1", 700,
+                        ctx(TransactionType.ESCROW_CAPTURE, "other credits")).status());
+        assertEquals(400, db.accountService.getBalance(buyer));
+        assertEquals(600, db.escrowService.sumReserved());
+    }
+
+    @Test
+    void rolloverRejectsNextReferenceCollision() {
+        db.accountService.deposit(owner, 1000, ctx(TransactionType.ADMIN_DEPOSIT, "добавка"));
+        db.escrowService.reserveMoney(owner, 1000, "collision:next",
+                ctx(TransactionType.ESCROW_RESERVE, "existing"));
+        db.escrowService.reserveMoney(owner, 1000, "collision:old",
+                ctx(TransactionType.ESCROW_RESERVE, "old"));
+        EscrowResult result = db.escrowService.settleAndRollover("collision:old",
+                List.of(new EscrowCredit(buyer, 400, "seller")), "collision:next", 600,
+                ctx(TransactionType.ESCROW_CAPTURE, "collision"));
+        assertEquals(EscrowResult.Status.CONFLICT, result.status());
+        assertEquals(EscrowState.RESERVED,
+                db.escrowService.findEscrow("collision:old").snapshot().state());
+        assertEquals(0, db.accountService.getBalance(buyer));
+    }
+
+    @Test
+    void rolloverFaultAfterCreditRollsBackEverything() {
+        assertRolloverFaultRollsBack(EscrowService.RolloverStage.AFTER_CREDIT);
+    }
+
+    @Test
+    void rolloverFaultBeforeNextEscrowRollsBackEverything() {
+        assertRolloverFaultRollsBack(EscrowService.RolloverStage.BEFORE_NEXT_ESCROW);
+    }
+
+    @Test
+    void rolloverFaultAfterNextEscrowRollsBackEverything() {
+        assertRolloverFaultRollsBack(EscrowService.RolloverStage.AFTER_NEXT_ESCROW);
+    }
+
+    @Test
+    void concurrentRolloverOfOneOldEscrowPaysExactlyOnce() throws Exception {
+        db.escrowService.reserveMoney(owner, 1000, "race:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        List<EscrowCredit> credits = List.of(new EscrowCredit(buyer, 400, "seller"));
+        int threads = 8;
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger idempotent = new AtomicInteger();
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        for (int i = 0; i < threads; i++) {
+            pool.execute(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    EscrowResult result = db.escrowService.settleAndRollover(
+                            "race:0", credits, "race:1", 600,
+                            ctx(TransactionType.ESCROW_CAPTURE, "race"));
+                    if (result.status() == EscrowResult.Status.SUCCESS) success.incrementAndGet();
+                    if (result.status() == EscrowResult.Status.ALREADY_SETTLED) idempotent.incrementAndGet();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        assertTrue(ready.await(10, TimeUnit.SECONDS));
+        start.countDown();
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+        assertEquals(1, success.get());
+        assertEquals(threads - 1, idempotent.get());
+        assertEquals(400, db.accountService.getBalance(buyer));
+        assertEquals(600, db.escrowService.sumReserved());
     }
 
     @Test
@@ -465,6 +619,23 @@ class EscrowServiceTest {
             }
             return super.updateBalance(connection, playerId, newBalance, expectedVersion, now);
         }
+    }
+
+    private void assertRolloverFaultRollsBack(EscrowService.RolloverStage faultStage) {
+        EscrowService faulty = new EscrowService(db.database, db.accounts, db.escrow,
+                db.accountService, db.ledger, db.settings, stage -> stage == faultStage);
+        db.escrowService.reserveMoney(owner, 1000, "fault:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        EscrowResult result = faulty.settleAndRollover("fault:0",
+                List.of(new EscrowCredit(buyer, 400, "seller")), "fault:1", 600,
+                ctx(TransactionType.ESCROW_CAPTURE, "fault"));
+        assertEquals(EscrowResult.Status.DATABASE_ERROR, result.status());
+        assertEquals(EscrowState.RESERVED,
+                db.escrowService.findEscrow("fault:0").snapshot().state());
+        assertEquals(EscrowLookupResult.Status.NOT_FOUND,
+                db.escrowService.findEscrow("fault:1").status());
+        assertEquals(0, db.accountService.getBalance(buyer));
+        assertEquals(1000, db.escrowService.sumReserved());
     }
 
     private static com.valorcraft.veconomy.config.EconomySettings withMaximumBalance(long maximumBalance) {

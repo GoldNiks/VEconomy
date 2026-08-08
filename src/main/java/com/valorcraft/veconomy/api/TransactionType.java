@@ -25,6 +25,8 @@ public enum TransactionType {
     ESCROW_RELEASE,
     /** Передача средств из эскроу получателю. */
     ESCROW_CAPTURE,
+    /** Атомарный перенос остатка одного эскроу в следующую reference epoch. */
+    ESCROW_ROLLOVER,
     /** Компенсирующая откатная операция. */
     ROLLBACK,
     /** Комиссия. */

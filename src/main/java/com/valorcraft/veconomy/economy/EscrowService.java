@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 import static com.valorcraft.veconomy.api.EscrowResult.failed;
 import static com.valorcraft.veconomy.api.EscrowResult.success;
@@ -43,6 +44,8 @@ import static com.valorcraft.veconomy.api.EscrowResult.success;
  * (all-or-nothing).
  */
 public final class EscrowService {
+
+    enum RolloverStage { AFTER_OLD_CAPTURE, AFTER_CREDIT, BEFORE_NEXT_ESCROW, AFTER_NEXT_ESCROW }
 
     /**
      * Сигнал прервать транзакцию возврата средств: после перехода {@code RESERVED→RELEASED}
@@ -71,16 +74,24 @@ public final class EscrowService {
     private final EscrowRepository escrow;
     private final AccountService accountService;
     private final LedgerService ledger;
+    private final Predicate<RolloverStage> rolloverFault;
     private volatile EconomySettings settings;
 
     public EscrowService(DatabaseManager database, AccountRepository accounts, EscrowRepository escrow,
                          AccountService accountService, LedgerService ledger, EconomySettings settings) {
+        this(database, accounts, escrow, accountService, ledger, settings, stage -> false);
+    }
+
+    EscrowService(DatabaseManager database, AccountRepository accounts, EscrowRepository escrow,
+                  AccountService accountService, LedgerService ledger, EconomySettings settings,
+                  Predicate<RolloverStage> rolloverFault) {
         this.database = database;
         this.accounts = accounts;
         this.escrow = escrow;
         this.accountService = accountService;
         this.ledger = ledger;
         this.settings = settings;
+        this.rolloverFault = rolloverFault == null ? stage -> false : rolloverFault;
     }
 
     public void applySettings(EconomySettings settings) {
@@ -259,6 +270,165 @@ public final class EscrowService {
             VEconomyMod.LOGGER.error("Ошибка расчёта эскроу {}", referenceId, e);
             return failed(EscrowResult.Status.DATABASE_ERROR);
         }
+    }
+
+    /**
+     * Atomic partial settlement + rollover. Баланс владельца для remainder не
+     * используется: остаток переносится непосредственно из old escrow в next
+     * внутри той же SQL-транзакции.
+     */
+    public EscrowResult settleAndRollover(String oldReferenceId, List<EscrowCredit> credits,
+                                          String nextReferenceId, long remainderAmount,
+                                          TransactionContext context) {
+        if (oldReferenceId == null || oldReferenceId.isBlank() || credits == null
+                || remainderAmount < 0 || context == null) {
+            return failed(EscrowResult.Status.INVALID_AMOUNT);
+        }
+        if (remainderAmount > 0
+                && (nextReferenceId == null || nextReferenceId.isBlank()
+                || oldReferenceId.equals(nextReferenceId))) {
+            return failed(EscrowResult.Status.INVALID_AMOUNT);
+        }
+        if (remainderAmount == 0 && nextReferenceId != null && !nextReferenceId.isBlank()) {
+            return failed(EscrowResult.Status.INVALID_AMOUNT);
+        }
+        if (credits.isEmpty() && remainderAmount == 0) {
+            return failed(EscrowResult.Status.INVALID_CREDITS);
+        }
+        for (EscrowCredit credit : credits) {
+            if (credit == null || credit.recipientId() == null || credit.amount() <= 0) {
+                return failed(EscrowResult.Status.INVALID_CREDITS);
+            }
+        }
+        final long total;
+        try {
+            long sum = remainderAmount;
+            for (EscrowCredit credit : credits) {
+                sum = Math.addExact(sum, credit.amount());
+            }
+            total = sum;
+        } catch (ArithmeticException e) {
+            return failed(EscrowResult.Status.LIMIT_EXCEEDED);
+        }
+
+        String canonicalNext = remainderAmount == 0 ? "" : nextReferenceId;
+        String hash = rolloverHash(credits, canonicalNext, remainderAmount);
+        String json = settlementJson(credits);
+        try {
+            return database.inTransaction(connection -> {
+                EscrowRow reservation = escrow.find(connection, oldReferenceId, database.dialect())
+                        .orElse(null);
+                if (reservation == null) {
+                    return failed(EscrowResult.Status.NOT_FOUND);
+                }
+                if (reservation.state() == EscrowState.RELEASED) {
+                    return failed(EscrowResult.Status.WRONG_STATE);
+                }
+                if (reservation.state() == EscrowState.CAPTURED) {
+                    return idempotentRollover(connection, oldReferenceId, reservation, hash,
+                            canonicalNext, remainderAmount);
+                }
+                if (total != reservation.amountMinor()) {
+                    return failed(EscrowResult.Status.INVALID_CREDITS);
+                }
+                if (remainderAmount > 0
+                        && escrow.find(connection, canonicalNext, database.dialect()).isPresent()) {
+                    return failed(EscrowResult.Status.CONFLICT);
+                }
+
+                long now = System.currentTimeMillis();
+                if (!escrow.settle(connection, oldReferenceId, now, hash, json)) {
+                    EscrowRow current = escrow.find(connection, oldReferenceId, database.dialect())
+                            .orElse(null);
+                    if (current == null || current.state() == EscrowState.RELEASED) {
+                        return failed(EscrowResult.Status.WRONG_STATE);
+                    }
+                    return idempotentRollover(connection, oldReferenceId, current, hash,
+                            canonicalNext, remainderAmount);
+                }
+                abortRolloverAt(RolloverStage.AFTER_OLD_CAPTURE);
+
+                List<EscrowCredit> sorted = new ArrayList<>(credits);
+                sorted.sort(Comparator.comparing(EscrowService::creditPart));
+                Map<String, Integer> legOrdinals = new java.util.HashMap<>();
+                for (EscrowCredit credit : sorted) {
+                    String part = creditPart(credit);
+                    int ordinal = legOrdinals.getOrDefault(part, 0);
+                    legOrdinals.put(part, ordinal + 1);
+                    creditRecipient(connection, reservation.ownerUuid(), oldReferenceId, hash,
+                            credit, ordinal, context);
+                    abortRolloverAt(RolloverStage.AFTER_CREDIT);
+                }
+
+                if (remainderAmount > 0) {
+                    abortRolloverAt(RolloverStage.BEFORE_NEXT_ESCROW);
+                    Map<String, String> metadata = new java.util.HashMap<>(context.metadata());
+                    metadata.put("rolloverFrom", oldReferenceId);
+                    metadata.put("rolloverHash", hash);
+                    escrow.insert(connection, new EscrowRow(canonicalNext, reservation.ownerUuid(),
+                            remainderAmount, EscrowState.RESERVED, now, now, metadata));
+                    abortRolloverAt(RolloverStage.AFTER_NEXT_ESCROW);
+
+                    Map<String, String> ledgerMetadata = new java.util.HashMap<>(metadata);
+                    ledgerMetadata.put("nextReferenceId", canonicalNext);
+                    ledger.record(connection, new TransactionRow(
+                            null, TransactionType.ESCROW_ROLLOVER, reservation.ownerUuid(), null,
+                            remainderAmount, now, context.actorId(), context.reason(),
+                            oldReferenceId + "|" + hash + "|rollover", ledgerMetadata,
+                            null, null));
+                }
+                return success(reservation.amountMinor(), oldReferenceId);
+            });
+        } catch (SettleAbort abort) {
+            return failed(abort.status);
+        } catch (ArithmeticException e) {
+            return failed(EscrowResult.Status.LIMIT_EXCEEDED);
+        } catch (DatabaseException e) {
+            if (isConstraintViolation(e)) {
+                return failed(EscrowResult.Status.CONFLICT);
+            }
+            VEconomyMod.LOGGER.error("Ошибка rollover эскроу {} -> {}",
+                    oldReferenceId, nextReferenceId, e);
+            return failed(EscrowResult.Status.DATABASE_ERROR);
+        }
+    }
+
+    private EscrowResult idempotentRollover(Connection connection, String oldReferenceId,
+                                             EscrowRow old, String hash, String nextReferenceId,
+                                             long remainderAmount) {
+        if (old.state() != EscrowState.CAPTURED || !hash.equals(old.settledHash())) {
+            return failed(EscrowResult.Status.CONFLICT);
+        }
+        if (remainderAmount == 0) {
+            return success(old.amountMinor(), oldReferenceId, EscrowResult.Status.ALREADY_SETTLED);
+        }
+        EscrowRow next = escrow.find(connection, nextReferenceId, database.dialect()).orElse(null);
+        if (next == null || next.state() != EscrowState.RESERVED
+                || !next.ownerUuid().equals(old.ownerUuid())
+                || next.amountMinor() != remainderAmount) {
+            return failed(EscrowResult.Status.CONFLICT);
+        }
+        return success(old.amountMinor(), oldReferenceId, EscrowResult.Status.ALREADY_SETTLED);
+    }
+
+    private void abortRolloverAt(RolloverStage stage) {
+        if (rolloverFault.test(stage)) {
+            throw new SettleAbort(EscrowResult.Status.DATABASE_ERROR);
+        }
+    }
+
+    private static boolean isConstraintViolation(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof java.sql.SQLIntegrityConstraintViolationException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null && (message.contains("UNIQUE constraint failed")
+                    || message.contains("Duplicate entry") || message.contains("PRIMARY KEY"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private EscrowResult idempotentSettle(String referenceId, EscrowRow row, String hash) {
@@ -466,6 +636,30 @@ public final class EscrowService {
             parts.add(creditPart(c));
         }
         parts.sort(Comparator.naturalOrder());
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(String.join(";", parts).getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(bytes.length * 2);
+            for (byte b : bytes) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Идентичность rollover включает credits, next reference и сумму остатка. */
+    public static String rolloverHash(List<EscrowCredit> credits, String nextReferenceId,
+                                      long remainderAmount) {
+        List<String> parts = new ArrayList<>();
+        for (EscrowCredit c : credits) {
+            parts.add(creditPart(c));
+        }
+        parts.sort(Comparator.naturalOrder());
+        parts.add("next=" + (nextReferenceId == null ? "" : nextReferenceId));
+        parts.add("remainder=" + remainderAmount);
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] bytes = digest.digest(String.join(";", parts).getBytes(StandardCharsets.UTF_8));

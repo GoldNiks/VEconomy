@@ -418,6 +418,92 @@ class MySqlIntegrationTest {
         }
     }
 
+    @Test
+    void atomicRolloverPersistsCapturedOldAndReservedNextOnMySql() {
+        EconomySettings settings = mysqlSettings();
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(Path.of("mysql-it-rollover"), settings);
+        try {
+            EconomyStack stack = new EconomyStack(manager, settings);
+            UUID owner = UUID.randomUUID();
+            UUID seller = UUID.randomUUID();
+            UUID treasury = stack.escrowService.treasuryUuid();
+            stack.accountService.deposit(owner, 3500,
+                    TransactionContext.of(TransactionType.ADMIN_DEPOSIT, null, "seed"));
+            assertTrue(stack.escrowService.reserveMoney(owner, 3500, "mysql-roll:0",
+                    TransactionContext.of(TransactionType.ESCROW_RESERVE, null, "buy")).isSuccess());
+            List<EscrowCredit> credits = List.of(
+                    new EscrowCredit(seller, 1560, "seller"),
+                    new EscrowCredit(treasury, 40, "commission"),
+                    new EscrowCredit(owner, 150, "buyer-refund"));
+
+            assertTrue(stack.escrowService.settleAndRollover("mysql-roll:0", credits,
+                    "mysql-roll:1", 1750,
+                    TransactionContext.of(TransactionType.ESCROW_CAPTURE, null, "partial")).isSuccess());
+            assertEquals(EscrowState.CAPTURED,
+                    stack.escrowService.findEscrow("mysql-roll:0").snapshot().state());
+            var next = stack.escrowService.findEscrow("mysql-roll:1").snapshot();
+            assertEquals(EscrowState.RESERVED, next.state());
+            assertEquals(owner, next.ownerId());
+            assertEquals(1750, next.amount());
+            assertEquals(150, stack.accountService.getBalance(owner));
+            assertEquals(1560, stack.accountService.getBalance(seller));
+            long rolloverRows = manager.inTransaction(c ->
+                    countTypeForSource(c, TransactionType.ESCROW_ROLLOVER.name(), owner.toString()));
+            assertEquals(1L, rolloverRows);
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void concurrentAtomicRolloverOnMySqlPaysOnce() throws Exception {
+        EconomySettings settings = mysqlSettings();
+        DatabaseManager manager = new DatabaseManager();
+        manager.open(Path.of("mysql-it-rollover-race"), settings);
+        try {
+            EconomyStack stack = new EconomyStack(manager, settings);
+            UUID owner = UUID.randomUUID();
+            UUID seller = UUID.randomUUID();
+            stack.accountService.deposit(owner, 1000,
+                    TransactionContext.of(TransactionType.ADMIN_DEPOSIT, null, "seed"));
+            stack.escrowService.reserveMoney(owner, 1000, "mysql-race-roll:0",
+                    TransactionContext.of(TransactionType.ESCROW_RESERVE, null, "buy"));
+            List<EscrowCredit> credits = List.of(new EscrowCredit(seller, 400, "seller"));
+            int threads = 8;
+            CountDownLatch ready = new CountDownLatch(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger success = new AtomicInteger();
+            AtomicInteger idempotent = new AtomicInteger();
+            ExecutorService pool = Executors.newFixedThreadPool(threads);
+            for (int i = 0; i < threads; i++) {
+                pool.execute(() -> {
+                    ready.countDown();
+                    try {
+                        start.await();
+                        EscrowResult result = stack.escrowService.settleAndRollover(
+                                "mysql-race-roll:0", credits, "mysql-race-roll:1", 600,
+                                TransactionContext.of(TransactionType.ESCROW_CAPTURE, null, "race"));
+                        if (result.status() == EscrowResult.Status.SUCCESS) success.incrementAndGet();
+                        if (result.status() == EscrowResult.Status.ALREADY_SETTLED) idempotent.incrementAndGet();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }
+            assertTrue(ready.await(30, TimeUnit.SECONDS));
+            start.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS));
+            assertEquals(1, success.get());
+            assertEquals(threads - 1, idempotent.get());
+            assertEquals(400, stack.accountService.getBalance(seller));
+            assertEquals(600, stack.escrowService.sumReserved());
+        } finally {
+            manager.close();
+        }
+    }
+
     // ------------------------------------------------------------ helpers
 
     private static boolean columnExists(Connection c, String table, String column) throws SQLException {

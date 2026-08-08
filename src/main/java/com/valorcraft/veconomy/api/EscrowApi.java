@@ -27,6 +27,16 @@ public interface EscrowApi {
     EscrowResult settleMoney(String referenceId, List<EscrowCredit> credits, TransactionContext context);
 
     /**
+     * Атомарно распределить часть старого резерва и перенести остаток в новую
+     * RESERVED escrow-запись того же владельца. Сумма credits и remainderAmount
+     * обязана равняться сумме old escrow. При remainderAmount=0 новая запись не
+     * создаётся. Повтор с теми же credits/nextReference/remainder идемпотентен.
+     */
+    EscrowResult settleAndRollover(String oldReferenceId, List<EscrowCredit> credits,
+                                   String nextReferenceId, long remainderAmount,
+                                   TransactionContext context);
+
+    /**
      * Передать зарезервированные средства одному получателю (целиком). Реализуется как
      * {@link #settleMoney} с одним кредитом: повтор тому же получателю — {@code ALREADY_SETTLED},
      * другому получателю или после иного расчёта — {@code CONFLICT}.
