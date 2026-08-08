@@ -451,6 +451,14 @@ class MySqlIntegrationTest {
             long rolloverRows = manager.inTransaction(c ->
                     countTypeForSource(c, TransactionType.ESCROW_ROLLOVER.name(), owner.toString()));
             assertEquals(1L, rolloverRows);
+            assertTrue(stack.escrowService.releaseMoney("mysql-roll:1",
+                    TransactionContext.of(TransactionType.ESCROW_RELEASE, null, "cancel next")).isSuccess());
+            assertEquals(EscrowResult.Status.ALREADY_SETTLED,
+                    stack.escrowService.settleAndRollover("mysql-roll:0", credits,
+                            "mysql-roll:1", 1750,
+                            TransactionContext.of(TransactionType.ESCROW_CAPTURE, null,
+                                    "late retry")).status());
+            assertEquals(1560, stack.accountService.getBalance(seller));
         } finally {
             manager.close();
         }

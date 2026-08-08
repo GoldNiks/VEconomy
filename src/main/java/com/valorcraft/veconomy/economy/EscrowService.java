@@ -403,9 +403,10 @@ public final class EscrowService {
             return success(old.amountMinor(), oldReferenceId, EscrowResult.Status.ALREADY_SETTLED);
         }
         EscrowRow next = escrow.find(connection, nextReferenceId, database.dialect()).orElse(null);
-        if (next == null || next.state() != EscrowState.RESERVED
-                || !next.ownerUuid().equals(old.ownerUuid())
-                || next.amountMinor() != remainderAmount) {
+        if (next == null || !next.ownerUuid().equals(old.ownerUuid())
+                || next.amountMinor() != remainderAmount
+                || !oldReferenceId.equals(next.metadata().get("rolloverFrom"))
+                || !hash.equals(next.metadata().get("rolloverHash"))) {
             return failed(EscrowResult.Status.CONFLICT);
         }
         return success(old.amountMinor(), oldReferenceId, EscrowResult.Status.ALREADY_SETTLED);
@@ -458,7 +459,10 @@ public final class EscrowService {
         } catch (ArithmeticException e) {
             throw new SettleAbort(EscrowResult.Status.LIMIT_EXCEEDED);
         }
-        if (newRecipientBalance > settings.maximumBalance) {
+        // A credit back to the escrow owner is a return of that owner's locked money,
+        // and therefore has the same maximumBalance semantics as releaseMoney.
+        boolean returningOwnedFunds = credit.recipientId().equals(ownerUuid);
+        if (!returningOwnedFunds && newRecipientBalance > settings.maximumBalance) {
             throw new SettleAbort(EscrowResult.Status.LIMIT_EXCEEDED);
         }
         if (!accounts.updateBalance(connection, credit.recipientId(), newRecipientBalance,

@@ -259,6 +259,42 @@ class EscrowServiceTest {
     }
 
     @Test
+    void lateRolloverRetryRemainsIdempotentAfterNextEscrowWasCaptured() {
+        db.escrowService.reserveMoney(owner, 1000, "late-captured:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        List<EscrowCredit> firstCredits = List.of(new EscrowCredit(buyer, 400, "seller"));
+        assertTrue(db.escrowService.settleAndRollover("late-captured:0", firstCredits,
+                "late-captured:1", 600, ctx(TransactionType.ESCROW_CAPTURE, "first")).isSuccess());
+        assertTrue(db.escrowService.settleMoney("late-captured:1",
+                List.of(new EscrowCredit(buyer, 600, "seller")),
+                ctx(TransactionType.ESCROW_CAPTURE, "next fill")).isSuccess());
+
+        assertEquals(EscrowResult.Status.ALREADY_SETTLED,
+                db.escrowService.settleAndRollover("late-captured:0", firstCredits,
+                        "late-captured:1", 600,
+                        ctx(TransactionType.ESCROW_CAPTURE, "late retry")).status());
+        assertEquals(1000, db.accountService.getBalance(buyer));
+    }
+
+    @Test
+    void lateRolloverRetryRemainsIdempotentAfterNextEscrowWasReleased() {
+        db.escrowService.reserveMoney(owner, 1000, "late-released:0",
+                ctx(TransactionType.ESCROW_RESERVE, "buy"));
+        List<EscrowCredit> credits = List.of(new EscrowCredit(buyer, 400, "seller"));
+        assertTrue(db.escrowService.settleAndRollover("late-released:0", credits,
+                "late-released:1", 600, ctx(TransactionType.ESCROW_CAPTURE, "first")).isSuccess());
+        assertTrue(db.escrowService.releaseMoney("late-released:1",
+                ctx(TransactionType.ESCROW_RELEASE, "cancel next")).isSuccess());
+
+        assertEquals(EscrowResult.Status.ALREADY_SETTLED,
+                db.escrowService.settleAndRollover("late-released:0", credits,
+                        "late-released:1", 600,
+                        ctx(TransactionType.ESCROW_CAPTURE, "late retry")).status());
+        assertEquals(400, db.accountService.getBalance(buyer));
+        assertEquals(600, db.accountService.getBalance(owner));
+    }
+
+    @Test
     void rolloverRejectsNextReferenceCollision() {
         db.accountService.deposit(owner, 1000, ctx(TransactionType.ADMIN_DEPOSIT, "добавка"));
         db.escrowService.reserveMoney(owner, 1000, "collision:next",
@@ -557,6 +593,37 @@ class EscrowServiceTest {
             assertTrue(release.isSuccess());
             assertEquals(1300, small.accountService.getBalance(accountOwner));
             assertEquals(0, small.escrowService.sumReserved());
+        }
+    }
+
+    @Test
+    void rolloverOwnerRefundIgnoresMaximumBalanceButExternalCreditsDoNot() {
+        EconomySettings lowLimit = withMaximumBalance(1000);
+        try (TestDb small = TestDb.create(lowLimit)) {
+            UUID accountOwner = UUID.randomUUID();
+            UUID seller = UUID.randomUUID();
+            small.accountService.deposit(accountOwner, 800,
+                    ctx(TransactionType.ADMIN_DEPOSIT, "start"));
+            assertTrue(small.escrowService.reserveMoney(accountOwner, 300, "refund-limit:0",
+                    ctx(TransactionType.ESCROW_RESERVE, "buy")).isSuccess());
+            assertTrue(small.accountService.deposit(accountOwner, 500,
+                    ctx(TransactionType.ADMIN_DEPOSIT, "fill to limit")).isSuccess());
+
+            EscrowResult returned = small.escrowService.settleAndRollover("refund-limit:0",
+                    List.of(new EscrowCredit(seller, 200, "seller"),
+                            new EscrowCredit(accountOwner, 100, "buyer-refund")),
+                    null, 0, ctx(TransactionType.ESCROW_CAPTURE, "fill"));
+            assertTrue(returned.isSuccess());
+            assertEquals(1100, small.accountService.getBalance(accountOwner));
+
+            assertTrue(small.escrowService.reserveMoney(accountOwner, 100, "external-limit:0",
+                    ctx(TransactionType.ESCROW_RESERVE, "buy")).isSuccess());
+            small.accountService.deposit(seller, 800,
+                    ctx(TransactionType.ADMIN_DEPOSIT, "seller near limit"));
+            EscrowResult blocked = small.escrowService.settleAndRollover("external-limit:0",
+                    List.of(new EscrowCredit(seller, 100, "seller")), null, 0,
+                    ctx(TransactionType.ESCROW_CAPTURE, "external credit"));
+            assertEquals(EscrowResult.Status.LIMIT_EXCEEDED, blocked.status());
         }
     }
 
