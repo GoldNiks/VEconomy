@@ -2,6 +2,7 @@ package com.valorcraft.veconomy.config;
 
 import com.electronwill.nightconfig.core.CommentedConfig;
 import com.valorcraft.veconomy.config.EconomySettings.MilestoneReward;
+import com.valorcraft.veconomy.integration.ftbquests.QuestRewardConfig;
 import net.minecraftforge.common.ForgeConfigSpec;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +13,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -97,6 +99,34 @@ class EconomyDefaultsTest {
         assertTrue(template.contains("\"amount\": 30"), "шаблон enter_nether = 30");
         assertTrue(template.contains("\"amount\": 75"), "шаблон visit_moon = 75");
         assertTrue(template.contains("\"amount\": 120"), "шаблон event_bonus = 120");
+    }
+
+    @Test
+    void milestoneTemplateSamplesAreDisabledByDefault() throws IOException {
+        Path dir = Files.createTempDirectory("veconomy-milestones-template-disabled");
+        MilestoneConfig.load(dir, 1_000_000L);
+        String template = Files.readString(dir.resolve(MilestoneConfig.FILE_NAME), StandardCharsets.UTF_8);
+        int occurrences = 0;
+        int idx = 0;
+        while ((idx = template.indexOf("\"enabled\": false", idx)) >= 0) {
+            occurrences++;
+            idx++;
+        }
+        assertEquals(3, occurrences, "все примеры шаблона должны быть отключены (enabled: false)");
+    }
+
+    @Test
+    void questTemplateStartsWithEmptyChaptersAndQuests() throws IOException {
+        Path dir = Files.createTempDirectory("veconomy-quests-template");
+        QuestRewardConfig.load(dir);
+        String template = Files.readString(dir.resolve("veconomy-quests.json"), StandardCharsets.UTF_8);
+        assertTrue(template.contains("\"chapters\": {"));
+        assertTrue(template.contains("\"quests\": {"));
+        String chaptersBlock = template.substring(template.indexOf("\"chapters\": {"),
+                template.indexOf("\"quests\": {"));
+        assertFalse(chaptersBlock.contains("\"Глава"), "шаблон не должен содержать примеры глав");
+        String questsBlock = template.substring(template.indexOf("\"quests\": {"));
+        assertFalse(questsBlock.contains("\"123"), "шаблон не должен содержать примеры квестов");
     }
 
     @Test

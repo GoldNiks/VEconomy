@@ -31,6 +31,9 @@ public final class ActivityService {
     private final AuditService audit;
     private volatile EconomySettings settings;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
+    /** Сессии игроков, которые были онлайн на момент выключения учёта. При повторном
+     *  включении отсчёт возобновляется с момента включения, а не catch-up'ом. */
+    private final Map<UUID, Session> pausedSessions = new ConcurrentHashMap<>();
     /** Выходы, данные которых ещё не подтверждены в базе (офлайн, повторно записываются).
      *  На один UUID хранится одна слитая сессия: при втором выходе до сохранения счётчики
      *  и дни складываются, иначе вторая сессия заменила бы первую несохранённую. */
@@ -46,9 +49,38 @@ public final class ActivityService {
         WeekId.useZone(WeeklyMath.zoneOf(settings.weeklyFund.timeZone));
     }
 
+    /**
+     * Горячее применение настроек. Переход enabled → disabled финализирует всё
+     * накопленное ровно до момента выключения (последний сэмпл + сохранение в базу)
+     * и приостанавливает живые сессии; время после выключения не учитывается.
+     * Переход disabled → enabled возобновляет отсчёт для всё ещё онлайн-игроков
+     * с момента включения, без catch-up за выключенный период.
+     */
     public void applySettings(EconomySettings settings) {
+        applySettingsAt(settings, System.currentTimeMillis());
+    }
+
+    /** {@link #applySettings(EconomySettings)} с фиксированным моментом переключения (для тестов). */
+    void applySettingsAt(EconomySettings settings, long nowMillis) {
+        boolean wasEnabled = this.settings.activity.enabled;
+        boolean nowEnabled = settings.activity.enabled;
         this.settings = settings;
         WeekId.useZone(WeeklyMath.zoneOf(settings.weeklyFund.timeZone));
+        long now = nowMillis;
+        if (wasEnabled && !nowEnabled) {
+            for (Session session : sessions.values()) {
+                sampleSession(session, now);
+            }
+            persistAllAt(now);
+            sessions.forEach((playerId, session) -> pausedSessions.put(playerId, session));
+            sessions.clear();
+        } else if (!wasEnabled && nowEnabled) {
+            for (Session paused : pausedSessions.values()) {
+                paused.lastSample = now;
+                sessions.put(paused.playerId, paused);
+            }
+            pausedSessions.clear();
+        }
     }
 
     // ---------------------------------------------------------------- events
@@ -60,7 +92,9 @@ public final class ActivityService {
 
     void onPlayerJoinedAt(UUID playerId, String dimension, long startMillis) {
         // Учёт отключён: сессия не создаётся, дальше все обработчики событий — no-op.
+        // Заодно снимается возможная приостановленная сессия (повторный вход).
         if (!settings.activity.enabled) {
+            pausedSessions.remove(playerId);
             return;
         }
         sessions.put(playerId, new Session(playerId, startMillis, startMillis,
@@ -376,6 +410,9 @@ public final class ActivityService {
     void onPlayerLeftAt(UUID playerId, long now) {
         Session session = sessions.get(playerId);
         if (session == null) {
+            // Выход во время выключенного учёта: приостановленная сессия уже сохранена
+            // при выключении, накопленное за выключенный период не учитывалось.
+            pausedSessions.remove(playerId);
             return;
         }
         // Сэмплируем именно эту сессию ДО удаления: иначе последний несэмплированный

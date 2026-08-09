@@ -145,6 +145,103 @@ class ActivityServiceTest {
         }
     }
 
+    /** Горячее выключение: накопленное фиксируется ровно до момента выключения, время после — нет. */
+    @Test
+    void hotDisableFinalizesUpToDisableMoment() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long join = System.currentTimeMillis() - 1_000_000;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, join);
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(join + 60_000);
+            long disableAt = join + 120_000;
+            db.activityService.applySettingsAt(withActivity(
+                    new EconomySettings.Activity(false, 300, 20, 60, 0.5)), disableAt);
+
+            ActivityService.ActivityInfo afterDisable = db.activityService.info(player).orElseThrow();
+            assertEquals(120, afterDisable.totalOnlineSeconds(),
+                    "до момента выключения учтено полностью");
+            assertEquals(120, afterDisable.totalActiveSeconds());
+
+            db.activityService.sampleAt(disableAt + 60_000);
+            ActivityService.ActivityInfo duringDisable = db.activityService.info(player).orElseThrow();
+            assertEquals(120, duringDisable.totalOnlineSeconds(),
+                    "выключенный период не начисляется");
+            assertEquals(120, duringDisable.totalActiveSeconds());
+
+            long enableAt = disableAt + 1_000_000;
+            db.activityService.applySettingsAt(withActivity(
+                    new EconomySettings.Activity(true, 300, 20, 60, 0.5)), enableAt);
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(enableAt + 30_000);
+            db.activityService.persistAllAt(enableAt + 30_000);
+
+            ActivityService.ActivityInfo afterEnable = db.activityService.info(player).orElseThrow();
+            assertEquals(150, afterEnable.totalOnlineSeconds(),
+                    "после повторного включения отсчёт возобновляется с момента включения");
+            assertEquals(150, afterEnable.totalActiveSeconds());
+            assertEquals(150, daySeconds(db, WeekId.current()));
+        }
+    }
+
+    /** Выход во время выключенного учёта: приостановленная сессия не воскресает при включении. */
+    @Test
+    void logoutDuringDisabledDropPausedSession() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long join = System.currentTimeMillis() - 1_000_000;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, join);
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(join + 1_000);
+            long disableAt = join + 1_000;
+            db.activityService.applySettingsAt(withActivity(
+                    new EconomySettings.Activity(false, 300, 20, 60, 0.5)), disableAt);
+            db.activityService.onPlayerLeftAt(player, disableAt + 5_000);
+            long enableAt = disableAt + 500_000;
+            db.activityService.applySettingsAt(withActivity(
+                    new EconomySettings.Activity(true, 300, 20, 60, 0.5)), enableAt);
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(enableAt + 1_000);
+
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(1, info.totalOnlineSeconds(),
+                    "после выхода в выключенный период новый отсчёт не должен начаться");
+            assertEquals(1, info.totalActiveSeconds());
+            assertEquals(1, daySeconds(db, WeekId.current()));
+        }
+    }
+
+    /** Повторное включение-выключение: цикл не теряет и не дублирует секунды. */
+    @Test
+    void hotSwitchCycleNeverLosesOrDuplicatesSeconds() {
+        try (TestDb db = TestDb.create()) {
+            UUID player = UUID.randomUUID();
+            long t = System.currentTimeMillis() - 500_000;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, t);
+            EconomySettings.Activity off = new EconomySettings.Activity(false, 300, 20, 60, 0.5);
+            EconomySettings.Activity on = new EconomySettings.Activity(true, 300, 20, 60, 0.5);
+
+            // Окно 10с учёта → выкл (момент переключения совпадает с последним сэмплом,
+            // чтобы финализация не добавляла лишнюю секунду) → 10с выключено → вкл → 10с
+            // учёта → выкл → 10с выключено → выход.
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(t + 10_000);
+            db.activityService.applySettingsAt(withActivity(off), t + 10_000);
+            db.activityService.sampleAt(t + 20_000);
+            db.activityService.applySettingsAt(withActivity(on), t + 20_000);
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(t + 30_000);
+            db.activityService.applySettingsAt(withActivity(off), t + 30_000);
+            db.activityService.sampleAt(t + 40_000);
+            db.activityService.onPlayerLeftAt(player, t + 40_000);
+
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(20, info.totalOnlineSeconds(), "учтены только два включённых окна по 10с");
+            assertEquals(20, info.totalActiveSeconds());
+            assertEquals(20, daySeconds(db, WeekId.current()));
+        }
+    }
+
     @Test
     void exclusionNoChangeReportsExplicitStatus() {
         try (TestDb db = TestDb.create()) {

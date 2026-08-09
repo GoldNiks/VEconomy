@@ -289,8 +289,13 @@ public final class MoneyCommand {
         CommandSourceStack source = context.getSource();
         try {
             ServerPlayer player = source.getPlayerOrException();
-            ActivityInfo info = EconomyCore.activity().info(player.getUUID()).orElse(null);
             String locale = MessageService.locale(source);
+            if (!EconomyCore.settings().activity.enabled) {
+                // Честный экран: учёт отключён, сохранённые цифры не показываются как живые.
+                source.sendSuccess(() -> activityDisabledScreen(locale), false);
+                return 1;
+            }
+            ActivityInfo info = EconomyCore.activity().info(player.getUUID()).orElse(null);
             if (info == null) {
                 source.sendSuccess(() -> activityEmpty(locale), false);
                 return 1;
@@ -300,6 +305,14 @@ public final class MoneyCommand {
             source.sendFailure(onlyPlayers(source));
         }
         return 1;
+    }
+
+    static MutableComponent activityDisabledScreen(String locale) {
+        MutableComponent out = EconomyComponents.header(
+                MessageService.text(locale, "ui.activity.title"));
+        out.append(Component.literal("\n"));
+        out.append(EconomyComponents.muted(MessageService.text(locale, "ui.activity.disabled")));
+        return out;
     }
 
     static MutableComponent activityEmpty(String locale) {
@@ -386,8 +399,9 @@ public final class MoneyCommand {
                     ? EconomyCore.formatter().format(info.lastWeekAccrued()) : "";
             String reasonText = info.eligible() ? null : reasonLineText(locale, info,
                     EconomyCore.settings().weeklyFund);
-            source.sendSuccess(() -> weeklyScreen(locale, info, shareText, lastWeekText, reasonText),
-                    false);
+            boolean trackingEnabled = EconomyCore.settings().activity.enabled;
+            source.sendSuccess(() -> weeklyScreen(locale, info, shareText, lastWeekText, reasonText,
+                    trackingEnabled), false);
         } catch (Exception e) {
             source.sendFailure(onlyPlayers(source));
         }
@@ -395,9 +409,24 @@ public final class MoneyCommand {
     }
 
     static MutableComponent weeklyScreen(String locale, WeeklyPlayerInfo info,
-                                         String shareText, String lastWeekText, String reasonText) {
+                                         String shareText, String lastWeekText, String reasonText,
+                                         boolean trackingEnabled) {
         MutableComponent out = EconomyComponents.header(
                 MessageService.text(locale, "ui.weekly.title"));
+        if (!trackingEnabled) {
+            // Честный экран при выключенном учёте: за текущую неделю ничего не накапливается,
+            // но уже начисленное за прошлую неделю (замороженный план/выплата) сохраняется.
+            out.append(Component.literal("\n"));
+            out.append(EconomyComponents.warning(
+                    MessageService.text(locale, "ui.weekly.trackingOff")));
+            if (info.lastWeekAccrued() > 0) {
+                out.append(Component.literal("\n"));
+                out.append(EconomyComponents.entry(
+                        MessageService.text(locale, "ui.weekly.trackingOffLastWeek"),
+                        EconomyComponents.money(lastWeekText)));
+            }
+            return out;
+        }
         if (info.eligible()) {
             long untilEnd = Math.max(0, info.weekEndMillis() - System.currentTimeMillis());
             out.append(Component.literal("\n"));

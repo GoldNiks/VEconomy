@@ -5,6 +5,8 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.activity.AccountFlagUpdateResult;
+import com.valorcraft.veconomy.activity.MilestoneDefinition;
+import com.valorcraft.veconomy.activity.MilestoneType;
 import com.valorcraft.veconomy.activity.RewardExclusionStatus;
 import com.valorcraft.veconomy.api.AccountStatus;
 import com.valorcraft.veconomy.api.BalanceSnapshot;
@@ -25,6 +27,7 @@ import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.economy.TreasuryService;
 import com.valorcraft.veconomy.integration.permissions.PermissionBridge;
 import com.valorcraft.veconomy.persistence.TransactionRow;
+import com.valorcraft.veconomy.ui.EconomyComponents;
 import com.valorcraft.veconomy.util.CurrencyParser;
 import com.valorcraft.veconomy.util.MessageService;
 import com.valorcraft.veconomy.util.PlayerResolver;
@@ -363,7 +366,9 @@ case NO_CHANGES -> source.sendSuccess(() ->
                 target.uuid()).withStyle(ChatFormatting.YELLOW), false);
         String balance = account.isPresent()
                 ? EconomyCore.formatter().format(account.get().balanceMinor()) : "—";
-        String status = account.isPresent() ? account.get().status().name() : "NO_ACCOUNT";
+        String status = account.isPresent()
+                ? accountStatusLabel(source, account.get().status().name())
+                : accountStatusLabel(source, "NO_ACCOUNT");
         String excludedText = switch (exclusion) {
             case EXCLUDED -> "admin.yes";
             case NOT_EXCLUDED -> "admin.no";
@@ -558,24 +563,47 @@ case NO_CHANGES -> source.sendSuccess(() ->
         return new AuditService.ScanOutcome() {
             @Override
             public void completed(SuspicionScanner.ScanSummary summary) {
-                Object[] numbers = new Object[]{
-                        summary.spamSignals(), summary.roundTripSignals(),
-                        summary.oversizedSignals(), summary.newAccountSignals(),
-                        summary.rapidForwardingSignals(), summary.transferLoopSignals(),
-                        summary.highPairFrequencySignals(), summary.newAccountConcentrationSignals(),
-                        summary.repeatedDestinationSignals()};
-                Object[] args = who == null ? numbers
-                        : java.util.stream.Stream.concat(java.util.stream.Stream.of(who),
-                        java.util.Arrays.stream(numbers)).toArray();
-                MutableComponent done = MessageService.message(source, who == null
-                        ? "admin.audit.scan.done" : "admin.audit.scan.player.done", args)
-                        .withStyle(ChatFormatting.GREEN);
-                if (summary.limited()) {
-                    done.append(Component.literal(" ")
-                            .append(MessageService.message(source, "admin.audit.scan.limited")
-                                    .withStyle(ChatFormatting.YELLOW)));
+                MutableComponent screen =
+                        MessageService.message(source, who == null
+                                        ? "admin.audit.scan.summary.title"
+                                        : "admin.audit.scan.summary.player.title",
+                                who == null ? new Object[0] : new Object[]{who})
+                                .withStyle(ChatFormatting.GOLD);
+                MutableComponent body = Component.empty();
+                if (summary.total() == 0) {
+                    body.append(MessageService.message(source, "admin.audit.scan.summary.clean")
+                            .withStyle(ChatFormatting.GREEN));
+                } else {
+                    body.append(MessageService.message(source, "admin.audit.scan.summary.total",
+                                    summary.total())
+                            .withStyle(ChatFormatting.YELLOW));
+                    int[] counts = {summary.spamSignals(), summary.roundTripSignals(),
+                            summary.oversizedSignals(), summary.newAccountSignals(),
+                            summary.rapidForwardingSignals(), summary.transferLoopSignals(),
+                            summary.highPairFrequencySignals(),
+                            summary.newAccountConcentrationSignals(),
+                            summary.repeatedDestinationSignals()};
+                    String[] names = {"SIGNAL_TRANSFER_SPAM", "SIGNAL_ROUNDTRIP",
+                            "SIGNAL_OVERSIZED", "SIGNAL_NEW_ACCOUNT", "SIGNAL_RAPID_FORWARDING",
+                            "SIGNAL_TRANSFER_LOOP", "SIGNAL_HIGH_PAIR_FREQUENCY",
+                            "SIGNAL_NEW_ACCOUNT_CONCENTRATION", "SIGNAL_REPEATED_SHARED_DESTINATION"};
+                    for (int i = 0; i < counts.length; i++) {
+                        if (counts[i] == 0) {
+                            continue;
+                        }
+                        body.append(Component.literal("\n"));
+                        body.append(MessageService.message(source, "admin.audit.scan.summary.row",
+                                        eventTypeLabel(source, names[i]), counts[i])
+                                .withStyle(ChatFormatting.GRAY));
+                    }
                 }
-                source.sendSuccess(() -> done, true);
+                screen.append(Component.literal("\n")).append(body);
+                if (summary.limited()) {
+                    screen.append(Component.literal("\n"))
+                            .append(MessageService.message(source, "admin.audit.scan.limited")
+                                    .withStyle(ChatFormatting.YELLOW));
+                }
+                source.sendSuccess(() -> screen, true);
             }
 
             @Override
@@ -600,9 +628,14 @@ case NO_CHANGES -> source.sendSuccess(() ->
         String playerName = event.playerId() == null
                 ? "-" : PlayerResolver.resolve(source.getServer(),
                 event.playerId().toString()).name();
-        String actorName = event.actorId() == null
-                ? "CONSOLE" : PlayerResolver.resolve(source.getServer(),
-                event.actorId().toString()).name();
+        String actorName;
+        if (event.actorType() == AuditActorType.PLAYER) {
+            actorName = event.actorId() == null
+                    ? "-" : PlayerResolver.resolve(source.getServer(),
+                    event.actorId().toString()).name();
+        } else {
+            actorName = actorTypeLabel(source, event.actorType());
+        }
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.title", event.id())
                 .withStyle(ChatFormatting.GOLD), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.type",
@@ -614,7 +647,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.player",
                 playerName).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.actor",
-                actorName, actorTypeLabel(source, event.actorType())).withStyle(ChatFormatting.GRAY), false);
+                actorName).withStyle(ChatFormatting.GRAY), false);
         if (event.counterpartyUuid() != null) {
             source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.counterparty",
                     displayName(source, event.counterpartyUuid())).withStyle(ChatFormatting.GRAY), false);
@@ -636,7 +669,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
         }
         if (event.details() != null && !event.details().isBlank()) {
             source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.details",
-                    event.details()).withStyle(ChatFormatting.GRAY), false);
+                    event.details()).withStyle(ChatFormatting.DARK_GRAY), false);
         }
         return 1;
     }
@@ -772,14 +805,66 @@ case NO_CHANGES -> source.sendSuccess(() ->
                 actorType.name());
     }
 
+    /** Человекочитаемое название статуса аккаунта (ACTIVE/FROZEN/NO_ACCOUNT). */
+    private static String accountStatusLabel(CommandSourceStack source, String status) {
+        if (status == null || status.isBlank()) {
+            return "-";
+        }
+        return MessageService.textOrRaw(source,
+                "admin.account.status." + status.toLowerCase(Locale.ROOT), status);
+    }
+
     /** Открытые (необработанные) сигналы. */
     private static int auditSuspicious(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
                                        Integer limit) {
         CommandSourceStack source = context.getSource();
         int effective = limit != null ? limit : AUDIT_LIMIT_DEFAULT;
         List<AuditEventRow> rows = EconomyCore.audit().openSignals(effective);
-        sendAuditRows(source, "admin.audit.suspicious.title", new Object[]{rows.size()}, rows);
+        sendSuspiciousRows(source, rows);
         return 1;
+    }
+
+    /**
+     * Подозрительные сигналы: строка с кликабельным id события, именем игрока и
+     * контрагентом. Технические детали события намеренно не выводятся в строке —
+     * они доступны через {@code audit event <id>}.
+     */
+    private static void sendSuspiciousRows(CommandSourceStack source, List<AuditEventRow> rows) {
+        source.sendSuccess(() -> MessageService.message(source, "admin.audit.suspicious.title",
+                rows.size()).withStyle(ChatFormatting.GOLD), false);
+        if (rows.isEmpty()) {
+            source.sendSuccess(() -> MessageService.message(source, "admin.audit.empty")
+                    .withStyle(ChatFormatting.GRAY), false);
+            return;
+        }
+        for (AuditEventRow row : rows) {
+            MutableComponent line = EconomyComponents.clickableSuggest(
+                    "#" + row.id(),
+                    "/economy admin audit event " + row.id(),
+                    Component.literal(MessageService.text(source, "admin.audit.suspicious.hover")));
+            line.append(Component.literal(" " + formatTimestamp(row.createdAt()))
+                    .withStyle(ChatFormatting.DARK_GRAY));
+            line.append(Component.literal(" " + eventTypeLabel(source, row.eventType()))
+                    .withStyle(ChatFormatting.AQUA));
+            String playerName = row.playerId() == null
+                    ? "-" : PlayerResolver.resolve(source.getServer(),
+                    row.playerId().toString()).name();
+            MutableComponent parties = Component.literal(" " + playerName)
+                    .withStyle(ChatFormatting.WHITE);
+            if (row.counterpartyUuid() != null) {
+                parties.append(Component.literal(" \u2194 ")
+                        .withStyle(ChatFormatting.GRAY));
+                parties.append(Component.literal(displayName(source, row.counterpartyUuid()))
+                        .withStyle(ChatFormatting.WHITE));
+            }
+            line.append(parties);
+            if (row.amountMinor() != null) {
+                line.append(Component.literal(" "
+                                + EconomyCore.formatter().format(row.amountMinor()))
+                        .withStyle(ChatFormatting.GREEN));
+            }
+            source.sendSuccess(() -> line, false);
+        }
     }
 
     /** Обработать событие: {@code resolve} (подтверждено) или {@code dismiss} (ложное). */
@@ -926,15 +1011,52 @@ case NO_CHANGES -> source.sendSuccess(() ->
         var definitions = EconomyCore.milestones().definitions();
         source.sendSuccess(() -> MessageService.message(source, "admin.milestone.list.title",
                 definitions.size()).withStyle(ChatFormatting.GOLD), false);
-        for (com.valorcraft.veconomy.activity.MilestoneDefinition def : definitions) {
+        for (MilestoneDefinition def : definitions) {
             String amount = EconomyCore.formatter().format(def.amountMinor());
-            source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
+            source.sendSuccess(() -> Component.literal("◆ ").withStyle(ChatFormatting.DARK_GRAY)
                     .append(Component.literal(def.id()).withStyle(ChatFormatting.AQUA))
-                    .append(MessageService.message(source, "admin.milestone.list.row",
-                            milestoneName(source, def), amount,
-                            def.enabled() ? "+" : "-")), false);
+                    .append(MessageService.message(source, "admin.milestone.list.type",
+                            milestoneTypeLabel(source, def.type())).withStyle(ChatFormatting.GRAY))
+                    .append(MessageService.message(source, "admin.milestone.list.amount",
+                            amount).withStyle(ChatFormatting.GRAY)), false);
+            source.sendSuccess(() -> Component.literal("   ").withStyle(ChatFormatting.DARK_GRAY)
+                    .append(MessageService.message(source, "admin.milestone.list.requirement",
+                            milestoneRequirementLabel(source, def)).withStyle(ChatFormatting.GRAY))
+                    .append(MessageService.message(source, "admin.milestone.list.enabled",
+                            MessageService.message(source,
+                                    def.enabled() ? "admin.yes" : "admin.no"))
+                            .withStyle(ChatFormatting.GRAY)), false);
         }
         return 1;
+    }
+
+    /** Человекочитаемое название типа milestone через языковые файлы. */
+    private static String milestoneTypeLabel(CommandSourceStack source, MilestoneType type) {
+        return MessageService.textOrRaw(source,
+                "milestone.type." + type.name().toLowerCase(Locale.ROOT), type.name());
+    }
+
+    /** Значение требования milestone: секунды/advancement/размерность/канал. */
+    private static String milestoneRequirementLabel(CommandSourceStack source, MilestoneDefinition def) {
+        String requirement;
+        switch (def.type()) {
+            case PLAYTIME -> requirement = def.requirement("activeSeconds");
+            case ADVANCEMENT -> requirement = def.requirement("advancement");
+            case DIMENSION_VISIT -> requirement = def.requirement("dimension");
+            case EXTERNAL -> requirement = def.requirement("channel");
+            default -> requirement = null;
+        }
+        if (requirement == null) {
+            return "-";
+        }
+        if (def.type() == MilestoneType.PLAYTIME) {
+            try {
+                return formatDuration(Long.parseLong(requirement));
+            } catch (NumberFormatException e) {
+                return requirement;
+            }
+        }
+        return requirement;
     }
 
     /** Название milestone: настраиваемое {@code message} конфига или подпись типа. */

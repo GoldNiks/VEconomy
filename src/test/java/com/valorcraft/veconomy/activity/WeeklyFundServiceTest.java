@@ -483,9 +483,65 @@ class WeeklyFundServiceTest {
     }
 
     @Test
-    void activityDisabledFundNeverDistributes() {
-        // Учёт активности выключен: даже при закрытой к выплате неделе фонд не ротирует
-        // и не платит ни автоматически, ни вручную, а статус сообщает о выключенном фонде.
+    void activityDisabledPaysAlreadyFormedPlan() {
+        // Учёт активности выключен: новые планы не формируются, но уже замороженный план
+        // выплачивается — деньги заработаны до выключения и не должны пропасть.
+        try (TestDb db = TestDb.create(fundActivityDisabled(100))) {
+            UUID alice = UUID.randomUUID();
+            String current = WeekId.current();
+            String w2 = WeekId.previous(current);
+            String w1 = WeekId.previous(w2);
+            markDistributed(db, WeekId.previous(w1));
+            seedPeriod(db, w1, alice, 50, 100);
+
+            Map<UUID, Long> first = db.weeklyFundService.runNow();
+            assertEquals(1, first.size());
+            assertEquals(100L, first.get(alice), "замороженный план должен выплатиться при выключенном учёте");
+            assertEquals(100, db.accountService.getBalance(alice));
+
+            assertTrue(db.weeklyFundService.runNow().isEmpty(),
+                    "повторный ручной запуск не должен платить заново (ровно один раз)");
+            assertEquals(100, db.accountService.getBalance(alice));
+
+            WeeklyFundService.WeeklyStatus status = db.weeklyFundService.status();
+            assertFalse(status.enabled());
+            assertTrue(db.weeklyFundService.preview().isEmpty());
+        }
+    }
+
+    @Test
+    void planFormedWhileEnabledPaysOutAfterActivityDisabled() {
+        // План сформирован при включённом учёте (ротация прошла, автовыплата отложена),
+        // затем учёт выключен: выплата существующего плана всё равно происходит ровно один раз.
+        try (TestDb db = TestDb.create(fundWithDelay(100, 6))) {
+            UUID alice = UUID.randomUUID();
+            markSnapshotDue(db);
+            seedWeekly(db, alice, 100);
+
+            // ротация сформировала план, но автовыплата ещё не наступила (задержка 6ч)
+            assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+            assertEquals(0, db.accountService.getBalance(alice));
+
+            // выключаем учёт активности — с этого момента новые планы не формируются
+            db.weeklyFundService.applySettings(fundActivityDisabled(100));
+
+            Map<UUID, Long> first = db.weeklyFundService.runNow();
+            assertEquals(1, first.size());
+            assertEquals(100L, first.get(alice),
+                    "сформированный до выключения план обязан выплатиться");
+            assertEquals(100, db.accountService.getBalance(alice));
+
+            assertTrue(db.weeklyFundService.runNow().isEmpty(),
+                    "повторный запуск не платит (план закрыт ровно один раз)");
+            assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+            assertEquals(100, db.accountService.getBalance(alice));
+        }
+    }
+
+    @Test
+    void activityDisabledNeverFormsNewPlan() {
+        // Учёт активности выключен с самого начала: свежая закрытая неделя без данных
+        // не превращается в план, пока учёт не включат; выплат нет вообще.
         try (TestDb db = TestDb.create(fundActivityDisabled(100))) {
             UUID alice = UUID.randomUUID();
             markSnapshotDue(db);
@@ -493,10 +549,6 @@ class WeeklyFundServiceTest {
 
             assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
             assertTrue(db.weeklyFundService.runNow().isEmpty());
-
-            WeeklyFundService.WeeklyStatus status = db.weeklyFundService.status();
-            assertFalse(status.enabled());
-            assertTrue(db.weeklyFundService.preview().isEmpty());
             assertEquals(0, db.accountService.getBalance(alice));
         }
     }

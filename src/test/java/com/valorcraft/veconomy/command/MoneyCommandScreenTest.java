@@ -144,7 +144,7 @@ class MoneyCommandScreenTest {
     void weeklyScreenForEligiblePlayerShowsShareAndDeadline() {
         WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", true, null,
                 7_200, 3, 10, 5, 15, 120, 0, 0, System.currentTimeMillis() + 86_400_000L);
-        MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "⛃500", "", null);
+        MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "⛃500", "", null, true);
         String text = compiled(screen);
         assertTrue(text.contains("Недельная награда"));
         assertTrue(text.contains("⛃500"));
@@ -152,14 +152,47 @@ class MoneyCommandScreenTest {
         assertLiteralOnly(screen);
     }
 
-    @Test
+@Test
     void weeklyScreenForIneligibleShowsReason() {
         WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", false, NotEligibleReason.MIN_ACTIVE_DAYS,
                 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "", "", "Нужный день");
+        MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "", "", "Нужный день", true);
         String text = compiled(screen);
         assertTrue(text.contains("не подходите"));
         assertTrue(text.contains("Нужный день"));
+        assertLiteralOnly(screen);
+    }
+
+    @Test
+    void activityScreenWhenTrackingDisabledIsHonest() {
+        MutableComponent screen = MoneyCommand.activityDisabledScreen("ru_ru");
+        String text = compiled(screen);
+        assertTrue(text.contains("Ваша активность"));
+        assertTrue(text.contains("Учёт активности на сервере отключён"));
+        assertLiteralOnly(screen);
+    }
+
+    @Test
+    void weeklyScreenWhenTrackingDisabledKeepsLastWeek() {
+        WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", false, null,
+                0, 0, 0, 0, 0, 0, 100, 0, 0);
+        MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "", "⛃100", null, false);
+        String text = compiled(screen);
+        assertTrue(text.contains("Недельная награда"), "заголовок экрана сохраняется");
+        assertTrue(text.contains("Учёт активности отключён"), "честное сообщение об учёте");
+        assertTrue(text.contains("Начисление за прошлую неделю сохранено"));
+        assertTrue(text.contains("⛃100"), "забронированное начисление за прошлую неделю видно");
+        assertLiteralOnly(screen);
+    }
+
+    @Test
+    void weeklyScreenWhenTrackingDisabledHidesZeroLastWeek() {
+        WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", false, null,
+                0, 0, 0, 0, 0, 0, 0, 0, 0);
+        MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "", "", null, false);
+        String text = compiled(screen);
+        assertTrue(text.contains("Учёт активности отключён"));
+        assertFalse(text.contains("прошлую неделю"), "при нуле нет строки о прошлой неделе");
         assertLiteralOnly(screen);
     }
 

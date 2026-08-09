@@ -114,8 +114,7 @@ public final class WeeklyFundService {
     /** Ручная выплата конкретной недели ({@code /economy admin weekly run <weekId> confirm}). */
     public Map<UUID, Long> runNow(String weekId) {
         WeeklyFund cfg = settings.weeklyFund;
-        if (weekId == null || !WeekId.isValid(weekId) || !cfg.enabled
-                || !settings.activity.enabled) {
+        if (weekId == null || !WeekId.isValid(weekId) || !cfg.enabled) {
             return Map.of();
         }
         String currentWeek = WeekId.current();
@@ -143,11 +142,6 @@ public final class WeeklyFundService {
      */
     private Map<UUID, Long> distributeIfDue(boolean manual) {
         WeeklyFund cfg = settings.weeklyFund;
-        if (!settings.activity.enabled) {
-            // Учёт активности отключён: недельный фонд не закрывает и не платит — данные
-            // устарели, а пропущенные недели при повторном включении закроются как пустые.
-            return Map.of();
-        }
         String currentWeek = WeekId.current();
         String distributed;
         try {
@@ -168,15 +162,21 @@ public final class WeeklyFundService {
             return ok ? Map.of() : Map.of();
         }
 
-        // Независимая ротация: сохраняем план завершённой недели. К этому моменту
-        // периодическое сохранение уже записало активность по дням, поэтому снимок
-        // включает последние часы завершённой недели.
-        String prev = WeekId.previous(currentWeek);
-        if (!ensurePrevRotated(prev, currentWeek)) {
-            return Map.of();
+        // Формирование нового плана требует данных учёта активности. Если учёт выключен,
+        // новые планы не создаются (закрывать свежую неделю нечем), но уже замороженные
+        // планы выплачиваются как обычно: деньги заработаны до выключения и не должны
+        // пропасть из-за отключения трекера.
+        if (settings.activity.enabled) {
+            // Независимая ротация: сохраняем план завершённой недели. К этому моменту
+            // периодическое сохранение уже записало активность по дням, поэтому снимок
+            // включает последние часы завершённой недели.
+            String prev = WeekId.previous(currentWeek);
+            if (!ensurePrevRotated(prev, currentWeek)) {
+                return Map.of();
+            }
+            // Пропущенные (офлайн) недели без снимка закрываем как пустые, чтобы очередь шла дальше.
+            closeEmptyGaps(distributed, currentWeek);
         }
-        // Пропущенные (офлайн) недели без снимка закрываем как пустые, чтобы очередь шла дальше.
-        closeEmptyGaps(distributed, currentWeek);
         // Двигаем распределённую неделю вперёд по уже закрытым периодам.
         distributed = advanceClosed(distributed, currentWeek);
         // Самый старый незакрытый период.

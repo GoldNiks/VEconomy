@@ -116,7 +116,10 @@ public final class MilestoneService {
      */
     public List<MilestoneReward> checkPlayer(UUID playerId) {
         List<MilestoneReward> granted = new ArrayList<>();
-        if (!settings.milestones.enabled) {
+        if (!settings.milestones.enabled || !settings.activity.enabled) {
+            // Без учёта активности наполнять PLAYTIME-этапы нечем: активное время не
+            // копится, поэтому периодическая проверка не выдаёт ничего. Остальные типы
+            // (ADVANCEMENT, DIMENSION_VISIT, EXTERNAL, admin grant) от этого не зависят.
             return granted;
         }
         MilestoneCheckContext context = OfflineMilestoneCheckContext.of(playerId);
@@ -147,6 +150,11 @@ public final class MilestoneService {
             return List.of(new MilestoneGrantResult(MilestoneGrantResult.Status.MILESTONES_DISABLED,
                     null, null));
         }
+        if (type == MilestoneType.PLAYTIME && !settings.activity.enabled) {
+            // Автоматическая выдача PLAYTIME зависит от учтённого активного времени:
+            // при выключенном учёте она недоступна, остальные типы не затрагиваются.
+            return List.of(MilestoneGrantResult.failed(MilestoneGrantResult.Status.ACTIVITY_DISABLED));
+        }
         for (MilestoneDefinition def : definitions) {
             if (def.type() != type || !def.enabled()) {
                 continue;
@@ -165,6 +173,11 @@ public final class MilestoneService {
                                               MilestoneCheckContext context) {
         if (!settings.milestones.enabled) {
             return MilestoneGrantResult.failed(MilestoneGrantResult.Status.MILESTONES_DISABLED);
+        }
+        if (def.type() == MilestoneType.PLAYTIME && !settings.activity.enabled) {
+            // Автоматическая выдача PLAYTIME зависит от учтённого активного времени:
+            // при выключенном учёте она недоступна, остальные типы не затрагиваются.
+            return MilestoneGrantResult.failed(MilestoneGrantResult.Status.ACTIVITY_DISABLED);
         }
         if (!def.enabled()) {
             return MilestoneGrantResult.failed(MilestoneGrantResult.Status.DISABLED);
@@ -318,11 +331,6 @@ public final class MilestoneService {
      */
     private MilestoneGrantResult doGrant(UUID playerId, MilestoneDefinition def, UUID actorId,
                                          String reason, String idempotencyKey) {
-        if (!settings.activity.enabled) {
-            // Вся цепочка выплат за активность остановлена: без учёта нечего выдавать,
-            // а старые данные не должны начислять награды.
-            return MilestoneGrantResult.failed(MilestoneGrantResult.Status.ACTIVITY_DISABLED);
-        }
         MilestoneGrantResult result;
         try {
             result = database.inTransaction(connection -> {
@@ -387,10 +395,29 @@ public final class MilestoneService {
         }
         String title = def.message() != null && !def.message().isBlank()
                 ? def.message()
-                : MessageService.text(player,
-                "notify.milestone." + def.type().name().toLowerCase(java.util.Locale.ROOT));
+                : MessageService.textOrRaw(player, notifyKey(def.type()), typeKey(def.type()));
         player.sendSystemMessage(EconomyComponents.reward(title,
                 EconomyCore.formatter().format(amountMinor)));
+    }
+
+    /** Ключ уведомления по типу этапа: фиксированные имена, не зависят от name().toLowerCase(). */
+    public static String notifyKey(MilestoneType type) {
+        return switch (type) {
+            case PLAYTIME -> "notify.milestone.playtime";
+            case ADVANCEMENT -> "notify.milestone.advancement";
+            case DIMENSION_VISIT -> "notify.milestone.dimension";
+            case EXTERNAL -> "notify.milestone.external";
+        };
+    }
+
+    /** Человеческое название типа (фолбэк, если перевод отсутствует). */
+    public static String typeKey(MilestoneType type) {
+        return switch (type) {
+            case PLAYTIME -> "milestone.type.playtime";
+            case ADVANCEMENT -> "milestone.type.advancement";
+            case DIMENSION_VISIT -> "milestone.type.dimension_visit";
+            case EXTERNAL -> "milestone.type.external";
+        };
     }
 
     private static MilestoneGrantResult.Status mapDepositStatus(TransactionResult deposit) {
@@ -422,7 +449,7 @@ public final class MilestoneService {
             MILESTONES_DISABLED,
             /** Милстоун с таким id не загружен. */
             NOT_FOUND,
-            /** Учёт активности ({@code activity.enabled}) отключён в конфиге. */
+            /** Учёт активности ({@code activity.enabled}) отключён — PLAYTIME-этапы не выдаются автоматически. */
             ACTIVITY_DISABLED,
             /** Выдача разрешена только для типа EXTERNAL (trusted-путь). */
             EXTERNAL_ONLY,

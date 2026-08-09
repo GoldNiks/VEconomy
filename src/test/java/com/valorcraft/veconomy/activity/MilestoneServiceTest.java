@@ -214,9 +214,10 @@ class MilestoneServiceTest {
     }
 
     @Test
-    void activityDisabledBlocksAllMilestoneGrants() throws IOException {
-        // Учёт активности выключен: ни один милстоун не выдаётся, даже принудительный
-        // админский (деньги основываются на учтённой активности).
+    void activityDisabledBlocksOnlyPlaytime() throws IOException {
+        // Учёт активности выключен: автоматические PLAYTIME-этапы не выдаются (активное
+        // время не копится), но ADVANCEMENT/DIMENSION_VISIT/EXTERNAL и принудительная
+        // админская выдача работают — они не зависят от учёта.
         EconomySettings.Activity disabled = new EconomySettings.Activity(false, 300, 20, 60, 0.5);
         try (TestDb db = TestDb.create(withActivityAndMilestones(disabled,
                 new EconomySettings.Milestones(true,
@@ -226,31 +227,73 @@ class MilestoneServiceTest {
             setActiveSeconds(db, player, 20_000);
             db.milestoneService.recordDimensionVisit(player, "ad_astra:moon");
 
+            // PLAYTIME: периодическая проверка бездействует, событийная выдача явно
+            // отвечает ACTIVITY_DISABLED.
             assertTrue(db.milestoneService.checkPlayer(player).isEmpty());
-
-            var external = db.milestoneService.grantExternal(player, "event_bonus", "key-1");
+            MilestoneDefinition playtimeDef = db.milestoneService.definitions().stream()
+                    .filter(def -> def.type() == MilestoneType.PLAYTIME)
+                    .findFirst().orElseThrow();
+            var playtime = db.milestoneService.grantForEvent(player, playtimeDef,
+                    new FakeContext(player));
             assertEquals(MilestoneService.MilestoneGrantResult.Status.ACTIVITY_DISABLED,
-                    external.status());
+                    playtime.status());
 
+            // EXTERNAL: доверенная выдача работает как раньше.
+            var external = db.milestoneService.grantExternal(player, "event_bonus", "key-1");
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, external.status());
+
+            // ADVANCEMENT: событие выдаёт награду, учёт не при чём.
             var event = db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT,
                     new FakeContext(player).withAdvancement(
                             ResourceLocation.tryParse("minecraft:story/enter_the_nether"), true));
-            assertEquals(MilestoneService.MilestoneGrantResult.Status.ACTIVITY_DISABLED,
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED,
                     event.get(0).status());
 
-            var def = db.milestoneService.definition("visit_moon").orElseThrow();
-            var admin = db.milestoneService.grant(player, def, null, "admin:test", null);
-            assertEquals(MilestoneService.MilestoneGrantResult.Status.ACTIVITY_DISABLED,
-                    admin.status());
+            // DIMENSION_VISIT: записанное посещение выдаёт награду.
+            var visit = db.milestoneService.grantForEvent(player, MilestoneType.DIMENSION_VISIT,
+                    new FakeContext(player));
+            assertEquals(1, visit.size());
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED,
+                    visit.get(0).status());
 
-            assertEquals(0, db.accountService.getBalance(player));
-            assertFalse(db.milestoneService.isClaimed(player, "event_bonus"));
-            assertFalse(db.milestoneService.isClaimed(player, "enter_nether"));
-            assertFalse(db.milestoneService.isClaimed(player, "visit_moon"));
+            // Админ: принудительная выдача работает.
+            MilestoneDefinition def = db.milestoneService.definition("visit_moon").orElseThrow();
+            UUID adminTarget = UUID.randomUUID();
+            var admin = db.milestoneService.grant(adminTarget, def, null, "admin:test", null);
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.GRANTED, admin.status());
+
+            assertEquals(30L + 75L + 120L, db.accountService.getBalance(player));
+            assertEquals(75L, db.accountService.getBalance(adminTarget));
+            assertTrue(db.milestoneService.isClaimed(player, "event_bonus"));
+            assertTrue(db.milestoneService.isClaimed(player, "enter_nether"));
+            assertTrue(db.milestoneService.isClaimed(player, "visit_moon"));
         }
     }
 
-    // ---------------------------------------------------------------- ADVANCEMENT
+    // ---------------------------------------------------------------- language keys
+
+    /** Все типы milestone имеют фиксированные ключи уведомлений и человеческие подписи
+     *  в обеих локалях; маппер не зависит от name().toLowerCase(). */
+    @Test
+    void milestoneLanguageKeysResolveForAllTypes() {
+        for (MilestoneType type : MilestoneType.values()) {
+            String notifyKey = MilestoneService.notifyKey(type);
+            assertTrue(hasText("ru_ru", notifyKey), "нет уведомления для " + type + ": " + notifyKey);
+            assertTrue(hasText("en_us", notifyKey), "нет en-уведомления для " + type + ": " + notifyKey);
+            // DIMENSION_VISIT обязан маппиться в «dimension», иначе клиент получит сырой ключ.
+            if (type == MilestoneType.DIMENSION_VISIT) {
+                assertEquals("notify.milestone.dimension", notifyKey);
+            }
+            String typeKey = MilestoneService.typeKey(type);
+            assertTrue(hasText("ru_ru", typeKey), "нет подписи типа для " + type + ": " + typeKey);
+            assertTrue(hasText("en_us", typeKey), "нет en-подписи типа для " + type + ": " + typeKey);
+        }
+    }
+
+    private static boolean hasText(String locale, String key) {
+        String resolved = com.valorcraft.veconomy.util.MessageService.text(locale, key);
+        return resolved != null && !resolved.isBlank() && !key.equals(resolved);
+    }
 
     @Test
     void advancementMetGrantsOnce() throws IOException {
