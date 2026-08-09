@@ -1,5 +1,6 @@
 package com.valorcraft.veconomy.activity;
 
+import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
@@ -14,6 +15,11 @@ import com.valorcraft.veconomy.config.MilestoneConfig;
 import com.valorcraft.veconomy.economy.AccountService;
 import com.valorcraft.veconomy.persistence.DatabaseException;
 import com.valorcraft.veconomy.persistence.DatabaseManager;
+import com.valorcraft.veconomy.ui.EconomyComponents;
+import com.valorcraft.veconomy.util.MessageService;
+import com.valorcraft.veconomy.util.ServerHolder;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -312,6 +318,11 @@ public final class MilestoneService {
      */
     private MilestoneGrantResult doGrant(UUID playerId, MilestoneDefinition def, UUID actorId,
                                          String reason, String idempotencyKey) {
+        if (!settings.activity.enabled) {
+            // Вся цепочка выплат за активность остановлена: без учёта нечего выдавать,
+            // а старые данные не должны начислять награды.
+            return MilestoneGrantResult.failed(MilestoneGrantResult.Status.ACTIVITY_DISABLED);
+        }
         MilestoneGrantResult result;
         try {
             result = database.inTransaction(connection -> {
@@ -351,7 +362,35 @@ public final class MilestoneService {
                     "milestone=" + def.id() + ";type=" + def.type().name()
                             + ";tx=" + result.transactionId());
         }
+        if (result.status() == MilestoneGrantResult.Status.GRANTED) {
+            notifyGranted(playerId, def, result.amountMinor());
+        }
         return result;
+    }
+
+    /**
+     * Уведомить игрока о награде (онлайн): название milestone и сумму. Название —
+     * настраиваемый {@code message} из конфига, если задан, иначе локализованная
+     * подпись типа. Не трогает офлайн-игроков (уведомление доставляется при выдаче).
+     */
+    private void notifyGranted(UUID playerId, MilestoneDefinition def, Long amountMinor) {
+        if (!settings.milestones.notify || amountMinor == null) {
+            return;
+        }
+        MinecraftServer server = ServerHolder.get();
+        if (server == null) {
+            return;
+        }
+        ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+        if (player == null) {
+            return;
+        }
+        String title = def.message() != null && !def.message().isBlank()
+                ? def.message()
+                : MessageService.text(player,
+                "notify.milestone." + def.type().name().toLowerCase(java.util.Locale.ROOT));
+        player.sendSystemMessage(EconomyComponents.reward(title,
+                EconomyCore.formatter().format(amountMinor)));
     }
 
     private static MilestoneGrantResult.Status mapDepositStatus(TransactionResult deposit) {
@@ -383,6 +422,8 @@ public final class MilestoneService {
             MILESTONES_DISABLED,
             /** Милстоун с таким id не загружен. */
             NOT_FOUND,
+            /** Учёт активности ({@code activity.enabled}) отключён в конфиге. */
+            ACTIVITY_DISABLED,
             /** Выдача разрешена только для типа EXTERNAL (trusted-путь). */
             EXTERNAL_ONLY,
             /** Идемпотентный ключ обязателен. */

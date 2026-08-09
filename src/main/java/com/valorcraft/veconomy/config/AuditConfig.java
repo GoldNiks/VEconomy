@@ -248,7 +248,7 @@ public final class AuditConfig {
             int retentionDays) {
 
         public static Settings defaults() {
-            return new Settings(true, 30, 12, 4, 500_000L, 7, 100_000L,
+            return new Settings(true, 30, 12, 4, 75_000L, 7, 100_000L,
                     100_000L, 5, 3, 10, 5, 10, DEFAULT_MAX_TRANSFERS_PER_SCAN, 90);
         }
     }
@@ -264,7 +264,7 @@ public final class AuditConfig {
                     "windowMinutes": 30,
                     "transferSpamCount": 12,
                     "roundTripExchanges": 4,
-                    "oversizedTransferAmount": 500000,
+                    "oversizedTransferAmount": 75000,
                     "newAccountDays": 7,
                     "newAccountTransferAmount": 100000,
                     "rapidForwardAmount": 100000,

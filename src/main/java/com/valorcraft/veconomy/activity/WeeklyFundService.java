@@ -114,7 +114,8 @@ public final class WeeklyFundService {
     /** Ручная выплата конкретной недели ({@code /economy admin weekly run <weekId> confirm}). */
     public Map<UUID, Long> runNow(String weekId) {
         WeeklyFund cfg = settings.weeklyFund;
-        if (weekId == null || !WeekId.isValid(weekId) || !cfg.enabled) {
+        if (weekId == null || !WeekId.isValid(weekId) || !cfg.enabled
+                || !settings.activity.enabled) {
             return Map.of();
         }
         String currentWeek = WeekId.current();
@@ -142,6 +143,11 @@ public final class WeeklyFundService {
      */
     private Map<UUID, Long> distributeIfDue(boolean manual) {
         WeeklyFund cfg = settings.weeklyFund;
+        if (!settings.activity.enabled) {
+            // Учёт активности отключён: недельный фонд не закрывает и не платит — данные
+            // устарели, а пропущенные недели при повторном включении закроются как пустые.
+            return Map.of();
+        }
         String currentWeek = WeekId.current();
         String distributed;
         try {
@@ -674,7 +680,8 @@ public final class WeeklyFundService {
         String payoutStatus = plan == null ? WeeklyFundPlanRow.STATUS_PLANNED : plan.payoutStatus();
         Long autoPayoutAt = plan == null ? null : plan.autoPayoutAt();
         long fundAmount = plan == null ? 0 : plan.fundAmount();
-        return new WeeklyStatus(cfg.enabled, cfg.autoPayout, cfg.payoutDelayHours, fundAmount,
+        // «Включён» отражает и учёт активности: без него фонд фактически не работает.
+        return new WeeklyStatus(cfg.enabled && settings.activity.enabled, cfg.autoPayout, cfg.payoutDelayHours, fundAmount,
                 currentWeek, distributed, WeekId.previous(currentWeek).equals(distributed), target,
                 allocations.size(), totalPoints, totalSeconds, totalShare, payoutStatus,
                 autoPayoutAt, WeekId.endMillis(currentWeek));

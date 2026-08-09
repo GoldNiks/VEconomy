@@ -37,6 +37,19 @@ class ActivityServiceTest {
                 d.broadcastAdminChanges, d.activity, d.milestones, custom);
     }
 
+    /** Настройки по умолчанию с другим учётом активности. */
+    private static EconomySettings withActivity(EconomySettings.Activity activity) {
+        EconomySettings d = EconomySettings.defaults();
+        return new EconomySettings(
+                d.currencyNameSingular, d.currencyNameFew, d.currencyNameMany,
+                d.currencySymbol, d.decimalPlaces, d.maximumBalance,
+                d.transfersEnabled, d.allowOfflineRecipients,
+                d.minimumTransferAmount, d.maximumTransferAmount, d.transferCooldownSeconds,
+                d.dbType, d.databaseFile, d.busyTimeoutMillis, d.walEnabled,
+                d.mysqlHost, d.mysqlPort, d.mysqlDatabase, d.mysqlUser, d.mysqlPassword, d.mysqlPoolSize,
+                d.broadcastAdminChanges, activity, d.milestones, d.weeklyFund);
+    }
+
     /** Сделать сессию активной на всём интервале: сброс AFK реальным движением (порог 0.5 м). */
     private static void keepActive(TestDb db, UUID player, String dimension) {
         db.activityService.onPlayerMove(player, 1, 64, 0, 0, 0, dimension);
@@ -110,6 +123,25 @@ class ActivityServiceTest {
             assertTrue(db.activityService.setExcludedFromRewards(player, true).isSuccess());
             assertEquals(RewardExclusionStatus.EXCLUDED,
                     db.activityService.excludedFromRewards(player));
+        }
+    }
+
+    @Test
+    void activityDisabledTracksNothing() {
+        // Учёт выключен: сессия не создаётся, время не копится ни в строке, ни в днях.
+        try (TestDb db = TestDb.create(withActivity(
+                new EconomySettings.Activity(false, 300, 20, 60, 0.5)))) {
+            UUID player = UUID.randomUUID();
+            long start = 1_000_000L;
+            db.activityService.onPlayerJoinedAt(player, DIMENSION, start);
+            keepActive(db, player, DIMENSION);
+            db.activityService.sampleAt(start + 1_000);
+            db.activityService.onPlayerLeftAt(player, start + 10_000);
+
+            ActivityService.ActivityInfo info = db.activityService.info(player).orElseThrow();
+            assertEquals(0, info.totalOnlineSeconds());
+            assertEquals(0, info.totalActiveSeconds());
+            assertEquals(0, daySeconds(db, WeekId.current()));
         }
     }
 

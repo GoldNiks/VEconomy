@@ -240,12 +240,13 @@ public final class MilestoneConfig {
                   // PLAYTIME-пороги задаются в economy-core.toml ([milestones] rewards).
                   // Поля: id (уникальный), type, amount (минимальные единицы, > 0, <= maximumBalance),
                   // enabled, requirements (обязательны по типу), message (необязательное уведомление).
+                  // Примеры ниже отключены (enabled: false): без ваших правок награды не выдаются.
                   "milestones": [
                     {
                       "id": "enter_nether",
                       "type": "ADVANCEMENT",
                       "amount": 30,
-                      "enabled": true,
+                      "enabled": false,
                       "message": "Добро пожаловать в Незер!",
                       "requirements": {
                         "advancement": "minecraft:story/enter_the_nether"
@@ -255,7 +256,7 @@ public final class MilestoneConfig {
                       "id": "visit_moon",
                       "type": "DIMENSION_VISIT",
                       "amount": 75,
-                      "enabled": true,
+                      "enabled": false,
                       "requirements": {
                         "dimension": "ad_astra:moon"
                       }
@@ -264,7 +265,7 @@ public final class MilestoneConfig {
                       "id": "event_bonus",
                       "type": "EXTERNAL",
                       "amount": 120,
-                      "enabled": true,
+                      "enabled": false,
                       "requirements": {
                         "channel": "events"
                       }

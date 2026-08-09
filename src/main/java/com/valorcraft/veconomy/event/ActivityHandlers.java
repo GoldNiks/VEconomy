@@ -3,7 +3,6 @@ package com.valorcraft.veconomy.event;
 import com.valorcraft.veconomy.EconomyCore;
 import com.valorcraft.veconomy.VEconomyMod;
 import com.valorcraft.veconomy.config.EconomySettings;
-import com.valorcraft.veconomy.config.EconomySettings.MilestoneReward;
 import com.valorcraft.veconomy.util.MessageService;
 import com.valorcraft.veconomy.util.ServerHolder;
 import com.valorcraft.veconomy.ui.EconomyComponents;
@@ -21,7 +20,6 @@ import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -194,14 +192,9 @@ public final class ActivityHandlers {
             return;
         }
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            List<MilestoneReward> granted = EconomyCore.milestones().checkPlayer(player.getUUID());
-            if (settings.milestones.notify) {
-                for (MilestoneReward reward : granted) {
-                    player.sendSystemMessage(EconomyComponents.reward(
-                            MessageService.text(player, "notify.milestone.reward"),
-                            EconomyCore.formatter().format(reward.amountMinor())));
-                }
-            }
+            // Уведомление о выдаче отправляет сам MilestoneService (по общему
+            // флагу milestones.notify) — здесь только периодическая проверка.
+            EconomyCore.milestones().checkPlayer(player.getUUID());
         }
     }
 

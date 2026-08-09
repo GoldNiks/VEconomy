@@ -59,6 +59,10 @@ public final class ActivityService {
     }
 
     void onPlayerJoinedAt(UUID playerId, String dimension, long startMillis) {
+        // Учёт отключён: сессия не создаётся, дальше все обработчики событий — no-op.
+        if (!settings.activity.enabled) {
+            return;
+        }
         sessions.put(playerId, new Session(playerId, startMillis, startMillis,
                 settings.activity.afkTimeoutSeconds * 1000L, dimension,
                 settings.weeklyFund.timeZone));
@@ -120,6 +124,9 @@ public final class ActivityService {
     }
 
     void sampleAt(long nowMillis) {
+        if (!settings.activity.enabled) {
+            return;
+        }
         for (Session session : sessions.values()) {
             sampleSession(session, nowMillis);
         }

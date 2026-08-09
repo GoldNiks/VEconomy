@@ -49,6 +49,26 @@ class WeeklyFundServiceTest {
                         List.of(), ONE_TO_ONE, List.of(), 100, "Europe/Berlin"));
     }
 
+    /** Фонд по умолчанию, но учёт активности выключен: недельный фонд обязан отключиться. */
+    private static EconomySettings fundActivityDisabled(long weeklyAmount) {
+        EconomySettings defaults = EconomySettings.defaults();
+        return new EconomySettings(
+                defaults.currencyNameSingular, defaults.currencyNameFew, defaults.currencyNameMany,
+                defaults.currencySymbol, defaults.decimalPlaces, defaults.maximumBalance,
+                defaults.transfersEnabled, defaults.allowOfflineRecipients,
+                defaults.minimumTransferAmount, defaults.maximumTransferAmount,
+                defaults.transferCooldownSeconds,
+                defaults.dbType, defaults.databaseFile, defaults.busyTimeoutMillis, defaults.walEnabled,
+                defaults.mysqlHost, defaults.mysqlPort, defaults.mysqlDatabase,
+                defaults.mysqlUser, defaults.mysqlPassword, defaults.mysqlPoolSize,
+                defaults.broadcastAdminChanges,
+                new EconomySettings.Activity(false, 300, 20, 60, 0.5), defaults.milestones,
+                new EconomySettings.WeeklyFund(true, true, true, 0,
+                        0, 0, 0, 0,
+                        weeklyAmount / 2, weeklyAmount, weeklyAmount, 1_000_000L,
+                        List.of(), ONE_TO_ONE, List.of(), 100, "Europe/Berlin"));
+    }
+
     /** Залить активность в закрытую неделю (предыдущую от текущей): строку дней + строку активности. */
     private static void seedWeekly(TestDb db, UUID player, long seconds) {
         seedWeekly(db, player, seconds, false, 1L);
@@ -459,6 +479,25 @@ class WeeklyFundServiceTest {
             assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
             WeeklyFundService.WeeklyStatus status = db.weeklyFundService.status();
             assertTrue(status.weekDistributed());
+        }
+    }
+
+    @Test
+    void activityDisabledFundNeverDistributes() {
+        // Учёт активности выключен: даже при закрытой к выплате неделе фонд не ротирует
+        // и не платит ни автоматически, ни вручную, а статус сообщает о выключенном фонде.
+        try (TestDb db = TestDb.create(fundActivityDisabled(100))) {
+            UUID alice = UUID.randomUUID();
+            markSnapshotDue(db);
+            seedWeekly(db, alice, 100);
+
+            assertTrue(db.weeklyFundService.maybeDistribute().isEmpty());
+            assertTrue(db.weeklyFundService.runNow().isEmpty());
+
+            WeeklyFundService.WeeklyStatus status = db.weeklyFundService.status();
+            assertFalse(status.enabled());
+            assertTrue(db.weeklyFundService.preview().isEmpty());
+            assertEquals(0, db.accountService.getBalance(alice));
         }
     }
 

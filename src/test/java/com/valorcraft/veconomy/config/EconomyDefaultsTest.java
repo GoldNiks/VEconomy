@@ -99,6 +99,12 @@ class EconomyDefaultsTest {
         assertTrue(template.contains("\"amount\": 120"), "шаблон event_bonus = 120");
     }
 
+    @Test
+    void auditOversizedDefaultIs75k() {
+        // Порог «крупного перевода» для аудита согласован между кодом и шаблоном конфига.
+        assertEquals(75_000L, AuditConfig.Settings.defaults().oversizedTransferAmount());
+    }
+
     private static long longAt(CommentedConfig config, String section, String key) {
         Object value = config.get(List.of(section, key));
         return ((Number) value).longValue();

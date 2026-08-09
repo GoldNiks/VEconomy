@@ -28,7 +28,7 @@ import net.minecraft.network.chat.TextColor;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.time.Instant;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
@@ -45,8 +45,9 @@ import java.util.UUID;
 public final class MoneyCommand {
 
     private static final int HISTORY_PAGE_SIZE = 10;
+    /** Шаблон времени истории; зона подставляется из недельного фонда (или UTC вне сервера). */
     private static final DateTimeFormatter TIME =
-            DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneOffset.UTC);
+            DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
 
     private static final String HISTORY_COMMAND = "/money history ";
     private static final String HISTORY_BACK = "ui.history.back";
@@ -57,6 +58,8 @@ public final class MoneyCommand {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("money")
                 .executes(MoneyCommand::balanceSelf)
+                .then(Commands.literal("help")
+                        .executes(MoneyCommand::help))
                 .then(Commands.argument("player", StringArgumentType.word())
                         .suggests((context, builder) -> SharedSuggestionProvider.suggest(
                                 context.getSource().getOnlinePlayerNames(), builder))
@@ -84,6 +87,32 @@ public final class MoneyCommand {
     }
 
     // ---------------------------------------------------------------- /money, /balance
+
+    /** Справка по доступным командам: {@code /money help}. */
+    private static int help(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        source.sendSuccess(() -> helpScreen(MessageService.locale(source)), false);
+        return 1;
+    }
+
+    /** Экран справки: команда (инфо-цвет) + краткое описание. */
+    static MutableComponent helpScreen(String locale) {
+        MutableComponent out = EconomyComponents.header(MessageService.text(locale, "ui.help.title"));
+        helpLine(out, locale, "ui.help.cmd.balance", "ui.help.desc.balance");
+        helpLine(out, locale, "ui.help.cmd.balance.other", "ui.help.desc.balance.other");
+        helpLine(out, locale, "ui.help.cmd.pay", "ui.help.desc.pay");
+        helpLine(out, locale, "ui.help.cmd.history", "ui.help.desc.history");
+        helpLine(out, locale, "ui.help.cmd.activity", "ui.help.desc.activity");
+        helpLine(out, locale, "ui.help.cmd.weekly", "ui.help.desc.weekly");
+        return out;
+    }
+
+    private static void helpLine(MutableComponent out, String locale, String cmdKey, String descKey) {
+        out.append(Component.literal("\n"));
+        out.append(EconomyComponents.info(MessageService.text(locale, cmdKey))
+                .append(EconomyComponents.colored(" — ", EconomyTheme.MUTED))
+                .append(EconomyComponents.muted(MessageService.text(locale, descKey))));
+    }
 
     private static int balanceSelf(CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
@@ -514,13 +543,20 @@ public final class MoneyCommand {
         }
         MutableComponent hover = EconomyComponents.hover(List.of(
                 EconomyComponents.muted(MessageService.text(locale, "ui.history.hover.date",
-                        TIME.format(Instant.ofEpochMilli(row.createdAt())))),
+                        formatHistoryTime(row.createdAt()))),
                 reasonHover(locale, row),
                 EconomyComponents.muted(MessageService.text(locale, "ui.history.hover.tx",
                         row.transactionId()))));
         line.withStyle(style -> style.withHoverEvent(
                 new HoverEvent(HoverEvent.Action.SHOW_TEXT, hover)));
         return line;
+    }
+
+    /** Время операции в зоне недельного фонда (вне сервера/тестов — UTC). */
+    private static String formatHistoryTime(long millis) {
+        String zone = EconomyCore.isStarted() && EconomyCore.settings() != null
+                ? EconomyCore.settings().weeklyFund.timeZone : "UTC";
+        return TIME.withZone(ZoneId.of(zone)).format(Instant.ofEpochMilli(millis));
     }
 
     private static MutableComponent reasonHover(String locale, TransactionRow row) {

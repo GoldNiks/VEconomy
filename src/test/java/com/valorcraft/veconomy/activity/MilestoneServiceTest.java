@@ -32,6 +32,24 @@ class MilestoneServiceTest {
                 List.of(new MilestoneReward(3600, 10), new MilestoneReward(10800, 25)), true));
     }
 
+    private static EconomySettings withActivityAndMilestones(EconomySettings.Activity activity,
+                                                             EconomySettings.Milestones milestones) {
+        EconomySettings defaults = EconomySettings.defaults();
+        return new EconomySettings(
+                defaults.currencyNameSingular, defaults.currencyNameFew, defaults.currencyNameMany,
+                defaults.currencySymbol, defaults.decimalPlaces, defaults.maximumBalance,
+                defaults.transfersEnabled, defaults.allowOfflineRecipients,
+                defaults.minimumTransferAmount, defaults.maximumTransferAmount,
+                defaults.transferCooldownSeconds,
+                defaults.dbType, defaults.databaseFile, defaults.busyTimeoutMillis, defaults.walEnabled,
+                defaults.mysqlHost, defaults.mysqlPort, defaults.mysqlDatabase,
+                defaults.mysqlUser, defaults.mysqlPassword, defaults.mysqlPoolSize,
+                defaults.broadcastAdminChanges,
+                activity,
+                milestones,
+                defaults.weeklyFund);
+    }
+
     private static EconomySettings withMilestones(EconomySettings.Milestones milestones) {
         EconomySettings defaults = EconomySettings.defaults();
         return new EconomySettings(
@@ -192,6 +210,43 @@ class MilestoneServiceTest {
             var granted = db.milestoneService.checkPlayer(player);
             assertTrue(granted.isEmpty());
             assertEquals(0, db.accountService.getBalance(player));
+        }
+    }
+
+    @Test
+    void activityDisabledBlocksAllMilestoneGrants() throws IOException {
+        // Учёт активности выключен: ни один милстоун не выдаётся, даже принудительный
+        // админский (деньги основываются на учтённой активности).
+        EconomySettings.Activity disabled = new EconomySettings.Activity(false, 300, 20, 60, 0.5);
+        try (TestDb db = TestDb.create(withActivityAndMilestones(disabled,
+                new EconomySettings.Milestones(true,
+                        List.of(new MilestoneReward(3600, 10)), true)))) {
+            loadMilestones(db, json(EXTERNAL_DEF, ADVANCEMENT_DEF, DIMENSION_DEF));
+            UUID player = UUID.randomUUID();
+            setActiveSeconds(db, player, 20_000);
+            db.milestoneService.recordDimensionVisit(player, "ad_astra:moon");
+
+            assertTrue(db.milestoneService.checkPlayer(player).isEmpty());
+
+            var external = db.milestoneService.grantExternal(player, "event_bonus", "key-1");
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.ACTIVITY_DISABLED,
+                    external.status());
+
+            var event = db.milestoneService.grantForEvent(player, MilestoneType.ADVANCEMENT,
+                    new FakeContext(player).withAdvancement(
+                            ResourceLocation.tryParse("minecraft:story/enter_the_nether"), true));
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.ACTIVITY_DISABLED,
+                    event.get(0).status());
+
+            var def = db.milestoneService.definition("visit_moon").orElseThrow();
+            var admin = db.milestoneService.grant(player, def, null, "admin:test", null);
+            assertEquals(MilestoneService.MilestoneGrantResult.Status.ACTIVITY_DISABLED,
+                    admin.status());
+
+            assertEquals(0, db.accountService.getBalance(player));
+            assertFalse(db.milestoneService.isClaimed(player, "event_bonus"));
+            assertFalse(db.milestoneService.isClaimed(player, "enter_nether"));
+            assertFalse(db.milestoneService.isClaimed(player, "visit_moon"));
         }
     }
 

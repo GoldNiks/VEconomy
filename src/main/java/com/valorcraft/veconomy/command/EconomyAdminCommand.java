@@ -11,7 +11,9 @@ import com.valorcraft.veconomy.api.BalanceSnapshot;
 import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
+import com.valorcraft.veconomy.audit.AuditActorType;
 import com.valorcraft.veconomy.audit.AuditEventRow;
+import com.valorcraft.veconomy.audit.AuditSeverity;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.audit.ResolutionStatus;
@@ -604,15 +606,15 @@ case NO_CHANGES -> source.sendSuccess(() ->
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.title", event.id())
                 .withStyle(ChatFormatting.GOLD), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.type",
-                event.eventType()).withStyle(ChatFormatting.GRAY), false);
+                eventTypeLabel(source, event.eventType())).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.severity",
-                event.severity().name()).withStyle(ChatFormatting.GRAY), false);
+                severityLabel(source, event.severity())).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.status",
-                event.status()).withStyle(ChatFormatting.GRAY), false);
+                statusLabel(source, event.status())).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.player",
                 playerName).withStyle(ChatFormatting.GRAY), false);
         source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.actor",
-                actorName, event.actorType().name()).withStyle(ChatFormatting.GRAY), false);
+                actorName, actorTypeLabel(source, event.actorType())).withStyle(ChatFormatting.GRAY), false);
         if (event.counterpartyUuid() != null) {
             source.sendSuccess(() -> MessageService.message(source, "admin.audit.event.counterparty",
                     displayName(source, event.counterpartyUuid())).withStyle(ChatFormatting.GRAY), false);
@@ -725,6 +727,49 @@ case NO_CHANGES -> source.sendSuccess(() ->
             return "-";
         }
         return PlayerResolver.resolve(source.getServer(), id.toString()).name();
+    }
+
+    // ---------------------------------------------------------------- audit labels
+
+    /**
+     * Человекочитаемое название типа события/сигнала через языковые файлы.
+     * Неизвестный тип (например, из старой базы) показывается как есть.
+     */
+    private static String eventTypeLabel(CommandSourceStack source, String rawType) {
+        if (rawType == null || rawType.isBlank()) {
+            return "-";
+        }
+        return MessageService.textOrRaw(source,
+                "admin.audit.type." + rawType.toLowerCase(Locale.ROOT), rawType);
+    }
+
+    /** Человекочитаемое название важности события. */
+    private static String severityLabel(CommandSourceStack source, AuditSeverity severity) {
+        if (severity == null) {
+            return "-";
+        }
+        return MessageService.textOrRaw(source,
+                "admin.audit.severity." + severity.name().toLowerCase(Locale.ROOT),
+                severity.name());
+    }
+
+    /** Человекочитаемое название статуса обработки события. */
+    private static String statusLabel(CommandSourceStack source, String status) {
+        if (status == null || status.isBlank()) {
+            return "-";
+        }
+        return MessageService.textOrRaw(source,
+                "admin.audit.status." + status.toLowerCase(Locale.ROOT), status);
+    }
+
+    /** Человекочитаемое название типа инициатора события. */
+    private static String actorTypeLabel(CommandSourceStack source, AuditActorType actorType) {
+        if (actorType == null) {
+            return "-";
+        }
+        return MessageService.textOrRaw(source,
+                "admin.audit.actor." + actorType.name().toLowerCase(Locale.ROOT),
+                actorType.name());
     }
 
     /** Открытые (необработанные) сигналы. */
@@ -842,7 +887,8 @@ case NO_CHANGES -> source.sendSuccess(() ->
                     .withStyle(ChatFormatting.DARK_GRAY);
             line.append(Component.literal(" [" + row.severity().name().charAt(0) + "] ")
                     .withStyle(severityColor));
-            line.append(Component.literal(row.eventType()).withStyle(ChatFormatting.AQUA));
+            line.append(Component.literal(eventTypeLabel(source, row.eventType()))
+                    .withStyle(ChatFormatting.AQUA));
             line.append(Component.literal(" " + playerName).withStyle(ChatFormatting.WHITE));
             if (row.counterpartyUuid() != null) {
                 line.append(Component.literal(" -> "
@@ -885,10 +931,21 @@ case NO_CHANGES -> source.sendSuccess(() ->
             source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
                     .append(Component.literal(def.id()).withStyle(ChatFormatting.AQUA))
                     .append(MessageService.message(source, "admin.milestone.list.row",
-                            def.type().name().toLowerCase(java.util.Locale.ROOT), amount,
+                            milestoneName(source, def), amount,
                             def.enabled() ? "+" : "-")), false);
         }
         return 1;
+    }
+
+    /** Название milestone: настраиваемое {@code message} конфига или подпись типа. */
+    private static String milestoneName(CommandSourceStack source,
+                                        com.valorcraft.veconomy.activity.MilestoneDefinition def) {
+        if (def.message() != null && !def.message().isBlank()) {
+            return def.message();
+        }
+        return MessageService.textOrRaw(source,
+                "notify.milestone." + def.type().name().toLowerCase(Locale.ROOT),
+                def.type().name());
     }
 
     private static int milestoneListForPlayer(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
@@ -910,10 +967,12 @@ case NO_CHANGES -> source.sendSuccess(() ->
             String when = java.time.Instant.ofEpochMilli(claim.claimedAt())
                     .atZone(java.time.ZoneId.systemDefault())
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            String name = EconomyCore.milestones().definition(claim.milestoneId())
+                    .map(def -> milestoneName(source, def)).orElse(claim.milestoneId());
             source.sendSuccess(() -> Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
                     .append(Component.literal(claim.milestoneId()).withStyle(ChatFormatting.AQUA))
                     .append(MessageService.message(source, "admin.milestone.claims.row",
-                            EconomyCore.formatter().format(claim.amountMinor()), when)), false);
+                            name, EconomyCore.formatter().format(claim.amountMinor()), when)), false);
         }
         return 1;
     }
@@ -1014,6 +1073,7 @@ case NO_CHANGES -> source.sendSuccess(() ->
             case ALREADY_CLAIMED -> key = "admin.milestone.already";
             case DISABLED -> key = "admin.milestone.disabled";
             case MILESTONES_DISABLED -> key = "admin.milestone.milestones.disabled";
+            case ACTIVITY_DISABLED -> key = "admin.milestone.activity.disabled";
             case EXCLUDED -> key = "admin.milestone.excluded";
             case BAD_CONFIG -> key = "admin.milestone.badconfig";
             case ACCOUNT_FROZEN -> key = "error.frozen";

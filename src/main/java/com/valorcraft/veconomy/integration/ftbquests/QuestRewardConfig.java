@@ -137,8 +137,6 @@ public final class QuestRewardConfig {
                   "defaultPerQuest": 0,
                   // Название главы: сумма за один квест (как в FTB Quests)
                   "chapters": {
-                    "Глава 1": 25,
-                    "Глава 2": 50
                   },
                   // Конкретный квест по id (виден в редакторе FTB Quests): приоритетнее главы
                   "quests": {

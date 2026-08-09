@@ -190,6 +190,21 @@ public final class MessageService {
         return plainText(locale, key, args);
     }
 
+    /**
+     * Перевод или {@code rawFallback}, если ключ не найден (для сырых значений
+     * из базы/конфига, у которых нет записи в языковых файлах).
+     */
+    public static String textOrRaw(CommandSourceStack source, String key, String rawFallback,
+                                   Object... args) {
+        return plainTextOrRaw(locale(source), key, rawFallback, args);
+    }
+
+    /** Перевод или {@code rawFallback} на языке конкретного игрока. */
+    public static String textOrRaw(ServerPlayer player, String key, String rawFallback,
+                                   Object... args) {
+        return plainTextOrRaw(locale(player), key, rawFallback, args);
+    }
+
     // ---------------------------------------------------------------- rendering
 
     /** Основной путь рендеринга: перевод + подстановка аргументов. */
@@ -198,11 +213,19 @@ public final class MessageService {
             return "";
         }
         String normalized = normalizeLocale(locale);
+        String fallback = EN_LOCALE.equals(normalized) ? MISSING_EN : MISSING_RU;
+        return plainTextOrRaw(locale, key, fallback, args);
+    }
+
+    /** Как {@link #plainText}, но неизвестный ключ отдаёт {@code rawFallback}. */
+    static String plainTextOrRaw(String locale, String key, String rawFallback, Object... args) {
+        if (key == null) {
+            return rawFallback != null ? rawFallback : "";
+        }
+        String normalized = normalizeLocale(locale);
         String raw = lookup(normalized, key);
         if (raw == null) {
-            // Ключ не найден ни в выбранном языке, ни в ru_ru: игроку пустая строка
-            // не отправляется. Возвращаем понятный нейтральный текст по языку (фиг =).
-            return EN_LOCALE.equals(normalized) ? MISSING_EN : MISSING_RU;
+            return rawFallback;
         }
         Object[] flat = args == null ? new Object[0] : Arrays.stream(args)
                 .map(arg -> toFlatArg(arg, normalized)).toArray();

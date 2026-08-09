@@ -68,6 +68,9 @@ public final class InternalCommand {
                     MessageService.message(source, "cmd.internal.milestone.duplicate").withStyle(ChatFormatting.RED));
             case MILESTONES_DISABLED, DISABLED -> source.sendFailure(
                     MessageService.message(source, "cmd.internal.milestone.disabled").withStyle(ChatFormatting.RED));
+            case ACTIVITY_DISABLED -> source.sendFailure(
+                    MessageService.message(source, "cmd.internal.milestone.activitydisabled")
+                            .withStyle(ChatFormatting.RED));
             case LIMIT_EXCEEDED -> source.sendFailure(
                     MessageService.message(source, "cmd.internal.milestone.limit").withStyle(ChatFormatting.RED));
             case ACCOUNT_FROZEN -> source.sendFailure(
