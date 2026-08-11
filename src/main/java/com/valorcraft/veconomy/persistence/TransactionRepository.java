@@ -73,7 +73,8 @@ public final class TransactionRepository {
     public List<TransactionRow> history(Connection connection, UUID playerId, int offset, int limit) {
         List<TransactionRow> result = new ArrayList<>();
         try (var statement = connection.prepareStatement(
-                "SELECT * FROM transactions WHERE source_uuid = ? OR target_uuid = ? "
+                "SELECT * FROM transactions WHERE target_uuid = ? OR "
+                        + "(source_uuid = ? AND transaction_type NOT IN ('ESCROW_CAPTURE','ESCROW_ROLLOVER','FEE')) "
                         + "ORDER BY created_at DESC LIMIT ? OFFSET ?")) {
             String uuid = playerId.toString();
             statement.setString(1, uuid);
@@ -103,7 +104,8 @@ public final class TransactionRepository {
     /** Количество операций конкретного игрока (участник как источник или получатель). */
     public long countForPlayer(Connection connection, UUID playerId) {
         try (var statement = connection.prepareStatement(
-                "SELECT COUNT(*) FROM transactions WHERE source_uuid = ? OR target_uuid = ?")) {
+                "SELECT COUNT(*) FROM transactions WHERE target_uuid = ? OR "
+                        + "(source_uuid = ? AND transaction_type NOT IN ('ESCROW_CAPTURE','ESCROW_ROLLOVER','FEE'))")) {
             String uuid = playerId.toString();
             statement.setString(1, uuid);
             statement.setString(2, uuid);

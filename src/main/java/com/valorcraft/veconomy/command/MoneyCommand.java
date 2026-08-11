@@ -558,29 +558,20 @@ public final class MoneyCommand {
 
     static MutableComponent historyLine(String locale, UUID viewerUuid,
                                         TransactionRow row, String amountText) {
+        boolean returnedOwnMoney = row.targetUuid() != null && row.targetUuid().equals(viewerUuid)
+                && (row.type() == TransactionType.ESCROW_RELEASE
+                || "buyer-refund".equalsIgnoreCase(row.metadata().get("role")));
         boolean income = row.targetUuid() != null && row.targetUuid().equals(viewerUuid)
-                && (row.sourceUuid() == null || !row.sourceUuid().equals(viewerUuid));
+                && (returnedOwnMoney || row.sourceUuid() == null || !row.sourceUuid().equals(viewerUuid));
         MutableComponent amount = income
                 ? EconomyComponents.income(EconomyComponents.padAmount(amountText, 7))
                 : EconomyComponents.expense(EconomyComponents.padAmount(amountText, 7));
         MutableComponent line = amount;
         line.append(EconomyComponents.muted("   "));
-        String visibleReason = safeReason(row.reason());
-        if (visibleReason != null) {
-            line.append(EconomyComponents.text(visibleReason));
-        } else {
-            line.append(EconomyComponents.text(MessageService.text(locale, "type." + row.type().name())));
-        }
-        if (row.sourceUuid() != null && row.targetUuid() != null) {
-            boolean outgoing = row.sourceUuid().equals(viewerUuid);
-            line.append(outgoing ? EconomyComponents.toPlayerOut() : EconomyComponents.toPlayerIn());
-        }
+        line.append(EconomyComponents.text(historyDescription(locale, viewerUuid, row)));
         MutableComponent hover = EconomyComponents.hover(List.of(
                 EconomyComponents.muted(MessageService.text(locale, "ui.history.hover.date",
-                        formatHistoryTime(row.createdAt()))),
-                reasonHover(locale, row),
-                EconomyComponents.muted(MessageService.text(locale, "ui.history.hover.tx",
-                        row.transactionId()))));
+                        formatHistoryTime(row.createdAt())))));
         line.withStyle(style -> style.withHoverEvent(
                 new HoverEvent(HoverEvent.Action.SHOW_TEXT, hover)));
         return line;
@@ -593,10 +584,24 @@ public final class MoneyCommand {
         return TIME.withZone(ZoneId.of(zone)).format(Instant.ofEpochMilli(millis));
     }
 
-    private static MutableComponent reasonHover(String locale, TransactionRow row) {
+    static String historyDescription(String locale, UUID viewerUuid, TransactionRow row) {
         String reason = safeReason(row.reason());
-        return reason == null ? EconomyComponents.muted("")
-                : EconomyComponents.muted(MessageService.text(locale, "ui.history.hover.reason", reason));
+        if (reason != null) return reason;
+        String role = row.metadata().getOrDefault("role", "");
+        return switch (row.type()) {
+            case ESCROW_RESERVE -> MessageService.text(locale, "ui.history.operation.auctionReserve");
+            case ESCROW_RELEASE -> MessageService.text(locale, "ui.history.operation.auctionReturn");
+            case ESCROW_CAPTURE -> {
+                if ("buyer-refund".equalsIgnoreCase(role)) {
+                    yield MessageService.text(locale, "ui.history.operation.auctionDifference");
+                }
+                boolean seller = row.targetUuid() != null && row.targetUuid().equals(viewerUuid);
+                yield MessageService.text(locale, seller
+                        ? "ui.history.operation.auctionSale" : "ui.history.operation.auctionPurchase");
+            }
+            case ESCROW_ROLLOVER -> MessageService.text(locale, "ui.history.operation.auctionPending");
+            default -> MessageService.text(locale, "type." + row.type().name());
+        };
     }
 
     /** Причина транзакции может содержать технический префикс — игроку он не нужен. */

@@ -203,7 +203,11 @@ class EscrowServiceTest {
         assertEquals(owner, next.ownerId());
         assertEquals(1750, next.amount());
         assertEquals(1750, db.escrowService.sumReserved());
-        assertEquals(1, db.ledger.history(owner, 1, 100).stream()
+        long rolloverRows = db.database.inTransaction(connection ->
+                db.transactions.countByTypeSince(connection, TransactionType.ESCROW_ROLLOVER, 0));
+        assertEquals(1L, rolloverRows,
+                "внутренняя rollover-проводка сохраняется для аудита, но скрыта из истории игрока");
+        assertEquals(0, db.ledger.history(owner, 1, 100).stream()
                 .filter(row -> row.type() == TransactionType.ESCROW_ROLLOVER).count());
     }
 

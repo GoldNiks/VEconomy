@@ -30,6 +30,48 @@ class TransactionRepositoryTest {
         });
     }
 
+    private static void insert(TestDb db, String id, TransactionType type, UUID from, UUID to,
+                               long amount, long atMillis, java.util.Map<String, String> metadata) {
+        TransactionRow row = new TransactionRow(id, type, from, to, amount, atMillis,
+                from, "test", "test:" + id, metadata, null, null);
+        db.database.inTransaction(connection -> {
+            db.transactions.insert(connection, row);
+            return null;
+        });
+    }
+
+    @Test
+    void playerHistoryShowsBalanceChangesAndHidesInternalEscrowLegs() {
+        try (TestDb db = TestDb.create()) {
+            UUID buyer = UUID.randomUUID();
+            UUID seller = UUID.randomUUID();
+            long base = System.currentTimeMillis();
+            insert(db, "reserve", TransactionType.ESCROW_RESERVE, buyer, null, 500, base, java.util.Map.of());
+            insert(db, "capture", TransactionType.ESCROW_CAPTURE, buyer, seller, 400, base + 1,
+                    java.util.Map.of("role", "seller"));
+            insert(db, "fee", TransactionType.FEE, buyer, null, 10, base + 2, java.util.Map.of());
+            insert(db, "rollover", TransactionType.ESCROW_ROLLOVER, buyer, null, 90, base + 3,
+                    java.util.Map.of());
+            insert(db, "refund", TransactionType.ESCROW_CAPTURE, buyer, buyer, 90, base + 4,
+                    java.util.Map.of("role", "buyer-refund"));
+            insert(db, "release", TransactionType.ESCROW_RELEASE, buyer, buyer, 50, base + 5,
+                    java.util.Map.of());
+
+            List<TransactionRow> buyerRows = db.database.inTransaction(connection ->
+                    db.transactions.history(connection, buyer, 0, 20));
+            assertEquals(List.of("release", "refund", "reserve"), buyerRows.stream()
+                    .map(TransactionRow::transactionId).toList());
+            long buyerCount = db.database.inTransaction(connection ->
+                    db.transactions.countForPlayer(connection, buyer));
+            assertEquals(buyerRows.size(), buyerCount);
+
+            List<TransactionRow> sellerRows = db.database.inTransaction(connection ->
+                    db.transactions.history(connection, seller, 0, 20));
+            assertEquals(List.of("capture"), sellerRows.stream()
+                    .map(TransactionRow::transactionId).toList());
+        }
+    }
+
     @Test
     void transfersSinceLimitedReadsOnlyLimitRowsEvenWhenMoreExist() {
         try (TestDb db = TestDb.create()) {

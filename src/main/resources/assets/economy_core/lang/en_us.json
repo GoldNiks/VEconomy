@@ -87,6 +87,12 @@
   "ui.history.hover.date": "Date: %s",
   "ui.history.hover.reason": "Reason: %s",
   "ui.history.hover.tx": "Transaction: %s",
+  "ui.history.operation.auctionReserve": "Money set aside for a buy order",
+  "ui.history.operation.auctionReturn": "Money returned from an order",
+  "ui.history.operation.auctionPurchase": "Auction purchase",
+  "ui.history.operation.auctionSale": "Auction sale",
+  "ui.history.operation.auctionDifference": "Price difference returned after purchase",
+  "ui.history.operation.auctionPending": "Money remains in an active order",
 
   "ui.help.title": "Economy commands",
   "ui.help.cmd.balance": "/money",

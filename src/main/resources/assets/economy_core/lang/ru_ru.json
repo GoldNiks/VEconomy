@@ -87,6 +87,12 @@
   "ui.history.hover.date": "Дата: %s",
   "ui.history.hover.reason": "Причина: %s",
   "ui.history.hover.tx": "Операция: %s",
+  "ui.history.operation.auctionReserve": "Деньги отложены для заявки на покупку",
+  "ui.history.operation.auctionReturn": "Возврат денег из заявки",
+  "ui.history.operation.auctionPurchase": "Покупка на бирже",
+  "ui.history.operation.auctionSale": "Продажа на бирже",
+  "ui.history.operation.auctionDifference": "Возврат разницы после покупки",
+  "ui.history.operation.auctionPending": "Деньги остались в активной заявке",
 
   "ui.help.title": "Команды экономики",
   "ui.help.cmd.balance": "/money",

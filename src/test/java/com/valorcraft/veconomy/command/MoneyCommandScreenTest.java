@@ -259,17 +259,26 @@ class MoneyCommandScreenTest {
                 VIEWER, null, 50, 1_700_000_000_000L, VIEWER,
                 "buy hold " + orderId, "va:buy:", Map.of(), 9500L, null);
         String reserveText = compiled(MoneyCommand.historyLine("ru_ru", VIEWER, reserve, "⛃0.5"));
-        assertTrue(reserveText.contains("Резервирование"));
+        assertTrue(reserveText.contains("Деньги отложены для заявки на покупку"));
+        assertFalse(reserveText.contains("Резервирование"));
         assertFalse(reserveText.contains("buy hold"));
         assertFalse(reserveText.contains(orderId));
 
-        TransactionRow rollover = new TransactionRow("tx-roll", TransactionType.ESCROW_ROLLOVER,
-                VIEWER, null, 100, 1_700_000_000_000L, VIEWER,
-                "settle+rollover " + orderId, "va:rollover:", Map.of(), 9400L, null);
-        String rolloverText = compiled(MoneyCommand.historyLine("ru_ru", VIEWER, rollover, "⛃1.0"));
-        assertTrue(rolloverText.contains("Продление эскроу"));
-        assertFalse(rolloverText.contains("settle+rollover"));
-        assertFalse(rolloverText.contains(orderId));
+        TransactionRow sale = new TransactionRow("tx-sale", TransactionType.ESCROW_CAPTURE,
+                OTHER, VIEWER, 100, 1_700_000_000_000L, OTHER,
+                "settle+rollover " + orderId, "va:settle:", Map.of("role", "seller"), null, 9600L);
+        String saleText = compiled(MoneyCommand.historyLine("ru_ru", VIEWER, sale, "⛃1.0"));
+        assertTrue(saleText.contains("Продажа на бирже"));
+        assertFalse(saleText.contains("эскроу"));
+        assertFalse(saleText.contains("settle+rollover"));
+        assertFalse(saleText.contains(orderId));
+
+        TransactionRow refund = new TransactionRow("tx-refund", TransactionType.ESCROW_CAPTURE,
+                VIEWER, VIEWER, 25, 1_700_000_000_000L, VIEWER,
+                null, "va:refund:", Map.of("role", "buyer-refund"), 9525L, 9525L);
+        String refundText = compiled(MoneyCommand.historyLine("ru_ru", VIEWER, refund, "⛃0.25"));
+        assertTrue(refundText.startsWith("+"));
+        assertTrue(refundText.contains("Возврат разницы после покупки"));
     }
 
     @Test
