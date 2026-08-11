@@ -565,7 +565,12 @@ public final class MoneyCommand {
                 : EconomyComponents.expense(EconomyComponents.padAmount(amountText, 7));
         MutableComponent line = amount;
         line.append(EconomyComponents.muted("   "));
-        line.append(EconomyComponents.text(MessageService.text(locale, "type." + row.type().name())));
+        String visibleReason = safeReason(row.reason());
+        if (visibleReason != null) {
+            line.append(EconomyComponents.text(visibleReason));
+        } else {
+            line.append(EconomyComponents.text(MessageService.text(locale, "type." + row.type().name())));
+        }
         if (row.sourceUuid() != null && row.targetUuid() != null) {
             boolean outgoing = row.sourceUuid().equals(viewerUuid);
             line.append(outgoing ? EconomyComponents.toPlayerOut() : EconomyComponents.toPlayerIn());

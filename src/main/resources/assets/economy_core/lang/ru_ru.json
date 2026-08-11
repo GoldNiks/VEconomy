@@ -329,6 +329,7 @@
   "type.ESCROW_RESERVE": "Резервирование",
   "type.ESCROW_RELEASE": "Возврат эскроу",
   "type.ESCROW_CAPTURE": "Передача эскроу",
+  "type.ESCROW_ROLLOVER": "Продление эскроу",
   "type.ROLLBACK": "Откат",
   "type.FEE": "Комиссия",
   "type.SYSTEM_CORRECTION": "Системная корректировка",

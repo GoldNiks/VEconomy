@@ -229,6 +229,30 @@ class MoneyCommandScreenTest {
     }
 
     @Test
+    void historyLineShowsVisibleReasonInsteadOfTypeName() {
+        TransactionRow row = new TransactionRow("tx-2", TransactionType.ESCROW_RESERVE,
+                VIEWER, null, 500, 1_700_000_000_000L, VIEWER,
+                "Заявка на покупку: Железный слиток", "va:buy:", Map.of(), 9500L, null);
+        MutableComponent line = MoneyCommand.historyLine("ru_ru", VIEWER, row, "⛃500");
+        String text = compiled(line);
+        assertTrue(text.contains("Заявка на покупку: Железный слиток"),
+                "строка истории показывает понятную игроку причину");
+        assertFalse(text.contains("Резервирование"), "технический тип не дублируется");
+        assertFalse(text.contains("<key"), "причина переведена дословно, без ключей локали");
+        assertLiteralOnly(line);
+    }
+
+    @Test
+    void historyLineKeepsTypeNameForTechnicalReason() {
+        TransactionRow row = row(1, VIEWER, OTHER);
+        MutableComponent line = MoneyCommand.historyLine("ru_ru", VIEWER, row, "⛃250");
+        String text = compiled(line);
+        assertTrue(text.contains("Перевод"), "для технической причины тип остаётся видимым");
+        assertFalse(text.contains("pay:Test"), "технический префикс причины не показывается");
+        assertLiteralOnly(line);
+    }
+
+    @Test
     void navigationShowsArrowsOnlyWhenNeeded() {
         MutableComponent first = EconomyComponents.navigation("ru_ru", "/money history ",
                 "ui.history.back", "ui.history.next", 1, 4);

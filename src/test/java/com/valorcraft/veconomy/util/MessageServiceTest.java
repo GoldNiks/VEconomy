@@ -1,5 +1,6 @@
 package com.valorcraft.veconomy.util;
 
+import com.valorcraft.veconomy.api.TransactionType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.LiteralContents;
 import net.minecraft.network.chat.contents.TranslatableContents;
@@ -160,5 +161,18 @@ class MessageServiceTest {
         assertEquals(ru.size(), en.size());
         assertTrue(ru.containsAll(en));
         assertTrue(en.containsAll(ru));
+    }
+
+    @Test
+    void everyTransactionTypeHasLabelInBothLocales() {
+        Set<String> ru = MessageService.keys("ru_ru");
+        Set<String> en = MessageService.keys("en_us");
+        for (TransactionType type : TransactionType.values()) {
+            String key = "type." + type.name();
+            assertTrue(ru.contains(key), "нет ключа " + key + " в ru_ru");
+            assertTrue(en.contains(key), "нет ключа " + key + " в en_us");
+            assertFalse(MessageService.text("ru_ru", key).contains("Не удалось отобразить"),
+                    "перевод " + key + " не должен падать в fallback");
+        }
     }
 }

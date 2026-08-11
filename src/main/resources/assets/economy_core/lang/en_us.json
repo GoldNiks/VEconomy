@@ -329,6 +329,7 @@
   "type.ESCROW_RESERVE": "Reservation",
   "type.ESCROW_RELEASE": "Escrow release",
   "type.ESCROW_CAPTURE": "Escrow capture",
+  "type.ESCROW_ROLLOVER": "Escrow rollover",
   "type.ROLLBACK": "Rollback",
   "type.FEE": "Fee",
   "type.SYSTEM_CORRECTION": "System correction",
