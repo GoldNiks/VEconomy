@@ -253,6 +253,26 @@ class MoneyCommandScreenTest {
     }
 
     @Test
+    void historyLineHidesLegacyAuctionProtocolReasonsAndUuids() {
+        String orderId = "8b62463d-8aec-49f3-9777-a062949f0b70";
+        TransactionRow reserve = new TransactionRow("tx-old", TransactionType.ESCROW_RESERVE,
+                VIEWER, null, 50, 1_700_000_000_000L, VIEWER,
+                "buy hold " + orderId, "va:buy:", Map.of(), 9500L, null);
+        String reserveText = compiled(MoneyCommand.historyLine("ru_ru", VIEWER, reserve, "⛃0.5"));
+        assertTrue(reserveText.contains("Резервирование"));
+        assertFalse(reserveText.contains("buy hold"));
+        assertFalse(reserveText.contains(orderId));
+
+        TransactionRow rollover = new TransactionRow("tx-roll", TransactionType.ESCROW_ROLLOVER,
+                VIEWER, null, 100, 1_700_000_000_000L, VIEWER,
+                "settle+rollover " + orderId, "va:rollover:", Map.of(), 9400L, null);
+        String rolloverText = compiled(MoneyCommand.historyLine("ru_ru", VIEWER, rollover, "⛃1.0"));
+        assertTrue(rolloverText.contains("Продление эскроу"));
+        assertFalse(rolloverText.contains("settle+rollover"));
+        assertFalse(rolloverText.contains(orderId));
+    }
+
+    @Test
     void navigationShowsArrowsOnlyWhenNeeded() {
         MutableComponent first = EconomyComponents.navigation("ru_ru", "/money history ",
                 "ui.history.back", "ui.history.next", 1, 4);

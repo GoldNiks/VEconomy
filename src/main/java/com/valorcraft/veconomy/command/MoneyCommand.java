@@ -609,6 +609,15 @@ public final class MoneyCommand {
             return null;
         }
         String lower = trimmed.toLowerCase();
+        // Old plugin builds stored implementation details and escrow/order UUIDs as
+        // the public reason. Keep those rows useful by falling back to the localized
+        // transaction type instead of leaking protocol vocabulary into /money history.
+        if (lower.startsWith("buy hold ") || lower.startsWith("settle+rollover ")
+                || lower.startsWith("sell settlement ") || lower.startsWith("buy settlement ")
+                || lower.startsWith("cancel buy ") || lower.startsWith("expire buy ")
+                || lower.matches(".*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*")) {
+            return null;
+        }
         if (lower.startsWith("pay:") || lower.startsWith("milestone:")
                 || lower.startsWith("ftbquests:") || lower.startsWith("admin:")
                 || lower.startsWith("compensation:") || lower.startsWith("questcomp:")
