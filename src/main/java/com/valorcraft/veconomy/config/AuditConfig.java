@@ -9,9 +9,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 /**
- * Пороги сигналов подозрительной активности из {@code config/veconomy-audit.json}.
+ * Пороги сигналов подозрительной активности из {@code config/VMods/VEconomy/veconomy-audit.json}.
  * Необязательный конфиг: при отсутствии файла или ошибке парсинга используются
  * значения по умолчанию (последняя корректная конфигурация сохраняется).
  */
@@ -280,7 +281,8 @@ public final class AuditConfig {
                 """;
         try {
             Files.createDirectories(file.getParent());
-            Files.writeString(file, template, StandardCharsets.UTF_8);
+            Files.writeString(file, template, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         } catch (IOException e) {
             VEconomyMod.LOGGER.error("Не удалось создать {}: {}", file, e.toString());
         }

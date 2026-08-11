@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -21,7 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Определения milestones из {@code config/veconomy-milestones.json}
+ * Определения milestones из {@code config/VMods/VEconomy/veconomy-milestones.json}
  * (типы ADVANCEMENT, DIMENSION_VISIT, EXTERNAL). PLAYTIME остаётся в
  * {@code economy-core.toml} (пары «секунды → награда») — отдельный файл
  * эти данные не дублирует.
@@ -275,7 +276,8 @@ public final class MilestoneConfig {
                 """;
         try {
             Files.createDirectories(file.getParent());
-            Files.writeString(file, template, StandardCharsets.UTF_8);
+            Files.writeString(file, template, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         } catch (IOException e) {
             VEconomyMod.LOGGER.error("Не удалось создать {}: {}", file, e.toString());
         }

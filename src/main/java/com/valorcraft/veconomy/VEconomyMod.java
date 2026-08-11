@@ -1,6 +1,7 @@
 package com.valorcraft.veconomy;
 
 import com.valorcraft.veconomy.config.EconomyConfig;
+import com.valorcraft.veconomy.config.ConfigPaths;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
@@ -23,6 +24,7 @@ public final class VEconomyMod {
     public static final Logger LOGGER = LogManager.getLogger(MOD_NAME);
 
     public VEconomyMod() {
+        ConfigPaths.prepare();
         EconomyConfig.register();
 
         // Опциональные интеграции. Классы загружаются только при наличии мода на сервере.

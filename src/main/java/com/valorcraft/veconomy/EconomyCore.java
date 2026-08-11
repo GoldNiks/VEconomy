@@ -23,6 +23,7 @@ import com.valorcraft.veconomy.audit.AuditRepository;
 import com.valorcraft.veconomy.audit.AuditService;
 import com.valorcraft.veconomy.audit.EconomyStatistics;
 import com.valorcraft.veconomy.config.AuditConfig;
+import com.valorcraft.veconomy.config.ConfigPaths;
 import com.valorcraft.veconomy.config.EconomySettings;
 import com.valorcraft.veconomy.config.MilestoneConfig;
 import com.valorcraft.veconomy.economy.AccountService;
@@ -68,8 +69,8 @@ public final class EconomyCore {
             throw new IllegalStateException("Экономика уже запущена");
         }
         settings = initialSettings;
-        AuditConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
-        MilestoneConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get(),
+        AuditConfig.load(ConfigPaths.directory());
+        MilestoneConfig.load(ConfigPaths.directory(),
                 initialSettings.maximumBalance);
         database = new DatabaseManager();
         database.open(databasePath, initialSettings);
@@ -191,8 +192,8 @@ public final class EconomyCore {
     /** Применить новые (перезагруженные) настройки к сервисам. */
     public static synchronized void applySettings(EconomySettings newSettings) {
         settings = newSettings;
-        AuditConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
-        MilestoneConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get(),
+        AuditConfig.load(ConfigPaths.directory());
+        MilestoneConfig.load(ConfigPaths.directory(),
                 newSettings.maximumBalance);
         if (accountService != null) {
             accountService.applySettings(newSettings);

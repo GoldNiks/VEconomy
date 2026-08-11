@@ -8,7 +8,7 @@ import net.minecraftforge.fml.config.ModConfig;
 import java.util.List;
 
 /**
- * Forge-конфиг {@code config/economy-core.toml}.
+ * Forge-конфиг {@code config/VMods/VEconomy/economy-core.toml}.
  * <p>
  * Значения делятся на секции: currency, transfers, database, activity, milestones,
  * weeklyFund, notifications. Все денежные значения — целые (минимальные единицы),
@@ -350,11 +350,11 @@ public final class EconomyConfig {
     public static void reload() {
         net.minecraftforge.fml.config.ConfigTracker.INSTANCE.loadConfigs(
                 ModConfig.Type.COMMON, net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
-        VEconomyMod.LOGGER.info("Конфиг economy-core.toml перечитан с диска");
+        VEconomyMod.LOGGER.info("Конфиг {} перечитан с диска", ConfigPaths.ECONOMY_CONFIG);
     }
 
     /** Зарегистрировать конфиг при загрузке мода. */
     public static void register() {
-        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, SPEC, "economy-core.toml");
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, SPEC, ConfigPaths.ECONOMY_CONFIG);
     }
 }

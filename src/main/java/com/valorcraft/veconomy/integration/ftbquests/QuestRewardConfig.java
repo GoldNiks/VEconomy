@@ -9,13 +9,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * Таблица наград за квесты FTB Quests.
  * <p>
- * Файл {@code config/veconomy-quests.json} (создаётся автоматически при первом запуске):
+ * Файл {@code config/VMods/VEconomy/veconomy-quests.json} (создаётся автоматически при первом запуске):
  * <pre>{@code
  * {
  *   // Включить ли числовой «Custom Reward» (название = число) как способ награды
@@ -145,7 +146,8 @@ public final class QuestRewardConfig {
                 """;
         try {
             Files.createDirectories(file.getParent());
-            Files.writeString(file, template, StandardCharsets.UTF_8);
+            Files.writeString(file, template, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         } catch (IOException e) {
             VEconomyMod.LOGGER.error("Не удалось создать {}: {}", file, e.toString());
         }

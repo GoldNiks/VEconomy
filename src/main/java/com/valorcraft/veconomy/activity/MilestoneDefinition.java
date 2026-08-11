@@ -6,7 +6,7 @@ import java.util.Map;
  * Один настраиваемый milestone. Определения PLAYTIME синтезируются из пар
  * {@code (секунды, награда)} конфига {@code milestones.rewards}; определения
  * ADVANCEMENT/DIMENSION_VISIT/EXTERNAL загружаются из
- * {@code config/veconomy-milestones.json} ({@link MilestoneConfig}).
+ * {@code config/VMods/VEconomy/veconomy-milestones.json} ({@link MilestoneConfig}).
  *
  * @param requirements обязательные требования типа: для PLAYTIME — {@code activeSeconds};
  *                     для ADVANCEMENT — {@code advancement} (ResourceLocation);

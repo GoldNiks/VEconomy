@@ -6,6 +6,7 @@ import com.valorcraft.veconomy.api.TransactionContext;
 import com.valorcraft.veconomy.api.TransactionResult;
 import com.valorcraft.veconomy.api.TransactionType;
 import com.valorcraft.veconomy.economy.TreasuryService;
+import com.valorcraft.veconomy.config.ConfigPaths;
 import com.valorcraft.veconomy.util.MessageService;
 import dev.architectury.event.EventResult;
 import dev.ftb.mods.ftbquests.events.CustomRewardEvent;
@@ -52,7 +53,7 @@ public final class FTBQuestsIntegration {
         if (registered) {
             return;
         }
-        QuestRewardConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
+        QuestRewardConfig.load(ConfigPaths.directory());
         CustomRewardEvent.EVENT.register(FTBQuestsIntegration::onCustomReward);
         ObjectCompletedEvent.QUEST.register(FTBQuestsIntegration::onQuestCompleted);
         registered = true;
@@ -61,7 +62,7 @@ public final class FTBQuestsIntegration {
 
     /** Перечитать таблицу наград по главам (команда {@code /economy admin reload}). */
     public static void reloadRewards() {
-        QuestRewardConfig.load(net.minecraftforge.fml.loading.FMLPaths.CONFIGDIR.get());
+        QuestRewardConfig.load(ConfigPaths.directory());
     }
 
     // ---------------------------------------------------------------- custom reward
