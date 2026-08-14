@@ -428,7 +428,8 @@ public final class MoneyCommand {
             return out;
         }
         if (info.eligible()) {
-            long untilEnd = Math.max(0, info.weekEndMillis() - System.currentTimeMillis());
+            long nowMillis = System.currentTimeMillis();
+            long untilEnd = secondsUntil(info.weekEndMillis(), nowMillis);
             out.append(Component.literal("\n"));
             out.append(EconomyComponents.entry(
                     MessageService.text(locale, "ui.weekly.active"),
@@ -451,12 +452,12 @@ public final class MoneyCommand {
                         MessageService.text(locale, "ui.weekly.lastWeek"),
                         EconomyComponents.money(lastWeekText)));
                 long autoPayoutAt = info.lastWeekAutoPayoutAt();
-                if (autoPayoutAt > 0 && autoPayoutAt > System.currentTimeMillis()) {
+                if (autoPayoutAt > 0 && autoPayoutAt > nowMillis) {
                     out.append(Component.literal("\n"));
                     out.append(EconomyComponents.entry(
                             MessageService.text(locale, "ui.weekly.payoutSoon"),
                             EconomyComponents.info(duration(locale,
-                                    autoPayoutAt - System.currentTimeMillis()))));
+                                    secondsUntil(autoPayoutAt, nowMillis)))));
                 }
             }
         } else {
@@ -471,6 +472,11 @@ public final class MoneyCommand {
             }
         }
         return out;
+    }
+
+    /** Перевести абсолютный deadline в миллисекундах в оставшиеся секунды для UI. */
+    static long secondsUntil(long deadlineMillis, long nowMillis) {
+        return Math.max(0L, deadlineMillis - nowMillis) / 1_000L;
     }
 
     /** Конкретная причина неучастия: сколько именно не хватает до ближайшего порога. */

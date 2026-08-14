@@ -143,16 +143,40 @@ class MoneyCommandScreenTest {
     @Test
     void weeklyScreenForEligiblePlayerShowsShareAndDeadline() {
         WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", true, null,
-                7_200, 3, 10, 5, 15, 120, 0, 0, System.currentTimeMillis() + 86_400_000L);
+                7_200, 3, 10, 5, 15, 120, 0, 0, System.currentTimeMillis() + 86_401_000L);
         MutableComponent screen = MoneyCommand.weeklyScreen("ru_ru", info, "⛃500", "", null, true);
         String text = compiled(screen);
+        String compact = text.replaceAll(" +", " ");
         assertTrue(text.contains("Недельная награда"));
         assertTrue(text.contains("⛃500"));
         assertTrue(text.contains("Активных дней"));
+        assertTrue(compact.contains("До конца недели 1 д"),
+                "deadline в миллисекундах должен отображаться как одни сутки, а не тысячи дней");
         assertLiteralOnly(screen);
     }
 
-@Test
+    @Test
+    void weeklyScreenConvertsPayoutDeadlineFromMillisToSeconds() {
+        long now = System.currentTimeMillis();
+        WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", true, null,
+                7_200, 3, 10, 5, 15, 120, 50, now + 3_601_000L, now + 86_401_000L);
+
+        String text = compiled(MoneyCommand.weeklyScreen(
+                "ru_ru", info, "⛃120", "⛃50", null, true)).replaceAll(" +", " ");
+
+        assertTrue(text.contains("Выплата примерно через"));
+        assertTrue(text.contains("1 ч"),
+                "deadline выплаты в миллисекундах должен отображаться как один час");
+    }
+
+    @Test
+    void secondsUntilConvertsMillisAndClampsPastDeadline() {
+        long now = 1_700_000_000_000L;
+        assertEquals(86_400L, MoneyCommand.secondsUntil(now + 86_400_999L, now));
+        assertEquals(0L, MoneyCommand.secondsUntil(now - 1L, now));
+    }
+
+    @Test
     void weeklyScreenForIneligibleShowsReason() {
         WeeklyPlayerInfo info = new WeeklyPlayerInfo("2026-W32", false, NotEligibleReason.MIN_ACTIVE_DAYS,
                 0, 0, 0, 0, 0, 0, 0, 0, 0);

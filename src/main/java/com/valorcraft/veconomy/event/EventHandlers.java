@@ -8,6 +8,7 @@ import com.valorcraft.veconomy.command.MoneyCommand;
 import com.valorcraft.veconomy.command.PayCommand;
 import com.valorcraft.veconomy.config.EconomyConfig;
 import com.valorcraft.veconomy.persistence.LegacyImporter;
+import com.valorcraft.veconomy.util.MessageService;
 import com.valorcraft.veconomy.util.ServerHolder;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -56,6 +57,15 @@ public final class EventHandlers {
         if (!(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
+        String clientLanguage;
+        try {
+            clientLanguage = player.getLanguage();
+        } catch (Throwable t) {
+            clientLanguage = "<unavailable: " + t.getClass().getSimpleName() + ">";
+        }
+        VEconomyMod.LOGGER.info("Язык игрока {} ({}): clientLanguage={}, locale={}",
+                player.getGameProfile().getName(), player.getUUID(), clientLanguage,
+                MessageService.normalizeLocale(clientLanguage));
         if (EconomyCore.isStarted()) {
             EconomyCore.accounts().createOrTouch(player.getUUID(), player.getGameProfile().getName());
         }

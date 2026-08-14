@@ -13,15 +13,15 @@ import dev.ftb.mods.ftbquests.events.CustomRewardEvent;
 import dev.ftb.mods.ftbquests.events.ObjectCompletedEvent;
 import dev.ftb.mods.ftbquests.quest.Chapter;
 import dev.ftb.mods.ftbquests.quest.Quest;
+import dev.ftb.mods.ftbquests.quest.QuestObjectBase;
 import dev.ftb.mods.ftbquests.quest.TeamData;
+import dev.ftb.mods.ftbquests.quest.reward.CommandReward;
 import dev.ftb.mods.ftbquests.quest.reward.CustomReward;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.fml.ModList;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
+import java.util.List;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * Интеграция с FTB Quests: награды деньгами.
@@ -42,8 +42,6 @@ import java.util.regex.Pattern;
 public final class FTBQuestsIntegration {
 
     /** Название «Кастомной награды» должно состоять целиком из числа (без текста). */
-    private static final Pattern WHOLE_NUMBER = Pattern.compile("[0-9]+(?:[.,][0-9]+)?");
-
     private static volatile boolean registered;
 
     private FTBQuestsIntegration() {}
@@ -96,6 +94,146 @@ public final class FTBQuestsIntegration {
                     EconomyCore.formatter().format(amountMinor)));
         }
         return EventResult.pass();
+    }
+
+    // ---------------------------------------------------------------- visible command reward
+
+    public enum CommandRewardStatus {
+        SUCCESS,
+        ALREADY_DISTRIBUTED,
+        NOT_READY,
+        INVALID_QUEST_ID,
+        QUEST_NOT_FOUND,
+        QUEST_NOT_COMPLETED,
+        TEAM_NOT_FOUND,
+        INVALID_REWARD_SETUP,
+        AUTO_REWARD_CONFLICT,
+        PARTIAL_FAILURE
+    }
+
+    /**
+     * Pays the visible amount from the quest's sole monetary Command Reward as a common team fund.
+     * The command accepts no amount or target: both are derived from trusted FTB Quests state.
+     */
+    public static CommandRewardStatus claimVisibleCommandReward(ServerPlayer player, String questCode) {
+        if (!EconomyCore.isStarted() || player == null) {
+            return CommandRewardStatus.NOT_READY;
+        }
+
+        final long questId;
+        try {
+            questId = QuestObjectBase.parseCodeString(questCode);
+        } catch (RuntimeException e) {
+            return CommandRewardStatus.INVALID_QUEST_ID;
+        }
+
+        try {
+            var questFile = dev.ftb.mods.ftbquests.api.FTBQuestsAPI.api().getQuestFile(true);
+            if (questFile == null) {
+                return CommandRewardStatus.NOT_READY;
+            }
+            Quest quest = questFile.getQuest(questId);
+            if (quest == null) {
+                return CommandRewardStatus.QUEST_NOT_FOUND;
+            }
+
+            var teamOpt = dev.ftb.mods.ftbteams.api.FTBTeamsAPI.api().getManager().getTeamForPlayer(player);
+            if (teamOpt.isEmpty()) {
+                return CommandRewardStatus.TEAM_NOT_FOUND;
+            }
+            var team = teamOpt.get();
+            TeamData teamData = questFile.getNullableTeamData(team.getId());
+            if (teamData == null || !teamData.isCompleted(quest)) {
+                return CommandRewardStatus.QUEST_NOT_COMPLETED;
+            }
+
+            List<CommandReward> moneyRewards = quest.getRewards().stream()
+                    .filter(CommandReward.class::isInstance)
+                    .map(CommandReward.class::cast)
+                    .filter(reward -> parseVisibleAmount(reward.getRawTitle()) > 0)
+                    .toList();
+            if (moneyRewards.size() != 1 || !moneyRewards.get(0).isTeamReward()) {
+                VEconomyMod.LOGGER.error("FTB Quests: quest {} must have exactly one monetary Command Reward with Team Reward enabled",
+                        quest.getCodeString());
+                return CommandRewardStatus.INVALID_REWARD_SETUP;
+            }
+
+            Chapter chapter = quest.getQuestChapter();
+            String chapterTitle = chapter == null ? null : chapter.getRawTitle();
+            if (QuestRewardConfig.rewardForQuest(quest.id, chapterTitle) > 0) {
+                VEconomyMod.LOGGER.error("FTB Quests: quest {} has both a visible Command Reward and an automatic JSON reward; payout rejected",
+                        quest.getCodeString());
+                return CommandRewardStatus.AUTO_REWARD_CONFLICT;
+            }
+
+            long fundMinor = parseVisibleAmount(moneyRewards.get(0).getRawTitle());
+            List<UUID> members = List.copyOf(team.getMembers());
+            if (members.isEmpty()) {
+                return CommandRewardStatus.TEAM_NOT_FOUND;
+            }
+            long perMember = fundMinor / members.size();
+            long remainder = fundMinor % members.size();
+            if (perMember <= 0) {
+                VEconomyMod.LOGGER.error("FTB Quests: common fund {} for quest {} is smaller than team size {}",
+                        fundMinor, quest.getCodeString(), members.size());
+                return CommandRewardStatus.INVALID_REWARD_SETUP;
+            }
+
+            String label = chapterTitle == null ? quest.getCodeString() : chapterTitle;
+            String operationPrefix = "ftbquests:command:" + quest.getCodeString() + ":" + team.getId();
+            int successes = 0;
+            int duplicates = 0;
+            int failures = 0;
+            for (UUID member : members) {
+                TransactionResult result = EconomyCore.api().deposit(member, perMember,
+                        TransactionContext.of(TransactionType.QUEST_REWARD, member,
+                                "ftbquests:" + label,
+                                operationPrefix + ":" + member));
+                if (result.status() == TransactionResult.Status.SUCCESS) {
+                    successes++;
+                    notifyMember(member, perMember, label);
+                } else if (result.status() == TransactionResult.Status.DUPLICATE_OPERATION) {
+                    duplicates++;
+                } else {
+                    failures++;
+                    VEconomyMod.LOGGER.error("FTB Quests: failed to pay quest {} member {}: {}",
+                            quest.getCodeString(), member, result.status());
+                }
+            }
+            if (remainder > 0) {
+                TransactionResult result = EconomyCore.api().deposit(TreasuryService.TREASURY_UUID, remainder,
+                        TransactionContext.of(TransactionType.QUEST_REWARD, null,
+                                "ftbquests:" + label + " (remainder)",
+                                operationPrefix + ":treasury"));
+                if (result.status() == TransactionResult.Status.SUCCESS) {
+                    successes++;
+                } else if (result.status() == TransactionResult.Status.DUPLICATE_OPERATION) {
+                    duplicates++;
+                } else {
+                    failures++;
+                    VEconomyMod.LOGGER.error("FTB Quests: failed to send quest {} remainder to treasury: {}",
+                            quest.getCodeString(), result.status());
+                }
+            }
+
+            if (failures > 0) {
+                return CommandRewardStatus.PARTIAL_FAILURE;
+            }
+            if (successes == 0 && duplicates > 0) {
+                return CommandRewardStatus.ALREADY_DISTRIBUTED;
+            }
+            VEconomyMod.LOGGER.info("FTB Quests: distributed common fund {} for quest {} among {} team members ({} each, {} to treasury)",
+                    fundMinor, quest.getCodeString(), members.size(), perMember, remainder);
+            return CommandRewardStatus.SUCCESS;
+        } catch (Throwable t) {
+            VEconomyMod.LOGGER.error("FTB Quests: visible command reward failed for quest {}", questCode, t);
+            return CommandRewardStatus.PARTIAL_FAILURE;
+        }
+    }
+
+    private static long parseVisibleAmount(String title) {
+        return QuestRewardAmountParser.parse(title, EconomyCore.settings().currencySymbol,
+                EconomyCore.settings().decimalPlaces);
     }
 
     // ---------------------------------------------------------------- auto reward per chapter
@@ -265,28 +403,6 @@ public final class FTBQuestsIntegration {
      * Так случайная кастомная награда с числом в тексте не напечатает деньги.
      */
     static long parseAmount(String title, int decimalPlaces) {
-        if (title == null) {
-            return -1;
-        }
-        String token = title.trim();
-        if (!WHOLE_NUMBER.matcher(token).matches()) {
-            return -1;
-        }
-        BigDecimal value;
-        try {
-            value = new BigDecimal(token.replace(',', '.'));
-        } catch (NumberFormatException e) {
-            return -1;
-        }
-        if (value.signum() <= 0) {
-            return -1;
-        }
-        BigDecimal minor = value.movePointRight(decimalPlaces)
-                .setScale(0, RoundingMode.HALF_UP);
-        if (minor.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0) {
-            return -1;
-        }
-        long minorLong = minor.longValue();
-        return minorLong > 0 ? minorLong : -1;
+        return QuestRewardAmountParser.parse(title, "", decimalPlaces);
     }
 }

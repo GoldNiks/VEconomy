@@ -9,6 +9,7 @@ import com.valorcraft.veconomy.util.MessageService;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraftforge.fml.ModList;
 
 import java.util.UUID;
 
@@ -30,6 +31,42 @@ public final class InternalCommand {
                                         .then(Commands.argument("milestone", StringArgumentType.word())
                                                 .then(Commands.argument("idempotencyKey", StringArgumentType.greedyString())
                                                         .executes(InternalCommand::milestoneGrant)))))));
+        dispatcher.register(Commands.literal("economy")
+                .then(Commands.literal("quest-reward")
+                        // FTB Command Reward temporarily elevates its player source to permission level 2.
+                        .requires(source -> source.hasPermission(2))
+                        .then(Commands.argument("quest", StringArgumentType.word())
+                                .executes(InternalCommand::questReward))));
+    }
+
+    private static int questReward(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        if (!ModList.get().isLoaded("ftbquests")) {
+            source.sendFailure(net.minecraft.network.chat.Component.literal("FTB Quests is not loaded")
+                    .withStyle(ChatFormatting.RED));
+            return 0;
+        }
+        final net.minecraft.server.level.ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+            source.sendFailure(net.minecraft.network.chat.Component.literal("This command must be run by a player")
+                    .withStyle(ChatFormatting.RED));
+            return 0;
+        }
+
+        String questCode = StringArgumentType.getString(context, "quest");
+        var status = com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration
+                .claimVisibleCommandReward(player, questCode);
+        if (status == com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.CommandRewardStatus.SUCCESS
+                || status == com.valorcraft.veconomy.integration.ftbquests.FTBQuestsIntegration.CommandRewardStatus.ALREADY_DISTRIBUTED) {
+            source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("VEconomy quest reward: " + status)
+                    .withStyle(ChatFormatting.GREEN), false);
+            return 1;
+        }
+        source.sendFailure(net.minecraft.network.chat.Component.literal("VEconomy quest reward failed: " + status)
+                .withStyle(ChatFormatting.RED));
+        return 0;
     }
 
     private static int milestoneGrant(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
